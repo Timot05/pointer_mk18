@@ -6,17 +6,16 @@ open Server
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 let action id kind : DocAction =
-    { Id = id; Name = None; Kind = kind; Visible = true }
+    { Id = id; Name = None; Kind = kind; Visible = true; Display = None; FieldSlice = None }
 
 let hidden id kind : DocAction =
-    { Id = id; Name = None; Kind = kind; Visible = false }
+    { Id = id; Name = None; Kind = kind; Visible = false; Display = None; FieldSlice = None }
 
 let pipeline (actions: DocAction list) =
-    match Pipeline.compile actions with
-    | Error errs -> failwithf "Pipeline failed: %A" errs
-    | Ok result ->
-        let elements = Element.build actions
-        elements, result.Surfaces
+    let result = Pipeline.compile actions
+    if result.Errors.Length > 0 then failwithf "Pipeline errors: %A" result.Errors
+    let elements = Element.build actions
+    elements, result.Surfaces
 
 let surfaceFor id (surfaces: FieldSurface list) =
     surfaces |> List.find (fun s -> s.ActionId = id)

@@ -98,6 +98,10 @@ export type OnParamRapid = (actionId: string, key: string, value: number | strin
 export type OnAddAction = (kindCase: string) => void;
 export type OnOpenPalette = () => void;
 export type OnReorder = (ids: string[]) => void;
+export type OnToggleDisplay = (id: string) => void;
+export type OnDisplayChange = (id: string, key: string, value: number | number[]) => void;
+export type OnToggleFieldSlice = (id: string) => void;
+export type OnFieldSliceChange = (id: string, key: string, value: number | string) => void;
 
 export interface RenderCallbacks {
   onSelect: OnSelect;
@@ -107,6 +111,10 @@ export interface RenderCallbacks {
   onAddAction: OnAddAction;
   onOpenPalette: OnOpenPalette;
   onReorder: OnReorder;
+  onToggleDisplay: OnToggleDisplay;
+  onDisplayChange: OnDisplayChange;
+  onToggleFieldSlice: OnToggleFieldSlice;
+  onFieldSliceChange: OnFieldSliceChange;
 }
 
 // ── Action templates for the "+" dropdown ─────────────────────────────
@@ -357,6 +365,19 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
   header.appendChild(headerInfo);
   container.appendChild(header);
 
+  // errors for this action
+  const actionErrors = (doc.errors ?? []).filter((e) => e.actionId === selected.id);
+  if (actionErrors.length > 0) {
+    const errSection = el("div", "error-section");
+    for (const err of actionErrors) {
+      const row = el("div", "error-row");
+      row.appendChild(el("span", "error-key", err.key));
+      row.appendChild(el("span", "error-msg", err.error));
+      errSection.appendChild(row);
+    }
+    container.appendChild(errSection);
+  }
+
   // controls
   const section = el("div", "param-section");
   section.appendChild(el("div", "controls-hint", "drag values to adjust:"));
@@ -464,6 +485,138 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
 
   section.appendChild(strip);
   container.appendChild(section);
+
+  // ── Field display settings (backend includes display only for Field-type nodes)
+  if (selected.display) {
+    const d = selected.display;
+    const nodeVisible = selected.visible;
+    const displaySection = el("div", "display-section");
+
+    // Section title
+    const title = el("div", "section-title");
+    title.appendChild(el("span", "", "field display"));
+    if (!nodeVisible) {
+      const note = el("span", "field-disabled-note");
+      const kbd = el("kbd", "kbd-hint", "v");
+      note.appendChild(kbd);
+      note.appendChild(el("span", "", "to enable"));
+      title.appendChild(note);
+    }
+    displaySection.appendChild(title);
+
+    // Controls wrapper (greyed out when node not visible)
+    const controls = el("div", "display-controls");
+    if (!nodeVisible) controls.classList.add("is-disabled");
+
+    // Isosurface toggle checkbox
+    const check = el("label", "display-check");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = d.enabled;
+    checkbox.disabled = !nodeVisible;
+    checkbox.addEventListener("change", () => cb.onToggleDisplay(selected.id));
+    check.appendChild(checkbox);
+    const kbd = el("kbd", "kbd-hint", "s");
+    kbd.title = "Press s to toggle";
+    check.appendChild(kbd);
+    check.appendChild(el("span", "", "Show field iso-surface"));
+    controls.appendChild(check);
+
+    if (d.enabled) {
+      // Color swatches
+      const colorRow = el("div", "control-row color-row");
+      colorRow.appendChild(el("span", "control-name", "color"));
+      const swatches = el("div", "color-swatches");
+      const colors: [string, number[]][] = [
+        ["#85AEC8", [0.522, 0.682, 0.784]],
+        ["#C88585", [0.784, 0.522, 0.522]],
+        ["#85C8A3", [0.522, 0.784, 0.639]],
+        ["#C8B885", [0.784, 0.722, 0.522]],
+        ["#A385C8", [0.639, 0.522, 0.784]],
+        ["#C885B8", [0.784, 0.522, 0.722]],
+        ["#85C8C8", [0.522, 0.784, 0.784]],
+        ["#B8C885", [0.722, 0.784, 0.522]],
+        ["#AAAAAA", [0.667, 0.667, 0.667]],
+      ];
+      for (const [hex, rgb] of colors) {
+        const swatch = el("button", "color-swatch");
+        swatch.style.background = hex;
+        const isActive = d.color.length === 3 &&
+          Math.abs(d.color[0] - rgb[0]) < 0.01 &&
+          Math.abs(d.color[1] - rgb[1]) < 0.01 &&
+          Math.abs(d.color[2] - rgb[2]) < 0.01;
+        if (isActive) swatch.classList.add("is-active");
+        swatch.addEventListener("click", () => cb.onDisplayChange(selected.id, "color", rgb));
+        swatches.appendChild(swatch);
+      }
+      colorRow.appendChild(swatches);
+      controls.appendChild(colorRow);
+
+      // Offset (iso_value)
+      const offsetRow = el("div", "control-row");
+      offsetRow.appendChild(el("span", "control-name", "offset"));
+      const offsetVal = el("span", "control-value", d.isoValue.toFixed(1));
+      setupDraggable(
+        offsetVal, d.isoValue,
+        () => {},
+        (v) => cb.onDisplayChange(selected.id, "isoValue", v)
+      );
+      offsetRow.appendChild(offsetVal);
+      controls.appendChild(offsetRow);
+    }
+
+    // Field slice toggle
+    if (selected.fieldSlice) {
+      const fs = selected.fieldSlice;
+      const sliceCheck = el("label", "display-check");
+      const sliceCheckbox = document.createElement("input");
+      sliceCheckbox.type = "checkbox";
+      sliceCheckbox.checked = fs.enabled;
+      sliceCheckbox.disabled = !nodeVisible;
+      sliceCheckbox.addEventListener("change", () => cb.onToggleFieldSlice(selected.id));
+      sliceCheck.appendChild(sliceCheckbox);
+      const fKbd = el("kbd", "kbd-hint", "f");
+      fKbd.title = "Press f to toggle";
+      sliceCheck.appendChild(fKbd);
+      sliceCheck.appendChild(el("span", "", "Show field iso-lines"));
+      controls.appendChild(sliceCheck);
+
+      if (fs.enabled) {
+        // Plane selector
+        const planeRow = el("div", "control-row");
+        planeRow.appendChild(el("span", "control-name", "plane"));
+        const planeSelect = document.createElement("select");
+        planeSelect.className = "control-select";
+        for (const [value, label] of [["Z", "xy"], ["Y", "xz"], ["X", "yz"]] as const) {
+          const opt = document.createElement("option");
+          opt.value = value;
+          opt.textContent = label;
+          if (fs.plane === value) opt.selected = true;
+          planeSelect.appendChild(opt);
+        }
+        planeSelect.addEventListener("change", () =>
+          cb.onFieldSliceChange(selected.id, "plane", planeSelect.value));
+        planeRow.appendChild(planeSelect);
+        controls.appendChild(planeRow);
+
+        // Offset
+        const sliceOffsetRow = el("div", "control-row");
+        sliceOffsetRow.appendChild(el("span", "control-name", "offset"));
+        const sliceOffsetVal = el("span", "control-value", fs.offset.toFixed(1));
+        setupDraggable(
+          sliceOffsetVal, fs.offset,
+          () => {},
+          (v) => cb.onFieldSliceChange(selected.id, "offset", v)
+        );
+        sliceOffsetRow.appendChild(sliceOffsetVal);
+        controls.appendChild(sliceOffsetRow);
+      }
+    }
+
+    displaySection.appendChild(controls);
+    container.appendChild(displaySection);
+  }
+
   return container;
 }
 

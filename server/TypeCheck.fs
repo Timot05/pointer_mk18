@@ -93,8 +93,13 @@ module TypeCheck =
         { Id = id; Output = output; Inputs = inputs } :: typed,
         errors
 
+    type TypecheckResult =
+        { Typed: TypedAction list
+          Errors: TypeError list }
+
     /// Type-check the full action list.
-    let typecheck (actions: DocAction list) : Result<TypedAction list, TypeError list> =
+    /// Always produces typed actions (best-effort) plus any errors found.
+    let typecheck (actions: DocAction list) : TypecheckResult =
         // Build index map for forward-ref detection
         let seen =
             actions
@@ -163,7 +168,4 @@ module TypeCheck =
             |> List.mapi (fun i a -> i, a)
             |> List.fold folder (Map.empty, [], [])
 
-        if errors.IsEmpty then
-            Ok(List.rev typed)
-        else
-            Error(List.rev errors)
+        { Typed = List.rev typed; Errors = List.rev errors }

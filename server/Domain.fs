@@ -26,11 +26,39 @@ type ActionKind =
     | Shell of child: ActionId option * thickness: float
     | Mesh of child: ActionId option * size: float * resolution: int
 
+type DisplaySettings =
+    { Enabled: bool
+      Color: float array  // [r, g, b] normalized 0-1
+      Opacity: float
+      IsoValue: float }
+
+module DisplaySettings =
+    let defaults =
+        { Enabled = false
+          Color = [| 0.522; 0.682; 0.784 |]  // #85AEC8
+          Opacity = 0.9
+          IsoValue = 0.0 }
+
+type FieldSliceSettings =
+    { Enabled: bool
+      Plane: string  // "X" | "Y" | "Z"
+      Offset: float
+      Extent: float }
+
+module FieldSliceSettings =
+    let defaults =
+        { Enabled = false
+          Plane = "Z"
+          Offset = 0.0
+          Extent = 0.5 }
+
 type DocAction =
     { Id: ActionId
       Name: string option
       Kind: ActionKind
-      Visible: bool }
+      Visible: bool
+      Display: DisplaySettings option
+      FieldSlice: FieldSliceSettings option }
 
 type Document ={ 
     Name: string
@@ -44,18 +72,7 @@ module Document =
         { doc with SelectedId = Some id }
 
     let addAction (action: DocAction) (doc: Document) : Document =
-        let insertIdx =
-            match doc.SelectedId with
-            | Some selId ->
-                doc.Actions
-                |> List.tryFindIndex (fun a -> a.Id = selId)
-                |> Option.map (fun i -> i + 1)
-                |> Option.defaultValue doc.Actions.Length
-            | None -> doc.Actions.Length
-
-        let before = doc.Actions |> List.take insertIdx
-        let after = doc.Actions |> List.skip insertIdx
-        { doc with Actions = before @ [ action ] @ after; SelectedId = Some action.Id }
+        { doc with Actions = doc.Actions @ [ action ]; SelectedId = Some action.Id }
 
     let updateAction (id: string) (updated: DocAction) (doc: Document) : Document =
         { doc with Actions = doc.Actions |> List.map (fun a -> if a.Id = id then updated else a) }
@@ -70,6 +87,59 @@ module Document =
             Actions =
                 doc.Actions
                 |> List.map (fun a -> if a.Id = id then { a with Visible = not a.Visible } else a) }
+
+    let toggleDisplay (id: string) (doc: Document) : Document =
+        { doc with
+            Actions =
+                doc.Actions
+                |> List.map (fun a ->
+                    if a.Id <> id then a
+                    else
+                        let d = a.Display |> Option.defaultValue DisplaySettings.defaults
+                        { a with Display = Some { d with Enabled = not d.Enabled } }) }
+
+    let patchDisplay (id: string) (key: string) (value: System.Text.Json.JsonElement) (doc: Document) : Document =
+        { doc with
+            Actions =
+                doc.Actions
+                |> List.map (fun a ->
+                    if a.Id <> id then a
+                    else
+                        let d = a.Display |> Option.defaultValue DisplaySettings.defaults
+                        let d' =
+                            match key with
+                            | "color" ->
+                                let arr = value.EnumerateArray() |> Seq.map (fun e -> e.GetDouble()) |> Seq.toArray
+                                { d with Color = arr }
+                            | "opacity" -> { d with Opacity = value.GetDouble() }
+                            | "isoValue" -> { d with IsoValue = value.GetDouble() }
+                            | _ -> d
+                        { a with Display = Some d' }) }
+
+    let toggleFieldSlice (id: string) (doc: Document) : Document =
+        { doc with
+            Actions =
+                doc.Actions
+                |> List.map (fun a ->
+                    if a.Id <> id then a
+                    else
+                        let fs = a.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
+                        { a with FieldSlice = Some { fs with Enabled = not fs.Enabled } }) }
+
+    let patchFieldSlice (id: string) (key: string) (value: System.Text.Json.JsonElement) (doc: Document) : Document =
+        { doc with
+            Actions =
+                doc.Actions
+                |> List.map (fun a ->
+                    if a.Id <> id then a
+                    else
+                        let fs = a.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
+                        let fs' =
+                            match key with
+                            | "plane" -> { fs with Plane = value.GetString() }
+                            | "offset" -> { fs with Offset = value.GetDouble() }
+                            | _ -> fs
+                        { a with FieldSlice = Some fs' }) }
 
     let reorder (ids: string list) (doc: Document) : Document =
         let lookup = doc.Actions |> List.map (fun a -> a.Id, a) |> Map.ofList
@@ -164,16 +234,24 @@ module Document =
             [ { Id = "origin"
                 Name = Some "origin"
                 Kind = Origin
-                Visible = true }
+                Visible = true
+                Display = None
+                FieldSlice = None }
               { Id = "cyl1"
                 Name = Some "cylinder"
                 Kind = Cylinder(radius = 10.0, height = 40.0)
-                Visible = true }
+                Visible = true
+                Display = None
+                FieldSlice = None }
               { Id = "sph1"
                 Name = Some "sphere"
                 Kind = Sphere(radius = 8.0)
-                Visible = true }
+                Visible = true
+                Display = None
+                FieldSlice = None }
               { Id = "sub1"
                 Name = Some "subtract"
                 Kind = Subtract(a = Some "cyl1", b = Some "sph1", radius = 0.0)
-                Visible = true } ] }
+                Visible = true
+                Display = None
+                FieldSlice = None } ] }

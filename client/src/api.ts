@@ -4,11 +4,27 @@
 
 const BASE = "/api";
 
+export interface DisplaySettings {
+  enabled: boolean;
+  color: number[];   // [r, g, b] normalized 0-1
+  opacity: number;
+  isoValue: number;
+}
+
+export interface FieldSliceSettings {
+  enabled: boolean;
+  plane: string;   // "X" | "Y" | "Z"
+  offset: number;
+  extent: number;
+}
+
 export interface Action {
   id: string;
   name: string | null;
   kind: ActionKind;
   visible: boolean;
+  display: DisplaySettings | null;
+  fieldSlice: FieldSliceSettings | null;
 }
 
 export type ActionKind =
@@ -77,6 +93,28 @@ export function patchActionParamRapid(id: string, key: string, value: number | s
 
 export async function toggleActionVisible(id: string): Promise<Document> {
   return request(`/document/action/${id}/visible`, { method: "PATCH" });
+}
+
+export async function toggleDisplay(id: string): Promise<Document> {
+  return request(`/document/action/${id}/display/toggle`, { method: "PATCH" });
+}
+
+export async function patchDisplay(id: string, key: string, value: number | number[]): Promise<Document> {
+  return request(`/document/action/${id}/display`, {
+    method: "PATCH",
+    body: JSON.stringify({ key, value }),
+  });
+}
+
+export async function toggleFieldSlice(id: string): Promise<Document> {
+  return request(`/document/action/${id}/field-slice/toggle`, { method: "PATCH" });
+}
+
+export async function patchFieldSlice(id: string, key: string, value: number | string): Promise<Document> {
+  return request(`/document/action/${id}/field-slice`, {
+    method: "PATCH",
+    body: JSON.stringify({ key, value }),
+  });
 }
 
 export async function addAction(action: Action): Promise<Document> {

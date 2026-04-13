@@ -1,4 +1,4 @@
-import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, addAction, deleteAction, reorderActions, type Document, type ActionKind } from "./api";
+import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, toggleDisplay, patchDisplay, toggleFieldSlice, patchFieldSlice, addAction, deleteAction, reorderActions, type Action, type Document, type ActionKind } from "./api";
 import { render, type RenderCallbacks } from "./render";
 import * as palette from "./command-palette";
 
@@ -49,7 +49,7 @@ const callbacks: RenderCallbacks = {
     const kind = defaultKind(kindCase);
     if (!kind) return;
     const id = kindCase.toLowerCase() + "_" + Math.random().toString(36).slice(2, 8);
-    refresh(await addAction({ id, name: null, kind, visible: true }));
+    refresh(await addAction({ id, name: null, kind, visible: true, display: null, fieldSlice: null }));
   },
 
   onOpenPalette: openPalette,
@@ -64,6 +64,22 @@ const callbacks: RenderCallbacks = {
 
   onParamChange: async (actionId, key, value) => {
     refresh(await patchActionParam(actionId, key, value));
+  },
+
+  onToggleDisplay: async (id) => {
+    refresh(await toggleDisplay(id));
+  },
+
+  onDisplayChange: async (id, key, value) => {
+    refresh(await patchDisplay(id, key, value));
+  },
+
+  onToggleFieldSlice: async (id) => {
+    refresh(await toggleFieldSlice(id));
+  },
+
+  onFieldSliceChange: async (id, key, value) => {
+    refresh(await patchFieldSlice(id, key, value));
   },
 };
 
@@ -97,6 +113,24 @@ document.addEventListener("keydown", async (e) => {
       : Math.max(idx - 1, 0);
     if (next !== idx) {
       refresh(await selectAction(doc.actions[next].id));
+    }
+  } else if (e.key === "v") {
+    const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
+    if (sel && sel.kind.case !== "Origin") {
+      e.preventDefault();
+      refresh(await toggleActionVisible(sel.id));
+    }
+  } else if (e.key === "s") {
+    const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
+    if (sel && sel.display) {
+      e.preventDefault();
+      refresh(await toggleDisplay(sel.id));
+    }
+  } else if (e.key === "f") {
+    const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
+    if (sel && sel.fieldSlice) {
+      e.preventDefault();
+      refresh(await toggleFieldSlice(sel.id));
     }
   }
 });

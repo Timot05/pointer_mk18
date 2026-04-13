@@ -136,7 +136,6 @@ module Palette =
     let private filterActions (query: string) (accepts: FieldType list) (typeMap: Map<ActionId, FieldType>) (doc: Document) : PaletteItem list =
         doc.Actions
         |> List.filter (fun a ->
-            a.Kind <> Origin &&
             (match Map.tryFind a.Id typeMap with
              | Some t -> List.contains t accepts
              | None -> false) &&
@@ -285,4 +284,4 @@ module Palette =
                 | _ -> Origin
 
             let id = kind.ToLowerInvariant() + "_" + idSuffix
-            Some { Id = id; Name = None; Kind = actionKind; Visible = true }
+            Some { Id = id; Name = None; Kind = actionKind; Visible = true; Display = None; FieldSlice = None }

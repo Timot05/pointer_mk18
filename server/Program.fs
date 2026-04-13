@@ -27,11 +27,6 @@ module Program =
     let recompile () =
         compiled <- Pipeline.compile doc.Actions
 
-    let typeMap () =
-        match compiled with
-        | Ok r -> r.TypeMap
-        | Error _ -> Map.empty
-
     let formatErrors (errs: TypeError list) =
         errs |> List.map (fun e ->
             match e with
@@ -43,11 +38,8 @@ module Program =
                 {| ActionId = id; Key = key; Error = $"expected {exp}, got {got}" |})
 
     let json_payload () =
-        let tm = typeMap ()
-        let errors =
-            match compiled with
-            | Ok _ -> []
-            | Error errs -> formatErrors errs
+        let tm = compiled.TypeMap
+        let errors = formatErrors compiled.Errors
 
         let refOptions =
             match doc.SelectedId with
@@ -66,18 +58,30 @@ module Program =
                             | Some t when List.contains t types -> Some a.Id
                             | _ -> None))
 
-        {| Name = doc.Name; Actions = doc.Actions; SelectedId = doc.SelectedId
+        // Field-type actions always get display settings; others get None
+        let actions =
+            doc.Actions
+            |> List.map (fun a ->
+                match Map.tryFind a.Id tm with
+                | Some FieldType.Field ->
+                    { a with
+                        Display = Some (a.Display |> Option.defaultValue DisplaySettings.defaults)
+                        FieldSlice = Some (a.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults) }
+                | _ ->
+                    { a with Display = None; FieldSlice = None })
+
+        {| Name = doc.Name; Actions = actions; SelectedId = doc.SelectedId
            RefOptions = refOptions; Errors = errors |}
 
     let json () =
         Results.Content(JsonSerializer.Serialize(json_payload (), jsonOpts), "application/json")
 
     let paletteJson () =
-        let state = Palette.toState paletteSession (typeMap ()) doc
+        let state = Palette.toState paletteSession compiled.TypeMap doc
         Results.Content(JsonSerializer.Serialize(state, jsonOpts), "application/json")
 
     let paletteAndDoc () =
-        let state = Palette.toState paletteSession (typeMap ()) doc
+        let state = Palette.toState paletteSession compiled.TypeMap doc
         let combined = {| Palette = state; Document = json_payload () |}
         Results.Content(JsonSerializer.Serialize(combined, jsonOpts), "application/json")
 
@@ -135,6 +139,26 @@ module Program =
         app.MapPatch("/api/document/action/{id}/visible",
             Func<string, IResult>(fun id -> mutate (Document.toggleVisible id))) |> ignore
 
+        app.MapPatch("/api/document/action/{id}/display/toggle",
+            Func<string, IResult>(fun id -> mutate (Document.toggleDisplay id))) |> ignore
+
+        app.MapPatch("/api/document/action/{id}/display",
+            Func<string, HttpContext, IResult>(fun id ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let key = body.GetProperty("key").GetString()
+                let value = body.GetProperty("value")
+                mutate (Document.patchDisplay id key value))) |> ignore
+
+        app.MapPatch("/api/document/action/{id}/field-slice/toggle",
+            Func<string, IResult>(fun id -> mutate (Document.toggleFieldSlice id))) |> ignore
+
+        app.MapPatch("/api/document/action/{id}/field-slice",
+            Func<string, HttpContext, IResult>(fun id ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let key = body.GetProperty("key").GetString()
+                let value = body.GetProperty("value")
+                mutate (Document.patchFieldSlice id key value))) |> ignore
+
         app.MapPost("/api/document/action",
             Func<HttpContext, IResult>(fun ctx ->
                 mutate (Document.addAction (readBody<DocAction> ctx)))) |> ignore
@@ -152,7 +176,7 @@ module Program =
 
         /// If done, build action + return document; otherwise return palette state.
         let maybeBuild () =
-            let state = Palette.toState paletteSession (typeMap ()) doc
+            let state = Palette.toState paletteSession compiled.TypeMap doc
             if state.Mode = "done" then
                 match Palette.buildAction paletteSession (Guid.NewGuid().ToString("N").[..5]) with
                 | Some action ->
@@ -176,7 +200,7 @@ module Program =
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
                 let q = body.GetProperty("query").GetString()
                 paletteSession <- Palette.setQuery q paletteSession
-                let state = Palette.toState paletteSession (typeMap ()) doc
+                let state = Palette.toState paletteSession compiled.TypeMap doc
                 Results.Content(JsonSerializer.Serialize(state.Items, jsonOpts), "application/json"))) |> ignore
 
         app.MapPost("/api/palette/query",

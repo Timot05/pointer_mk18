@@ -6,17 +6,15 @@ open Server
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 let action id kind : DocAction =
-    { Id = id; Name = None; Kind = kind; Visible = true }
+    { Id = id; Name = None; Kind = kind; Visible = true; Display = None; FieldSlice = None }
 
-let ok result =
-    match result with
-    | Ok v -> v
-    | Error errs -> failwithf "Expected Ok but got Error: %A" errs
+let ok (result: TypeCheck.TypecheckResult) =
+    if result.Errors.Length > 0 then failwithf "Expected no errors but got: %A" result.Errors
+    result.Typed
 
-let errors result =
-    match result with
-    | Ok v -> failwithf "Expected Error but got Ok: %A" v
-    | Error errs -> errs
+let errors (result: TypeCheck.TypecheckResult) =
+    if result.Errors.Length = 0 then failwithf "Expected errors but got none"
+    result.Errors
 
 let outputOf id (typed: TypedAction list) =
     typed |> List.find (fun t -> t.Id = id) |> fun t -> t.Output

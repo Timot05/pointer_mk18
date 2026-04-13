@@ -359,9 +359,11 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
   section.appendChild(el("div", "controls-hint", "drag values to adjust:"));
   const strip = el("div", "controls-strip");
 
-  // ref options: all actions before the selected one (excluding Origin)
-  const selectedIdx = doc.actions.findIndex((a) => a.id === selected.id);
-  const refOpts = doc.actions.slice(0, selectedIdx).filter((a) => a.kind.case !== "Origin");
+  // ref options: backend provides valid IDs per slot, map them to actions
+  const refOptions = doc.refOptions ?? {};
+  const actionById = new Map(doc.actions.map((a) => [a.id, a]));
+  const refOptsFor = (key: string): Action[] =>
+    (refOptions[key] ?? []).map((id) => actionById.get(id)).filter((a): a is Action => a != null);
 
   const kind = selected.kind;
 
@@ -392,14 +394,14 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
       break;
 
     case "Translate":
-      strip.appendChild(controlRef("child", kind.child, refOpts, selected.id, "child", cb));
+      strip.appendChild(controlRef("child", kind.child, refOptsFor("child"), selected.id, "child", cb));
       strip.appendChild(controlDrag("x", kind.x, selected.id, "x", cb));
       strip.appendChild(controlDrag("y", kind.y, selected.id, "y", cb));
       strip.appendChild(controlDrag("z", kind.z, selected.id, "z", cb));
       break;
 
     case "Rotate":
-      strip.appendChild(controlRef("child", kind.child, refOpts, selected.id, "child", cb));
+      strip.appendChild(controlRef("child", kind.child, refOptsFor("child"), selected.id, "child", cb));
       strip.appendChild(controlDrag("ax", kind.ax, selected.id, "ax", cb));
       strip.appendChild(controlDrag("ay", kind.ay, selected.id, "ay", cb));
       strip.appendChild(controlDrag("az", kind.az, selected.id, "az", cb));
@@ -407,25 +409,25 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
       break;
 
     case "Move":
-      strip.appendChild(controlRef("child", kind.child, refOpts, selected.id, "child", cb));
-      strip.appendChild(controlRef("frame", kind.frame, refOpts, selected.id, "frame", cb));
+      strip.appendChild(controlRef("child", kind.child, refOptsFor("child"), selected.id, "child", cb));
+      strip.appendChild(controlRef("frame", kind.frame, refOptsFor("frame"), selected.id, "frame", cb));
       break;
 
     case "Union":
-      strip.appendChild(controlRef("tool", kind.a, refOpts, selected.id, "a", cb));
-      strip.appendChild(controlRef("target", kind.b, refOpts, selected.id, "b", cb));
+      strip.appendChild(controlRef("tool", kind.a, refOptsFor("a"), selected.id, "a", cb));
+      strip.appendChild(controlRef("target", kind.b, refOptsFor("b"), selected.id, "b", cb));
       strip.appendChild(controlDrag("radius", kind.radius, selected.id, "radius", cb));
       break;
 
     case "Subtract":
-      strip.appendChild(controlRef("tool", kind.a, refOpts, selected.id, "a", cb));
-      strip.appendChild(controlRef("target", kind.b, refOpts, selected.id, "b", cb));
+      strip.appendChild(controlRef("tool", kind.a, refOptsFor("a"), selected.id, "a", cb));
+      strip.appendChild(controlRef("target", kind.b, refOptsFor("b"), selected.id, "b", cb));
       strip.appendChild(controlDrag("radius", kind.radius, selected.id, "radius", cb));
       break;
 
     case "Intersect":
-      strip.appendChild(controlRef("tool", kind.a, refOpts, selected.id, "a", cb));
-      strip.appendChild(controlRef("target", kind.b, refOpts, selected.id, "b", cb));
+      strip.appendChild(controlRef("tool", kind.a, refOptsFor("a"), selected.id, "a", cb));
+      strip.appendChild(controlRef("target", kind.b, refOptsFor("b"), selected.id, "b", cb));
       strip.appendChild(controlDrag("radius", kind.radius, selected.id, "radius", cb));
       break;
 
@@ -433,7 +435,7 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
       break;
 
     case "FromSketch":
-      strip.appendChild(controlRef("sketch", kind.child, refOpts, selected.id, "child", cb));
+      strip.appendChild(controlRef("sketch", kind.child, refOptsFor("child"), selected.id, "child", cb));
       strip.appendChild(controlCheck("closed", kind.closed, selected.id, "closed", cb));
       if (kind.closed) {
         strip.appendChild(controlCheck("flip", kind.flip, selected.id, "flip", cb));
@@ -441,17 +443,17 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
       break;
 
     case "Thicken":
-      strip.appendChild(controlRef("child", kind.child, refOpts, selected.id, "child", cb));
+      strip.appendChild(controlRef("child", kind.child, refOptsFor("child"), selected.id, "child", cb));
       strip.appendChild(controlDrag("amount", kind.amount, selected.id, "amount", cb));
       break;
 
     case "Shell":
-      strip.appendChild(controlRef("child", kind.child, refOpts, selected.id, "child", cb));
+      strip.appendChild(controlRef("child", kind.child, refOptsFor("child"), selected.id, "child", cb));
       strip.appendChild(controlDrag("thickness", kind.thickness, selected.id, "thickness", cb));
       break;
 
     case "Mesh":
-      strip.appendChild(controlRef("child", kind.child, refOpts, selected.id, "child", cb));
+      strip.appendChild(controlRef("child", kind.child, refOptsFor("child"), selected.id, "child", cb));
       strip.appendChild(controlDrag("size", kind.size, selected.id, "size", cb));
       strip.appendChild(controlDrag("res", kind.resolution, selected.id, "resolution", cb));
       break;

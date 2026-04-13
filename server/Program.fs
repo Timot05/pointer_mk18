@@ -23,7 +23,33 @@ module Program =
     let mutable doc = Document.defaultDocument ()
     let mutable paletteSession = Palette.empty
 
-    let json () = Results.Content(JsonSerializer.Serialize(doc, jsonOpts), "application/json")
+    let json_payload () =
+        let typeMap =
+            match TypeCheck.typecheck doc.Actions with
+            | Ok typed -> typed |> List.map (fun t -> t.Id, t.Output) |> Map.ofList
+            | Error _ -> Map.empty
+
+        let refOptions =
+            match doc.SelectedId with
+            | None -> Map.empty
+            | Some selId ->
+                match doc.Actions |> List.tryFind (fun a -> a.Id = selId) with
+                | None -> Map.empty
+                | Some sel ->
+                    let selIdx = doc.Actions |> List.findIndex (fun a -> a.Id = selId)
+                    let before = doc.Actions |> List.take selIdx
+                    let accepted = TypeCheck.acceptedInputs sel.Kind
+                    accepted |> Map.map (fun _key types ->
+                        before
+                        |> List.choose (fun a ->
+                            match Map.tryFind a.Id typeMap with
+                            | Some t when List.contains t types -> Some a.Id
+                            | _ -> None))
+
+        {| Name = doc.Name; Actions = doc.Actions; SelectedId = doc.SelectedId; RefOptions = refOptions |}
+
+    let json () =
+        Results.Content(JsonSerializer.Serialize(json_payload (), jsonOpts), "application/json")
 
     let paletteJson () =
         let state = Palette.toState paletteSession doc
@@ -31,7 +57,7 @@ module Program =
 
     let paletteAndDoc () =
         let state = Palette.toState paletteSession doc
-        let combined = {| Palette = state; Document = doc |}
+        let combined = {| Palette = state; Document = json_payload () |}
         Results.Content(JsonSerializer.Serialize(combined, jsonOpts), "application/json")
 
     let mutate f =

@@ -12,7 +12,7 @@ type ScalarDef =
 
 /// Each step in the palette wizard is either picking a ref or adjusting scalars.
 type PaletteStep =
-    | RefStep of key: string * label: string
+    | RefStep of key: string * label: string * accepts: FieldType list
     | ScalarsStep of label: string * fields: ScalarDef list
 
 // ── Types sent to the frontend ───────────────────────────────────────
@@ -55,9 +55,13 @@ module Palette =
     // ── Step definitions per action kind ──────────────────────────────
 
     let private stepsFor (kind: string) : PaletteStep list =
-        let ref' key label = RefStep(key, label)
+        let ref' key label accepts = RefStep(key, label, accepts)
         let scalars label fields = ScalarsStep(label, fields)
         let s key label def = { Key = key; Label = label; Default = def }
+        let fieldOrFrame = [ FieldType.Field; FieldType.Frame ]
+        let fieldOnly = [ FieldType.Field ]
+        let sketchOnly = [ FieldType.Sketch ]
+        let frameOnly = [ FieldType.Frame ]
         match kind with
         | "Sphere" ->
             [ scalars "dimensions" [ s "radius" "radius" 8.0 ] ]
@@ -68,27 +72,27 @@ module Palette =
         | "HalfPlane" ->
             [ scalars "offset" [ s "offset" "offset" 0.0 ] ]
         | "Translate" ->
-            [ ref' "child" "from"
+            [ ref' "child" "from" fieldOrFrame
               scalars "offset" [ s "x" "x" 0.0; s "y" "y" 0.0; s "z" "z" 0.0 ] ]
         | "Rotate" ->
-            [ ref' "child" "from"
+            [ ref' "child" "from" fieldOrFrame
               scalars "axis" [ s "ax" "ax" 0.0; s "ay" "ay" 0.0; s "az" "az" 1.0 ]
               scalars "rotation" [ s "angle" "angle" 0.0 ] ]
         | "Move" ->
-            [ ref' "child" "from"; ref' "frame" "to frame" ]
+            [ ref' "child" "from" fieldOrFrame; ref' "frame" "to frame" frameOnly ]
         | "FromSketch" ->
-            [ ref' "child" "sketch" ]
+            [ ref' "child" "sketch" sketchOnly ]
         | "Union" | "Subtract" | "Intersect" ->
-            [ ref' "a" "tool"; ref' "b" "target"
+            [ ref' "a" "tool" fieldOnly; ref' "b" "target" fieldOnly
               scalars "blend" [ s "radius" "blend" 0.0 ] ]
         | "Thicken" ->
-            [ ref' "child" "from"
+            [ ref' "child" "from" fieldOnly
               scalars "amount" [ s "amount" "amount" 2.0 ] ]
         | "Shell" ->
-            [ ref' "child" "from"
+            [ ref' "child" "from" fieldOnly
               scalars "thickness" [ s "thickness" "thickness" 1.0 ] ]
         | "Mesh" ->
-            [ ref' "child" "from"
+            [ ref' "child" "from" fieldOnly
               scalars "mesh" [ s "size" "size" 0.2; s "resolution" "res" 96.0 ] ]
         | _ -> []
 
@@ -112,10 +116,17 @@ module Palette =
             else templateLabels |> List.filter (fuzzyMatch query)
         labels |> List.map (fun l -> { Id = l; Label = l; Kind = l })
 
-    let private filterActions (query: string) (doc: Document) : PaletteItem list =
+    let private filterActions (query: string) (accepts: FieldType list) (doc: Document) : PaletteItem list =
+        let typeMap =
+            match TypeCheck.typecheck doc.Actions with
+            | Ok typed -> typed |> List.map (fun t -> t.Id, t.Output) |> Map.ofList
+            | Error _ -> Map.empty
         doc.Actions
         |> List.filter (fun a ->
             a.Kind <> Origin &&
+            (match Map.tryFind a.Id typeMap with
+             | Some t -> List.contains t accepts
+             | None -> false) &&
             (System.String.IsNullOrEmpty(query) ||
              fuzzyMatch query (a.Name |> Option.defaultValue (a.Kind.ToString()))))
         |> List.map (fun a ->
@@ -125,7 +136,7 @@ module Palette =
     /// Chip label for a completed step.
     let private chipForStep (step: PaletteStep) (values: Map<string, string>) : PaletteChip list =
         match step with
-        | RefStep(key, label) ->
+        | RefStep(key, label, _) ->
             let v = values |> Map.tryFind key |> Option.defaultValue "\u2013"
             [ { Label = label; Value = v } ]
         | ScalarsStep(_, fields) ->
@@ -161,10 +172,10 @@ module Palette =
                     |> List.collect (fun st -> chipForStep st session.Values)
                 let step = steps.[session.StepIndex]
                 match step with
-                | RefStep(_, label) ->
+                | RefStep(_, label, accepts) ->
                     { IsOpen = true; Mode = "ref"; PickedKind = Some kind; Chips = chips
                       Prompt = $"Pick \"{label}\" for {kind}\u2026"
-                      Items = filterActions session.Query doc
+                      Items = filterActions session.Query accepts doc
                       ScalarFields = []
                       HintBar = [ "\u2191\u2193 navigate"; "\u21B5 next"; "\u2318\u21B5 create now"; "\u232B back"; "esc cancel" ] }
                 | ScalarsStep(_, fields) ->
@@ -203,7 +214,7 @@ module Palette =
         if session.StepIndex >= session.Steps.Length then session
         else
             match session.Steps.[session.StepIndex] with
-            | RefStep(key, _) ->
+            | RefStep(key, _, _) ->
                 let values = session.Values |> Map.add key itemId
                 { session with Values = values; StepIndex = session.StepIndex + 1; Query = "" }
             | _ -> session

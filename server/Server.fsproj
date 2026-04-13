@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <Compile Include="Domain.fs" />
+    <Compile Include="TypeCheck.fs" />
     <Compile Include="Palette.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

@@ -33,6 +33,7 @@ export interface Document {
   name: string;
   actions: Action[];
   selectedId: string | null;
+  refOptions: Record<string, string[]>;
 }
 
 async function request(url: string, opts?: RequestInit): Promise<Document> {

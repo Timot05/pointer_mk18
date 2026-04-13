@@ -1,4 +1,4 @@
-import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, addAction, deleteAction, type Document, type ActionKind } from "./api";
+import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, addAction, deleteAction, reorderActions, type Document, type ActionKind } from "./api";
 import { render, type RenderCallbacks } from "./render";
 import * as palette from "./command-palette";
 
@@ -8,8 +8,8 @@ function defaultKind(kindCase: string): ActionKind | null {
     case "Cylinder": return { case: "Cylinder", radius: 5, height: 20 };
     case "Box": return { case: "Box", width: 10, height: 10, depth: 10 };
     case "HalfPlane": return { case: "HalfPlane", axis: "Z", offset: 0, flip: false };
-    case "Translate": return { case: "Translate", x: 0, y: 0, z: 0 };
-    case "Rotate": return { case: "Rotate", axis: "Z", angle: 0 };
+    case "Translate": return { case: "Translate", child: null, x: 0, y: 0, z: 0 };
+    case "Rotate": return { case: "Rotate", child: null, ax: 0, ay: 0, az: 1, angle: 0 };
     case "Move": return { case: "Move", child: null, frame: null };
     case "Union": return { case: "Union", a: null, b: null, radius: 0 };
     case "Subtract": return { case: "Subtract", a: null, b: null, radius: 0 };
@@ -49,10 +49,14 @@ const callbacks: RenderCallbacks = {
     const kind = defaultKind(kindCase);
     if (!kind) return;
     const id = kindCase.toLowerCase() + "_" + Math.random().toString(36).slice(2, 8);
-    refresh(await addAction({ id, name: null, kind, visible: true, children: [] }));
+    refresh(await addAction({ id, name: null, kind, visible: true }));
   },
 
   onOpenPalette: openPalette,
+
+  onReorder: async (ids) => {
+    refresh(await reorderActions(ids));
+  },
 
   onParamRapid: (actionId, key, value) => {
     patchActionParamRapid(actionId, key, value);

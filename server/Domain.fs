@@ -6,30 +6,31 @@ open System.Text.Json.Serialization
 // Domain types — the document model that the frontend renders
 // ---------------------------------------------------------------------------
 
+type ActionId = string
+
 type ActionKind =
     | Origin
     | Cylinder of radius: float * height: float
     | Sphere of radius: float
     | Box of width: float * height: float * depth: float
     | HalfPlane of axis: string * offset: float * flip: bool
-    | Translate of x: float * y: float * z: float
-    | Rotate of axis: string * angle: float
-    | Move of child: string option * frame: string option
-    | Union of a: string option * b: string option * radius: float
-    | Subtract of a: string option * b: string option * radius: float
-    | Intersect of a: string option * b: string option * radius: float
+    | Translate of child: ActionId option * x: float * y: float * z: float
+    | Rotate of child: ActionId option * ax: float * ay: float * az: float * angle: float
+    | Move of child: ActionId option * frame: ActionId option
+    | Union of a: ActionId option * b: ActionId option * radius: float
+    | Subtract of a: ActionId option * b: ActionId option * radius: float
+    | Intersect of a: ActionId option * b: ActionId option * radius: float
     | Sketch
-    | FromSketch of child: string option * closed: bool * flip: bool
-    | Thicken of child: string option * amount: float
-    | Shell of child: string option * thickness: float
-    | Mesh of child: string option * size: float * resolution: int
+    | FromSketch of child: ActionId option * closed: bool * flip: bool
+    | Thicken of child: ActionId option * amount: float
+    | Shell of child: ActionId option * thickness: float
+    | Mesh of child: ActionId option * size: float * resolution: int
 
 type DocAction =
-    { Id: string
+    { Id: ActionId
       Name: string option
       Kind: ActionKind
-      Visible: bool
-      Children: string list }
+      Visible: bool }
 
 type Document ={ 
     Name: string
@@ -98,14 +99,18 @@ module Document =
                                     (if key = "width" then value.GetDouble() else w),
                                     (if key = "height" then value.GetDouble() else h),
                                     (if key = "depth" then value.GetDouble() else d))
-                            | Translate(x, y, z) ->
+                            | Translate(c, x, y, z) ->
                                 Translate(
+                                    (if key = "child" then optStr value else c),
                                     (if key = "x" then value.GetDouble() else x),
                                     (if key = "y" then value.GetDouble() else y),
                                     (if key = "z" then value.GetDouble() else z))
-                            | Rotate(ax, ang) ->
+                            | Rotate(c, ax, ay, az, ang) ->
                                 Rotate(
-                                    (if key = "axis" then value.GetString() else ax),
+                                    (if key = "child" then optStr value else c),
+                                    (if key = "ax" then value.GetDouble() else ax),
+                                    (if key = "ay" then value.GetDouble() else ay),
+                                    (if key = "az" then value.GetDouble() else az),
                                     (if key = "angle" then value.GetDouble() else ang))
                             | HalfPlane(ax, off, fl) ->
                                 HalfPlane(
@@ -159,20 +164,16 @@ module Document =
             [ { Id = "origin"
                 Name = Some "origin"
                 Kind = Origin
-                Visible = true
-                Children = [] }
+                Visible = true }
               { Id = "cyl1"
                 Name = Some "cylinder"
                 Kind = Cylinder(radius = 10.0, height = 40.0)
-                Visible = true
-                Children = [] }
+                Visible = true }
               { Id = "sph1"
                 Name = Some "sphere"
                 Kind = Sphere(radius = 8.0)
-                Visible = true
-                Children = [] }
+                Visible = true }
               { Id = "sub1"
                 Name = Some "subtract"
                 Kind = Subtract(a = Some "cyl1", b = Some "sph1", radius = 0.0)
-                Visible = true
-                Children = [ "cyl1"; "sph1" ] } ] }
+                Visible = true } ] }

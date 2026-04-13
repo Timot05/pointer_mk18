@@ -72,6 +72,7 @@ module Palette =
               scalars "offset" [ s "x" "x" 0.0; s "y" "y" 0.0; s "z" "z" 0.0 ] ]
         | "Rotate" ->
             [ ref' "child" "from"
+              scalars "axis" [ s "ax" "ax" 0.0; s "ay" "ay" 0.0; s "az" "az" 1.0 ]
               scalars "rotation" [ s "angle" "angle" 0.0 ] ]
         | "Move" ->
             [ ref' "child" "from"; ref' "frame" "to frame" ]
@@ -246,8 +247,8 @@ module Palette =
                 | "Cylinder" -> Cylinder(flt "radius" 5.0, flt "height" 20.0)
                 | "Box" -> Box(flt "width" 10.0, flt "height" 10.0, flt "depth" 10.0)
                 | "HalfPlane" -> HalfPlane("Z", flt "offset" 0.0, false)
-                | "Translate" -> Translate(flt "x" 0.0, flt "y" 0.0, flt "z" 0.0)
-                | "Rotate" -> Rotate("Z", flt "angle" 0.0)
+                | "Translate" -> Translate(str "child", flt "x" 0.0, flt "y" 0.0, flt "z" 0.0)
+                | "Rotate" -> Rotate(str "child", flt "ax" 0.0, flt "ay" 0.0, flt "az" 1.0, flt "angle" 0.0)
                 | "Move" -> ActionKind.Move(str "child", str "frame")
                 | "Union" -> Union(str "a", str "b", flt "radius" 0.0)
                 | "Subtract" -> Subtract(str "a", str "b", flt "radius" 0.0)
@@ -260,4 +261,4 @@ module Palette =
                 | _ -> Origin
 
             let id = kind.ToLowerInvariant() + "_" + idSuffix
-            Some { Id = id; Name = None; Kind = actionKind; Visible = true; Children = [] }
+            Some { Id = id; Name = None; Kind = actionKind; Visible = true }

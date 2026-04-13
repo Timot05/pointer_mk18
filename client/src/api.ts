@@ -9,7 +9,6 @@ export interface Action {
   name: string | null;
   kind: ActionKind;
   visible: boolean;
-  children: string[];
 }
 
 export type ActionKind =
@@ -18,8 +17,8 @@ export type ActionKind =
   | { case: "Sphere"; radius: number }
   | { case: "Box"; width: number; height: number; depth: number }
   | { case: "HalfPlane"; axis: string; offset: number; flip: boolean }
-  | { case: "Translate"; x: number; y: number; z: number }
-  | { case: "Rotate"; axis: string; angle: number }
+  | { case: "Translate"; child: string | null; x: number; y: number; z: number }
+  | { case: "Rotate"; child: string | null; ax: number; ay: number; az: number; angle: number }
   | { case: "Move"; child: string | null; frame: string | null }
   | { case: "Union"; a: string | null; b: string | null; radius: number }
   | { case: "Subtract"; a: string | null; b: string | null; radius: number }
@@ -81,6 +80,13 @@ export async function addAction(action: Action): Promise<Document> {
 
 export async function deleteAction(id: string): Promise<Document> {
   return request(`/document/action/${id}`, { method: "DELETE" });
+}
+
+export async function reorderActions(ids: string[]): Promise<Document> {
+  return request("/document/reorder", {
+    method: "PUT",
+    body: JSON.stringify(ids),
+  });
 }
 
 // ── Palette ───────────────────────────────────────────────────────────

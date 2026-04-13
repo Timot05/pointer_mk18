@@ -26,7 +26,7 @@ function kindSubtitle(kind: ActionKind): string {
     case "Translate":
       return `${kind.x}, ${kind.y}, ${kind.z}`;
     case "Rotate":
-      return `${kind.axis} ${kind.angle}\u00B0`;
+      return `${kind.angle}\u00B0`;
     case "Thicken":
       return `${kind.amount}`;
     case "Shell":
@@ -97,6 +97,7 @@ export type OnParamChange = (actionId: string, key: string, value: number | stri
 export type OnParamRapid = (actionId: string, key: string, value: number | string | boolean) => void;
 export type OnAddAction = (kindCase: string) => void;
 export type OnOpenPalette = () => void;
+export type OnReorder = (ids: string[]) => void;
 
 export interface RenderCallbacks {
   onSelect: OnSelect;
@@ -105,6 +106,7 @@ export interface RenderCallbacks {
   onParamRapid: OnParamRapid;
   onAddAction: OnAddAction;
   onOpenPalette: OnOpenPalette;
+  onReorder: OnReorder;
 }
 
 // ── Action templates for the "+" dropdown ─────────────────────────────
@@ -182,9 +184,90 @@ export function render(doc: Document, cb: RenderCallbacks): void {
   left.appendChild(leftHeader);
 
   const list = el("div", "actions-list");
-  for (const action of doc.actions) {
-    list.appendChild(renderActionRow(action, doc.selectedId, cb));
+  const rows: HTMLElement[] = [];
+  let dragIndex: number | null = null;
+  let dropIndex: number | null = null;
+  let dropPos: "before" | "after" = "after";
+
+  function clearDropIndicators() {
+    for (const r of rows) {
+      r.classList.remove("drop-before", "drop-after");
+    }
   }
+
+  for (let i = 0; i < doc.actions.length; i++) {
+    const action = doc.actions[i];
+    const row = renderActionRow(action, doc.selectedId, cb);
+
+    if (action.kind.case !== "Origin") {
+      row.draggable = true;
+      row.addEventListener("dragstart", (e) => {
+        dragIndex = i;
+        e.dataTransfer!.effectAllowed = "move";
+        e.dataTransfer!.setData("text/plain", String(i));
+        requestAnimationFrame(() => row.classList.add("is-dragging"));
+      });
+    }
+
+    row.addEventListener("dragover", (e) => {
+      if (dragIndex == null || dragIndex === i) { dropIndex = null; clearDropIndicators(); return; }
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = "move";
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      if (action.kind.case === "Origin" && before) { dropIndex = null; clearDropIndicators(); return; }
+      dropPos = before ? "before" : "after";
+      dropIndex = i;
+      clearDropIndicators();
+      row.classList.add(before ? "drop-before" : "drop-after");
+    });
+
+    row.addEventListener("dragleave", (e) => {
+      if ((e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) return;
+    });
+
+    rows.push(row);
+    list.appendChild(row);
+  }
+
+  // Drop in empty space → append to end
+  list.addEventListener("dragover", (e) => {
+    if (dragIndex == null) return;
+    if ((e.target as HTMLElement).closest(".action-row")) return;
+    e.preventDefault();
+    e.dataTransfer!.dropEffect = "move";
+    const last = rows.length - 1;
+    if (last < 0) return;
+    dropIndex = last;
+    dropPos = "after";
+    clearDropIndicators();
+    rows[last].classList.add("drop-after");
+  });
+
+  list.addEventListener("drop", (e) => {
+    e.preventDefault();
+    clearDropIndicators();
+    for (const r of rows) r.classList.remove("is-dragging");
+    if (dragIndex == null || dropIndex == null) { dragIndex = null; dropIndex = null; return; }
+
+    const ids = doc.actions.map((a) => a.id);
+    const [moved] = ids.splice(dragIndex, 1);
+    let target = dropIndex + (dropPos === "after" ? 1 : 0);
+    if (dragIndex < target) target -= 1;
+    ids.splice(target, 0, moved);
+
+    dragIndex = null;
+    dropIndex = null;
+    cb.onReorder(ids);
+  });
+
+  list.addEventListener("dragend", () => {
+    dragIndex = null;
+    dropIndex = null;
+    clearDropIndicators();
+    for (const r of rows) r.classList.remove("is-dragging");
+  });
+
   left.appendChild(list);
   layout.appendChild(left);
 
@@ -309,15 +392,17 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
       break;
 
     case "Translate":
-      strip.appendChild(controlRef("child", null, refOpts, selected.id, "child", cb));
+      strip.appendChild(controlRef("child", kind.child, refOpts, selected.id, "child", cb));
       strip.appendChild(controlDrag("x", kind.x, selected.id, "x", cb));
       strip.appendChild(controlDrag("y", kind.y, selected.id, "y", cb));
       strip.appendChild(controlDrag("z", kind.z, selected.id, "z", cb));
       break;
 
     case "Rotate":
-      strip.appendChild(controlRef("child", null, refOpts, selected.id, "child", cb));
-      strip.appendChild(controlSelect("axis", kind.axis, ["X", "Y", "Z"], selected.id, "axis", cb));
+      strip.appendChild(controlRef("child", kind.child, refOpts, selected.id, "child", cb));
+      strip.appendChild(controlDrag("ax", kind.ax, selected.id, "ax", cb));
+      strip.appendChild(controlDrag("ay", kind.ay, selected.id, "ay", cb));
+      strip.appendChild(controlDrag("az", kind.az, selected.id, "az", cb));
       strip.appendChild(controlDrag("angle", kind.angle, selected.id, "angle", cb));
       break;
 

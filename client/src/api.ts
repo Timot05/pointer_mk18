@@ -29,11 +29,18 @@ export type ActionKind =
   | { case: "Shell"; child: string | null; thickness: number }
   | { case: "Mesh"; child: string | null; size: number; resolution: number };
 
+export interface ActionError {
+  actionId: string;
+  key: string;
+  error: string;
+}
+
 export interface Document {
   name: string;
   actions: Action[];
   selectedId: string | null;
   refOptions: Record<string, string[]>;
+  errors: ActionError[];
 }
 
 async function request(url: string, opts?: RequestInit): Promise<Document> {

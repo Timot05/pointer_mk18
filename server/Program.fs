@@ -21,13 +21,33 @@ module Program =
         o
 
     let mutable doc = Document.defaultDocument ()
+    let mutable compiled = Pipeline.compile doc.Actions
     let mutable paletteSession = Palette.empty
 
+    let recompile () =
+        compiled <- Pipeline.compile doc.Actions
+
+    let typeMap () =
+        match compiled with
+        | Ok r -> r.TypeMap
+        | Error _ -> Map.empty
+
+    let formatErrors (errs: TypeError list) =
+        errs |> List.map (fun e ->
+            match e with
+            | MissingRef(id, key) -> {| ActionId = id; Key = key; Error = "missing" |}
+            | RefNotFound(id, key, target) -> {| ActionId = id; Key = key; Error = $"not found: {target}" |}
+            | ForwardRef(id, key, target) -> {| ActionId = id; Key = key; Error = $"forward ref: {target}" |}
+            | TypeMismatch(id, key, expected, got) ->
+                let exp = expected |> List.map string |> String.concat "|"
+                {| ActionId = id; Key = key; Error = $"expected {exp}, got {got}" |})
+
     let json_payload () =
-        let typeMap =
-            match TypeCheck.typecheck doc.Actions with
-            | Ok typed -> typed |> List.map (fun t -> t.Id, t.Output) |> Map.ofList
-            | Error _ -> Map.empty
+        let tm = typeMap ()
+        let errors =
+            match compiled with
+            | Ok _ -> []
+            | Error errs -> formatErrors errs
 
         let refOptions =
             match doc.SelectedId with
@@ -42,30 +62,33 @@ module Program =
                     accepted |> Map.map (fun _key types ->
                         before
                         |> List.choose (fun a ->
-                            match Map.tryFind a.Id typeMap with
+                            match Map.tryFind a.Id tm with
                             | Some t when List.contains t types -> Some a.Id
                             | _ -> None))
 
-        {| Name = doc.Name; Actions = doc.Actions; SelectedId = doc.SelectedId; RefOptions = refOptions |}
+        {| Name = doc.Name; Actions = doc.Actions; SelectedId = doc.SelectedId
+           RefOptions = refOptions; Errors = errors |}
 
     let json () =
         Results.Content(JsonSerializer.Serialize(json_payload (), jsonOpts), "application/json")
 
     let paletteJson () =
-        let state = Palette.toState paletteSession doc
+        let state = Palette.toState paletteSession (typeMap ()) doc
         Results.Content(JsonSerializer.Serialize(state, jsonOpts), "application/json")
 
     let paletteAndDoc () =
-        let state = Palette.toState paletteSession doc
+        let state = Palette.toState paletteSession (typeMap ()) doc
         let combined = {| Palette = state; Document = json_payload () |}
         Results.Content(JsonSerializer.Serialize(combined, jsonOpts), "application/json")
 
     let mutate f =
         doc <- f doc
+        recompile ()
         json ()
 
     let mutateSilent f =
         doc <- f doc
+        recompile ()
         Results.NoContent()
 
     let readBody<'T> (ctx: HttpContext) =
@@ -129,11 +152,12 @@ module Program =
 
         /// If done, build action + return document; otherwise return palette state.
         let maybeBuild () =
-            let state = Palette.toState paletteSession doc
+            let state = Palette.toState paletteSession (typeMap ()) doc
             if state.Mode = "done" then
                 match Palette.buildAction paletteSession (Guid.NewGuid().ToString("N").[..5]) with
                 | Some action ->
                     doc <- Document.addAction action doc
+                    recompile ()
                     paletteSession <- Palette.empty
                     paletteAndDoc ()
                 | None ->
@@ -152,7 +176,7 @@ module Program =
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
                 let q = body.GetProperty("query").GetString()
                 paletteSession <- Palette.setQuery q paletteSession
-                let state = Palette.toState paletteSession doc
+                let state = Palette.toState paletteSession (typeMap ()) doc
                 Results.Content(JsonSerializer.Serialize(state.Items, jsonOpts), "application/json"))) |> ignore
 
         app.MapPost("/api/palette/query",

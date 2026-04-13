@@ -2,7 +2,7 @@
 // Stateless UI renderer — takes a Document, produces DOM
 // ---------------------------------------------------------------------------
 
-import type { Document, Action, ActionKind } from "./api";
+import type { Document, Action, ActionKind, ActionError } from "./api";
 import { renderIcon, renderIconForKind } from "./icons";
 import { el, setupDraggable } from "./dom";
 
@@ -197,7 +197,8 @@ export function render(doc: Document, cb: RenderCallbacks): void {
 
   for (let i = 0; i < doc.actions.length; i++) {
     const action = doc.actions[i];
-    const row = renderActionRow(action, doc.selectedId, cb);
+    const hasError = (doc.errors ?? []).some((e) => e.actionId === action.id);
+    const row = renderActionRow(action, doc.selectedId, hasError, cb);
 
     if (action.kind.case !== "Origin") {
       row.draggable = true;
@@ -291,11 +292,13 @@ export function render(doc: Document, cb: RenderCallbacks): void {
 function renderActionRow(
   action: Action,
   selectedId: string | null,
+  hasError: boolean,
   cb: RenderCallbacks
 ): HTMLElement {
   const row = el("div", "action-row");
   if (action.id === selectedId) row.classList.add("is-selected");
   if (action.kind.case === "Origin") row.classList.add("is-fixed");
+  if (hasError) row.classList.add("has-error");
   row.addEventListener("click", () => cb.onSelect(action.id));
 
   const main = el("div", "action-main");

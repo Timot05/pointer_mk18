@@ -133,11 +133,7 @@ module Palette =
             else templateLabels |> List.filter (fuzzyMatch query)
         labels |> List.map (fun l -> { Id = l; Label = l; Kind = l })
 
-    let private filterActions (query: string) (accepts: FieldType list) (doc: Document) : PaletteItem list =
-        let typeMap =
-            match TypeCheck.typecheck doc.Actions with
-            | Ok typed -> typed |> List.map (fun t -> t.Id, t.Output) |> Map.ofList
-            | Error _ -> Map.empty
+    let private filterActions (query: string) (accepts: FieldType list) (typeMap: Map<ActionId, FieldType>) (doc: Document) : PaletteItem list =
         doc.Actions
         |> List.filter (fun a ->
             a.Kind <> Origin &&
@@ -166,7 +162,7 @@ module Palette =
     let empty : PaletteSession =
         { PickedKind = None; Steps = []; StepIndex = -1; Values = Map.empty; Query = "" }
 
-    let toState (session: PaletteSession) (doc: Document) : PaletteState =
+    let toState (session: PaletteSession) (typeMap: Map<ActionId, FieldType>) (doc: Document) : PaletteState =
         let closed =
             { IsOpen = false; Mode = "closed"; PickedKind = None; Chips = []
               Prompt = ""; Items = []; ScalarFields = []; HintBar = [] }
@@ -192,7 +188,7 @@ module Palette =
                 | RefStep(_, label, accepts) ->
                     { IsOpen = true; Mode = "ref"; PickedKind = Some kind; Chips = chips
                       Prompt = $"Pick \"{label}\" for {kind}\u2026"
-                      Items = filterActions session.Query accepts doc
+                      Items = filterActions session.Query accepts typeMap doc
                       ScalarFields = []
                       HintBar = [ "\u2191\u2193 navigate"; "\u21B5 next"; "\u2318\u21B5 create now"; "\u232B back"; "esc cancel" ] }
                 | ScalarsStep(_, fields) ->

@@ -4,6 +4,7 @@
 
 import type { Document, Action, ActionKind } from "./api";
 import { renderIcon, renderIconForKind } from "./icons";
+import { el, setupDraggable } from "./dom";
 
 // ── Kind helpers ──────────────────────────────────────────────────────
 
@@ -462,75 +463,3 @@ function controlCheck(
   return row;
 }
 
-// ── Draggable value interaction ───────────────────────────────────────
-
-function setupDraggable(
-  el: HTMLElement,
-  initial: number,
-  onRapid: (v: number) => void,
-  onCommit: (v: number) => void
-) {
-  let startX = 0;
-  let startVal = initial;
-  let dragging = false;
-  let lastVal = initial;
-
-  el.addEventListener("pointerdown", (e) => {
-    startX = e.clientX;
-    startVal = initial;
-    dragging = true;
-    lastVal = initial;
-    el.classList.add("is-dragging");
-    el.setPointerCapture(e.pointerId);
-  });
-
-  el.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    const dx = e.clientX - startX;
-    const step = e.shiftKey ? 0.1 : 1.0;
-    const newVal = Math.round((startVal + dx * step) * 10) / 10;
-    el.textContent = newVal.toFixed(1);
-    lastVal = newVal;
-    onRapid(newVal);
-  });
-
-  el.addEventListener("pointerup", () => {
-    if (!dragging) return;
-    dragging = false;
-    el.classList.remove("is-dragging");
-    onCommit(lastVal);
-  });
-
-  // double-click to type
-  el.addEventListener("dblclick", () => {
-    const input = document.createElement("input");
-    input.type = "number";
-    input.className = "control-value-input";
-    input.value = el.textContent ?? "";
-    el.replaceWith(input);
-    input.focus();
-    input.select();
-
-    const commit = () => {
-      const v = parseFloat(input.value) || initial;
-      onCommit(v);
-    };
-    input.addEventListener("blur", commit);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") input.blur();
-      if (e.key === "Escape") {
-        input.value = initial.toFixed(1);
-        input.blur();
-      }
-    });
-  });
-}
-
-// ── DOM helpers ───────────────────────────────────────────────────────
-
-function el(tag: string, className: string, text?: string): HTMLElement {
-  const e = document.createElement(tag);
-  if (className) e.className = className;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}

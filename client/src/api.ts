@@ -41,6 +41,7 @@ async function request(url: string, opts?: RequestInit): Promise<Document> {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });
+  if (!res.ok) throw new Error(`${opts?.method ?? "GET"} ${url}: ${res.status}`);
   return res.json();
 }
 
@@ -50,13 +51,6 @@ export async function getDocument(): Promise<Document> {
 
 export async function selectAction(id: string): Promise<Document> {
   return request(`/document/select/${id}`, { method: "PUT" });
-}
-
-export async function updateAction(action: Action): Promise<Document> {
-  return request(`/document/action/${action.id}`, {
-    method: "PUT",
-    body: JSON.stringify(action),
-  });
 }
 
 export async function patchActionParam(id: string, key: string, value: number | string | boolean): Promise<Document> {
@@ -87,13 +81,6 @@ export async function addAction(action: Action): Promise<Document> {
 
 export async function deleteAction(id: string): Promise<Document> {
   return request(`/document/action/${id}`, { method: "DELETE" });
-}
-
-export async function reorderActions(ids: string[]): Promise<Document> {
-  return request("/document/reorder", {
-    method: "PUT",
-    body: JSON.stringify(ids),
-  });
 }
 
 // ── Palette ───────────────────────────────────────────────────────────
@@ -137,6 +124,7 @@ async function paletteRequest(url: string, body?: object): Promise<PaletteState 
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (!res.ok) throw new Error(`POST ${url}: ${res.status}`);
   return res.json();
 }
 
@@ -154,6 +142,7 @@ export async function paletteQueryRapid(query: string): Promise<PaletteItem[]> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query }),
   });
+  if (!res.ok) throw new Error(`POST /palette/query/rapid: ${res.status}`);
   return res.json();
 }
 

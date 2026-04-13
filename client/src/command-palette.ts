@@ -8,23 +8,18 @@ import {
   paletteScalarsCommit, paletteFinish, paletteBack, paletteClose,
   type PaletteItem, type PaletteState, type PaletteAndDoc, type Document,
 } from "./api";
+import { el, setupDraggable } from "./dom";
 
 let backdrop: HTMLElement | null = null;
 let activeIndex = 0;
 let currentItems: PaletteItem[] = [];
 let onDocUpdate: ((doc: Document) => void) | null = null;
+let cleanupKeydown: (() => void) | null = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
 function isPaletteAndDoc(r: PaletteState | PaletteAndDoc): r is PaletteAndDoc {
   return "document" in r;
-}
-
-function el(tag: string, className: string, text?: string): HTMLElement {
-  const e = document.createElement(tag);
-  if (className) e.className = className;
-  if (text !== undefined) e.textContent = text;
-  return e;
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -50,6 +45,10 @@ export async function close(): Promise<void> {
 // ── Mount / unmount ───────────────────────────────────────────────────
 
 function unmount() {
+  if (cleanupKeydown) {
+    cleanupKeydown();
+    cleanupKeydown = null;
+  }
   if (backdrop) {
     backdrop.remove();
     backdrop = null;
@@ -123,7 +122,11 @@ function mount(state: PaletteState) {
       const cell = el("div", "value-cell");
       cell.appendChild(el("span", "value-axis", field.label));
       const valSpan = el("span", "control-value", field.value.toFixed(1));
-      setupPaletteDraggable(valSpan, field.value, field.key);
+      setupDraggable(
+        valSpan, field.value,
+        (v) => paletteScalarRapid(field.key, v),
+        (v) => paletteScalarRapid(field.key, v)
+      );
       cell.appendChild(valSpan);
       valRow.appendChild(cell);
     }
@@ -201,15 +204,12 @@ function mount(state: PaletteState) {
     function onScalarKeydown(e: KeyboardEvent) {
       if (e.key === "Escape") {
         e.preventDefault();
-        document.removeEventListener("keydown", onScalarKeydown);
         close();
       } else if (e.key === "Backspace") {
         e.preventDefault();
-        document.removeEventListener("keydown", onScalarKeydown);
         paletteBack().then((r) => { activeIndex = 0; mount(r as PaletteState); });
       } else if (e.key === "Enter") {
         e.preventDefault();
-        document.removeEventListener("keydown", onScalarKeydown);
         if (e.metaKey || e.ctrlKey) {
           paletteFinish().then(handleResponse);
         } else {
@@ -218,14 +218,7 @@ function mount(state: PaletteState) {
       }
     }
     document.addEventListener("keydown", onScalarKeydown);
-    // Clean up if palette gets unmounted externally
-    const observer = new MutationObserver(() => {
-      if (!backdrop || !document.body.contains(backdrop)) {
-        document.removeEventListener("keydown", onScalarKeydown);
-        observer.disconnect();
-      }
-    });
-    observer.observe(document.body, { childList: true });
+    cleanupKeydown = () => document.removeEventListener("keydown", onScalarKeydown);
   }
 
   backdrop.addEventListener("click", (e) => {
@@ -268,57 +261,3 @@ function patchResults(items: PaletteItem[]) {
   old.replaceWith(buildResultsList(items));
 }
 
-// ── Draggable value for palette scalars ───────────────────────────────
-
-function setupPaletteDraggable(elem: HTMLElement, initial: number, key: string) {
-  let startX = 0;
-  let startVal = initial;
-  let dragging = false;
-
-  elem.addEventListener("pointerdown", (e) => {
-    startX = e.clientX;
-    startVal = initial;
-    dragging = true;
-    elem.classList.add("is-dragging");
-    elem.setPointerCapture(e.pointerId);
-  });
-
-  elem.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    const dx = e.clientX - startX;
-    const step = e.shiftKey ? 0.1 : 1.0;
-    const newVal = Math.round((startVal + dx * step) * 10) / 10;
-    elem.textContent = newVal.toFixed(1);
-    // Fire-and-forget to backend
-    paletteScalarRapid(key, newVal);
-  });
-
-  elem.addEventListener("pointerup", () => {
-    dragging = false;
-    elem.classList.remove("is-dragging");
-  });
-
-  // Double-click to type
-  elem.addEventListener("dblclick", () => {
-    const inp = document.createElement("input");
-    inp.type = "number";
-    inp.className = "control-value-input";
-    inp.value = elem.textContent ?? "";
-    elem.replaceWith(inp);
-    inp.focus();
-    inp.select();
-    const commit = () => {
-      const v = parseFloat(inp.value) || initial;
-      paletteScalarRapid(key, v);
-      // Replace back with span
-      const newSpan = el("span", "control-value", v.toFixed(1));
-      inp.replaceWith(newSpan);
-      setupPaletteDraggable(newSpan, v, key);
-    };
-    inp.addEventListener("blur", commit);
-    inp.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") inp.blur();
-      if (e.key === "Escape") { inp.value = initial.toFixed(1); inp.blur(); }
-    });
-  });
-}

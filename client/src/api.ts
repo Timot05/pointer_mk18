@@ -95,3 +95,92 @@ export async function reorderActions(ids: string[]): Promise<Document> {
     body: JSON.stringify(ids),
   });
 }
+
+// ── Palette ───────────────────────────────────────────────────────────
+
+export interface PaletteItem {
+  id: string;
+  label: string;
+  kind: string;
+}
+
+export interface PaletteChip {
+  label: string;
+  value: string;
+}
+
+export interface PaletteScalarField {
+  key: string;
+  label: string;
+  value: number;
+}
+
+export interface PaletteState {
+  isOpen: boolean;
+  mode: string; // "closed" | "command" | "ref" | "scalars" | "done"
+  pickedKind: string | null;
+  chips: PaletteChip[];
+  prompt: string;
+  items: PaletteItem[];
+  scalarFields: PaletteScalarField[];
+  hintBar: string[];
+}
+
+export interface PaletteAndDoc {
+  palette: PaletteState;
+  document: Document;
+}
+
+async function paletteRequest(url: string, body?: object): Promise<PaletteState | PaletteAndDoc> {
+  const res = await fetch(BASE + url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return res.json();
+}
+
+export async function paletteOpen(): Promise<PaletteState> {
+  return paletteRequest("/palette/open") as Promise<PaletteState>;
+}
+
+export async function paletteQuery(query: string): Promise<PaletteState> {
+  return paletteRequest("/palette/query", { query }) as Promise<PaletteState>;
+}
+
+export async function paletteQueryRapid(query: string): Promise<PaletteItem[]> {
+  const res = await fetch(BASE + "/palette/query/rapid", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+  return res.json();
+}
+
+export async function palettePick(id: string): Promise<PaletteState | PaletteAndDoc> {
+  return paletteRequest("/palette/pick", { id });
+}
+
+export function paletteScalarRapid(key: string, value: number): void {
+  fetch(BASE + "/palette/scalar/rapid", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, value }),
+  });
+}
+
+export async function paletteScalarsCommit(): Promise<PaletteState | PaletteAndDoc> {
+  return paletteRequest("/palette/scalars/commit");
+}
+
+export async function paletteFinish(): Promise<PaletteState | PaletteAndDoc> {
+  return paletteRequest("/palette/finish");
+}
+
+export async function paletteBack(): Promise<PaletteState> {
+  return paletteRequest("/palette/back") as Promise<PaletteState>;
+}
+
+export async function paletteClose(): Promise<void> {
+  await fetch(BASE + "/palette/close", { method: "POST" });
+}

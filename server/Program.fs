@@ -21,8 +21,18 @@ module Program =
         o
 
     let mutable doc = Document.defaultDocument ()
+    let mutable paletteSession = Palette.empty
 
     let json () = Results.Content(JsonSerializer.Serialize(doc, jsonOpts), "application/json")
+
+    let paletteJson () =
+        let state = Palette.toState paletteSession doc
+        Results.Content(JsonSerializer.Serialize(state, jsonOpts), "application/json")
+
+    let paletteAndDoc () =
+        let state = Palette.toState paletteSession doc
+        let combined = {| Palette = state; Document = doc |}
+        Results.Content(JsonSerializer.Serialize(combined, jsonOpts), "application/json")
 
     let mutate f =
         doc <- f doc
@@ -88,6 +98,82 @@ module Program =
                 let ids = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
                 let idList = JsonSerializer.Deserialize<string array>(ids.GetRawText()) |> Array.toList
                 mutate (Document.reorder idList))) |> ignore
+
+        // ── Palette endpoints ──────────────────────────────────────────
+
+        /// If done, build action + return document; otherwise return palette state.
+        let maybeBuild () =
+            let state = Palette.toState paletteSession doc
+            if state.Mode = "done" then
+                match Palette.buildAction paletteSession (Guid.NewGuid().ToString("N").[..5]) with
+                | Some action ->
+                    doc <- Document.addAction action doc
+                    paletteSession <- Palette.empty
+                    paletteAndDoc ()
+                | None ->
+                    paletteSession <- Palette.empty
+                    paletteJson ()
+            else
+                paletteJson ()
+
+        app.MapPost("/api/palette/open",
+            Func<IResult>(fun () ->
+                paletteSession <- Palette.openSession ()
+                paletteJson ())) |> ignore
+
+        app.MapPost("/api/palette/query/rapid",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let q = body.GetProperty("query").GetString()
+                paletteSession <- Palette.setQuery q paletteSession
+                let state = Palette.toState paletteSession doc
+                Results.Content(JsonSerializer.Serialize(state.Items, jsonOpts), "application/json"))) |> ignore
+
+        app.MapPost("/api/palette/query",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let q = body.GetProperty("query").GetString()
+                paletteSession <- Palette.setQuery q paletteSession
+                paletteJson ())) |> ignore
+
+        app.MapPost("/api/palette/pick",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let id = body.GetProperty("id").GetString()
+                match paletteSession.PickedKind with
+                | None -> paletteSession <- Palette.pickCommand id paletteSession
+                | Some _ -> paletteSession <- Palette.pickItem id paletteSession
+                maybeBuild ())) |> ignore
+
+        // Fire-and-forget: update a scalar field during drag (204 No Content)
+        app.MapPost("/api/palette/scalar/rapid",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let key = body.GetProperty("key").GetString()
+                let value = body.GetProperty("value").GetDouble()
+                paletteSession <- Palette.setScalarField key value paletteSession
+                Results.NoContent())) |> ignore
+
+        // Commit the current scalar group and advance
+        app.MapPost("/api/palette/scalars/commit",
+            Func<IResult>(fun () ->
+                paletteSession <- Palette.commitScalars paletteSession
+                maybeBuild ())) |> ignore
+
+        app.MapPost("/api/palette/finish",
+            Func<IResult>(fun () ->
+                paletteSession <- Palette.skipToEnd paletteSession
+                maybeBuild ())) |> ignore
+
+        app.MapPost("/api/palette/back",
+            Func<IResult>(fun () ->
+                paletteSession <- Palette.back paletteSession
+                paletteJson ())) |> ignore
+
+        app.MapPost("/api/palette/close",
+            Func<IResult>(fun () ->
+                paletteSession <- Palette.empty
+                Results.NoContent())) |> ignore
 
         app.Run("http://localhost:5222")
         0

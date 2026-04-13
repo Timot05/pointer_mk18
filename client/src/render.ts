@@ -95,6 +95,7 @@ export type OnToggleVisible = (id: string) => void;
 export type OnParamChange = (actionId: string, key: string, value: number | string | boolean) => void;
 export type OnParamRapid = (actionId: string, key: string, value: number | string | boolean) => void;
 export type OnAddAction = (kindCase: string) => void;
+export type OnOpenPalette = () => void;
 
 export interface RenderCallbacks {
   onSelect: OnSelect;
@@ -102,6 +103,7 @@ export interface RenderCallbacks {
   onParamChange: OnParamChange;
   onParamRapid: OnParamRapid;
   onAddAction: OnAddAction;
+  onOpenPalette: OnOpenPalette;
 }
 
 // ── Action templates for the "+" dropdown ─────────────────────────────
@@ -141,6 +143,11 @@ export function render(doc: Document, cb: RenderCallbacks): void {
   const left = el("div", "panel");
   const leftHeader = el("div", "panel-header");
   leftHeader.appendChild(el("h2", "", "Actions"));
+
+  const paletteBtn = el("button", "palette-hint-btn");
+  paletteBtn.innerHTML = '<kbd>\u2318</kbd><span class="palette-hint-plus">+</span><kbd>K</kbd> <span>palette</span>';
+  paletteBtn.addEventListener("click", () => cb.onOpenPalette());
+  leftHeader.appendChild(paletteBtn);
 
   const addWrapper = el("div", "add-wrapper");
   const addBtn = el("button", "btn-add", "+");

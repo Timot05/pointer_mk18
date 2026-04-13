@@ -1,0 +1,16 @@
+{
+  "name": "pointer-mk18-client",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2",
+    "vite": "^8.0.8"
+  },
+  "dependencies": {
+    "@carbon/icons": "^11.78.0"
+  }
+}

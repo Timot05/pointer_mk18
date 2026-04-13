@@ -1,0 +1,588 @@
+:root {
+  color-scheme: light;
+  --bg-page: #FEFCF3;
+  --bg-surface: #F5F0E4;
+  --bg-surface-hover: #E8E3D6;
+  --bg-surface-active: #EDE8D8;
+  --border: #D5D0C4;
+  --text-primary: #333;
+  --text-secondary: #555;
+  --text-muted: #666;
+  --text-faint: #999;
+  --text-disabled: #bbb;
+  --selection: #D5D0C480;
+  --accent: #80BE8C;
+  --accent-soft: #e8ede9;
+  --warning: #c49b2a;
+
+  --error: #a04040;
+  --error-soft: #f6e3df;
+  --error-soft-hover: #f0d6d0;
+  --error-border: #d9b5ad;
+  --error-text: #7e4039;
+  --error-text-faint: #a06b63;
+
+  --node-primitive: #5B8DEF;
+  --node-transform: #E8913A;
+  --node-boolean: #B06AD9;
+  --node-modifier: #4AADAA;
+  --node-sketch: #D9596A;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Helvetica Neue", sans-serif;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-page);
+}
+
+/* ── App shell ─────────────────────────────────────────────────────── */
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Top bar ───────────────────────────────────────────────────────── */
+
+.topbar {
+  flex-shrink: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 12px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.topbar-logo {
+  color: #55775C;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.topbar-spacer {
+  flex: 1;
+}
+
+.topbar-button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+
+.topbar-button:hover {
+  color: var(--text-primary);
+}
+
+/* ── Layout ────────────────────────────────────────────────────────── */
+
+.layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 260px 1fr 300px;
+}
+
+.panel {
+  min-width: 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg-page);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel:last-child {
+  border-right: none;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ── Viewport placeholder ──────────────────────────────────────────── */
+
+.panel-center {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.viewport-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-family: "IBM Plex Mono", monospace;
+}
+
+/* ── Actions list (left panel) ─────────────────────────────────────── */
+
+.actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.action-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  border-radius: 2px;
+  background: transparent;
+  border: 1px solid transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+}
+
+.action-row:active {
+  cursor: grabbing;
+}
+
+.action-row.is-fixed {
+  cursor: default;
+}
+
+.action-row.is-fixed:active {
+  cursor: default;
+}
+
+.action-row.is-dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+.action-row.drop-before::before,
+.action-row.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.action-row.drop-before::before {
+  top: -2px;
+}
+
+.action-row.drop-after::after {
+  bottom: -2px;
+}
+
+.action-row:hover {
+  background: var(--bg-surface);
+}
+
+.action-row.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.action-row.has-error {
+  background: var(--error-soft);
+  border-color: var(--error-border);
+}
+
+.action-row.has-error:hover {
+  background: var(--error-soft-hover);
+}
+
+.action-row.has-error.is-selected {
+  background: var(--error-soft-hover);
+  border-color: var(--error);
+}
+
+.action-row.has-error .action-title {
+  color: var(--error-text);
+}
+
+.action-row.has-error .action-subtitle {
+  color: var(--error-text);
+}
+
+.action-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 3px 4px 3px 7px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.action-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.action-info {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.action-title {
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.action-subtitle {
+  font-size: 9px;
+  color: var(--text-faint);
+}
+
+.action-error-badge {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--bg-page);
+  background: var(--error);
+  line-height: 1;
+}
+
+.toggle-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: 0 1px;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  color: var(--border);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.toggle-btn:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-muted);
+}
+
+.toggle-btn.is-active {
+  color: var(--accent);
+}
+
+.toggle-btn.is-active:hover {
+  background: var(--bg-surface-hover);
+  color: #55775C;
+}
+
+/* ── Add button + dropdown ─────────────────────────────────────────── */
+
+.add-wrapper {
+  position: relative;
+}
+
+.btn-add {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  background: var(--bg-page);
+  cursor: pointer;
+}
+
+.btn-add:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 160px;
+  background: var(--bg-page);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: none;
+  border: none;
+  border-radius: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+.dropdown-item:hover {
+  background: var(--bg-surface);
+}
+
+.dropdown-item svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* ── Params panel (right panel) ────────────────────────────────────── */
+
+.selection-empty {
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
+  padding: 32px 16px;
+}
+
+.selection-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.header-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.header-kind {
+  font-size: 10px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.header-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.param-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 8px 12px 4px;
+}
+
+.controls-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.control-name {
+  color: var(--text-secondary);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.control-value {
+  color: var(--text-primary);
+  cursor: ew-resize;
+  user-select: none;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+}
+
+.control-value:hover {
+  background: var(--bg-surface-hover);
+}
+
+.control-value.is-dragging {
+  background: var(--bg-surface-active);
+}
+
+.control-value-input {
+  width: 80px;
+  font: 13px "IBM Plex Mono", monospace;
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  outline: none;
+  background: var(--bg-page);
+  color: var(--text-primary);
+}
+
+.control-select {
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.control-select:hover {
+  background: var(--bg-surface-hover);
+}
+
+.control-ref {
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.control-ref:hover {
+  background: var(--bg-surface-hover);
+}
+
+.controls-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  padding: 6px 12px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.03em;
+}
+
+.control-check {
+  gap: 4px;
+}
+
+.control-check input[type="checkbox"] {
+  accent-color: var(--accent);
+  margin: 0;
+  cursor: pointer;
+}
+
+.control-check label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.action-icon.large {
+  width: 20px;
+  height: 20px;
+}
+
+/* ── Keyboard hints ────────────────────────────────────────────────── */
+
+.kbd-hint {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-page);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+
+/* ── Loading ───────────────────────────────────────────────────────── */
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  color: var(--text-faint);
+  font-size: 14px;
+}

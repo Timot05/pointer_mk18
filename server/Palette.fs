@@ -54,14 +54,31 @@ module Palette =
 
     // ── Step definitions per action kind ──────────────────────────────
 
+    /// Build a dummy ActionKind from a kind name to look up accepted input types.
+    let private dummyKind (kind: string) : ActionKind option =
+        match kind with
+        | "Translate" -> Some (Translate(None, 0.0, 0.0, 0.0))
+        | "Rotate" -> Some (Rotate(None, 0.0, 0.0, 1.0, 0.0))
+        | "Move" -> Some (ActionKind.Move(None, None))
+        | "Union" -> Some (Union(None, None, 0.0))
+        | "Subtract" -> Some (Subtract(None, None, 0.0))
+        | "Intersect" -> Some (Intersect(None, None, 0.0))
+        | "FromSketch" -> Some (FromSketch(None, true, false))
+        | "Thicken" -> Some (Thicken(None, 0.0))
+        | "Shell" -> Some (Shell(None, 0.0))
+        | "Mesh" -> Some (Mesh(None, 0.0, 0))
+        | _ -> None
+
     let private stepsFor (kind: string) : PaletteStep list =
-        let ref' key label accepts = RefStep(key, label, accepts)
+        let accepted =
+            dummyKind kind
+            |> Option.map TypeCheck.acceptedInputs
+            |> Option.defaultValue Map.empty
+        let ref' key label =
+            let types = accepted |> Map.tryFind key |> Option.defaultValue []
+            RefStep(key, label, types)
         let scalars label fields = ScalarsStep(label, fields)
         let s key label def = { Key = key; Label = label; Default = def }
-        let fieldOrFrame = [ FieldType.Field; FieldType.Frame ]
-        let fieldOnly = [ FieldType.Field ]
-        let sketchOnly = [ FieldType.Sketch ]
-        let frameOnly = [ FieldType.Frame ]
         match kind with
         | "Sphere" ->
             [ scalars "dimensions" [ s "radius" "radius" 8.0 ] ]
@@ -72,27 +89,27 @@ module Palette =
         | "HalfPlane" ->
             [ scalars "offset" [ s "offset" "offset" 0.0 ] ]
         | "Translate" ->
-            [ ref' "child" "from" fieldOrFrame
+            [ ref' "child" "from"
               scalars "offset" [ s "x" "x" 0.0; s "y" "y" 0.0; s "z" "z" 0.0 ] ]
         | "Rotate" ->
-            [ ref' "child" "from" fieldOrFrame
+            [ ref' "child" "from"
               scalars "axis" [ s "ax" "ax" 0.0; s "ay" "ay" 0.0; s "az" "az" 1.0 ]
               scalars "rotation" [ s "angle" "angle" 0.0 ] ]
         | "Move" ->
-            [ ref' "child" "from" fieldOrFrame; ref' "frame" "to frame" frameOnly ]
+            [ ref' "child" "from"; ref' "frame" "to frame" ]
         | "FromSketch" ->
-            [ ref' "child" "sketch" sketchOnly ]
+            [ ref' "child" "sketch" ]
         | "Union" | "Subtract" | "Intersect" ->
-            [ ref' "a" "tool" fieldOnly; ref' "b" "target" fieldOnly
+            [ ref' "a" "tool"; ref' "b" "target"
               scalars "blend" [ s "radius" "blend" 0.0 ] ]
         | "Thicken" ->
-            [ ref' "child" "from" fieldOnly
+            [ ref' "child" "from"
               scalars "amount" [ s "amount" "amount" 2.0 ] ]
         | "Shell" ->
-            [ ref' "child" "from" fieldOnly
+            [ ref' "child" "from"
               scalars "thickness" [ s "thickness" "thickness" 1.0 ] ]
         | "Mesh" ->
-            [ ref' "child" "from" fieldOnly
+            [ ref' "child" "from"
               scalars "mesh" [ s "size" "size" 0.2; s "resolution" "res" 96.0 ] ]
         | _ -> []
 

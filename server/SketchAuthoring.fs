@@ -6,9 +6,16 @@ type SketchUiState =
     { EditMode: bool
       Tool: string
       ToolPoints: LabelPos list
+      EditingDimension: EditingDimension option
       ConstraintPlacementMode: string option
       ConstraintAvailability: Map<string, bool>
       DimensionPlacementAvailability: Map<string, bool> }
+
+and EditingDimension =
+    { SketchId: string
+      ConstraintIndex: int
+      Key: string
+      Value: float }
 
 module SketchAuthoring =
 
@@ -16,6 +23,7 @@ module SketchAuthoring =
         { EditMode = false
           Tool = "none"
           ToolPoints = []
+          EditingDimension = None
           ConstraintPlacementMode = None
           ConstraintAvailability = Map.empty
           DimensionPlacementAvailability = Map.empty }
@@ -137,6 +145,28 @@ module SketchAuthoring =
            Lines = matching |> List.choose (fun (kind, id) -> if kind = "line" then Some id else None)
            Circles = matching |> List.choose (fun (kind, id) -> if kind = "circle" then Some id else None)
            Arcs = matching |> List.choose (fun (kind, id) -> if kind = "arc" then Some id else None) |}
+
+    let tryEditableDimension (sketchId: string) (sketch: ActionSketch) (index: int) =
+        sketch.Constraints
+        |> List.tryItem index
+        |> Option.bind (fun constraint_ ->
+            match constraint_ with
+            | Distance(_, _, distance, _)
+            | FrameDistance(_, _, _, distance, _)
+            | LineDistance(_, _, _, _, _, _, distance, _)
+            | FrameLineDistance(_, _, _, _, _, distance, _)
+            | PointLineDistance(_, _, _, _, distance, _)
+            | FramePointLineDistance(_, _, _, distance, _)
+            | PointCircleDistance(_, _, _, distance, _)
+            | LineCircleDistance(_, _, _, _, _, distance, _)
+            | CircleCircleDistance(_, _, _, _, distance, _, _) ->
+                Some { SketchId = sketchId; ConstraintIndex = index; Key = "distance"; Value = distance }
+            | CircleDiameter(_, _, diameter, _) ->
+                Some { SketchId = sketchId; ConstraintIndex = index; Key = "diameter"; Value = diameter }
+            | Angle(_, _, _, _, _, _, angleDegrees, _, _, _, _) ->
+                Some { SketchId = sketchId; ConstraintIndex = index; Key = "angleDegrees"; Value = angleDegrees }
+            | _ ->
+                None)
 
     let private buildConstraint sketch sketchId kind targets =
         let selection = selectionForSketch sketchId targets
@@ -273,6 +303,7 @@ module SketchAuthoring =
             { EditMode = editMode
               Tool = if editMode then tool else "none"
               ToolPoints = []
+              EditingDimension = None
               ConstraintPlacementMode = if editMode then placementMode else None
               ConstraintAvailability =
                 [ "Coincident"; "Horizontal"; "Vertical"; "Midpoint"; "Parallel"; "Perpendicular"; "Equal"; "Tangent"; "Concentric"; "Fixed" ]

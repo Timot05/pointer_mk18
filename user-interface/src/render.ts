@@ -107,6 +107,9 @@ export type OnSetSketchTool = (tool: string) => void;
 export type OnToggleConstraintPlacement = (kind: string) => void;
 export type OnAddConstraintFromSelection = (kind: string) => void;
 export type OnDeleteSketchConstraint = (index: number) => void;
+export type OnStartEditingDimension = (index: number) => void;
+export type OnCancelEditingDimension = () => void;
+export type OnCommitEditingDimension = (value: number) => void;
 
 export interface RenderCallbacks {
   onSelect: OnSelect;
@@ -125,6 +128,9 @@ export interface RenderCallbacks {
   onToggleConstraintPlacement: OnToggleConstraintPlacement;
   onAddConstraintFromSelection: OnAddConstraintFromSelection;
   onDeleteSketchConstraint: OnDeleteSketchConstraint;
+  onStartEditingDimension: OnStartEditingDimension;
+  onCancelEditingDimension: OnCancelEditingDimension;
+  onCommitEditingDimension: OnCommitEditingDimension;
   getSketchEditMode: () => boolean;
 }
 
@@ -429,14 +435,23 @@ function renderConstraintSection(
     if (valueKey) {
       const value = numericValueForConstraint(entry.constraint);
       if (value != null) {
-        const val = el("span", "constraint-value", value.toFixed(1));
-        setupDraggable(
-          val,
-          value,
-          (next) => cb.onParamRapid(selected.id, `sketch.constraint.${entry.index}.${valueKey}`, next),
-          (next) => cb.onParamChange(selected.id, `sketch.constraint.${entry.index}.${valueKey}`, next),
-        );
-        rowEl.appendChild(val);
+        const editing = doc.sketchUi.editingDimension;
+        const isEditing = editing?.sketchId === selected.id && editing.constraintIndex === entry.index;
+        if (isEditing) {
+          rowEl.appendChild(renderConstraintEditInput(editing.value, cb));
+        } else {
+          const val = el("span", "constraint-value", value.toFixed(1));
+          setupDraggable(
+            val,
+            value,
+            (next) => cb.onParamRapid(selected.id, `sketch.constraint.${entry.index}.${valueKey}`, next),
+            (next) => cb.onParamChange(selected.id, `sketch.constraint.${entry.index}.${valueKey}`, next),
+          );
+          rowEl.appendChild(val);
+          if (title === "Dimensions") {
+            rowEl.addEventListener("dblclick", () => cb.onStartEditingDimension(entry.index));
+          }
+        }
       }
     }
     const del = el("button", "constraint-delete", "×");
@@ -447,6 +462,37 @@ function renderConstraintSection(
   }
   section.appendChild(list);
   return section;
+}
+
+function renderConstraintEditInput(value: number, cb: RenderCallbacks): HTMLElement {
+  const input = document.createElement("input");
+  input.className = "constraint-edit-input";
+  input.type = "number";
+  input.step = "any";
+  input.value = String(value);
+  let cancelled = false;
+  const commit = () => {
+    if (cancelled) return;
+    const next = Number.parseFloat(input.value);
+    if (Number.isFinite(next)) cb.onCommitEditingDimension(next);
+    else cb.onCancelEditingDimension();
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelled = true;
+      cb.onCancelEditingDimension();
+    }
+  });
+  input.addEventListener("blur", commit);
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+  return input;
 }
 
 function itemizedConstraints(constraints: SketchConstraint[], dimensions: boolean) {

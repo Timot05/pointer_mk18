@@ -102,6 +102,7 @@ export interface SketchUiState {
   editMode: boolean;
   tool: string;
   toolPoints: Array<{ x: number; y: number }>;
+  editingDimension: { sketchId: string; constraintIndex: number; key: string; value: number } | null;
   constraintPlacementMode: string | null;
   constraintAvailability: Record<string, boolean>;
   dimensionPlacementAvailability: Record<string, boolean>;
@@ -185,5 +186,12 @@ export function postViewerToolClick(x: number, y: number): Promise<ViewerState> 
   return request("/viewer/tool-click", {
     method: "POST",
     body: JSON.stringify({ x, y }),
+  });
+}
+
+export function postStartEditingDimension(constraintIndex: number): Promise<ViewerState> {
+  return request("/viewer/dimension-edit/start", {
+    method: "POST",
+    body: JSON.stringify({ constraintIndex }),
   });
 }

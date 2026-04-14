@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postViewerHover, postViewerPick, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postStartEditingDimension, postViewerHover, postViewerPick, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -736,6 +736,11 @@ export class ViewerApp {
       zoom(this.camera, event.deltaY);
       this.queueRender();
     }, { passive: false });
+    this.canvas.addEventListener("dblclick", (event) => {
+      if (event.button !== 0) return;
+      this.pointer = this.eventPos(event);
+      void this.startDimensionEditAtPointer();
+    });
   }
 
   private eventPos(event: PointerEvent): { x: number; y: number } {
@@ -791,6 +796,16 @@ export class ViewerApp {
     await this.solveSketches();
     this.rebuildRenderData();
     this.queueRender();
+  }
+
+  private async startDimensionEditAtPointer(): Promise<void> {
+    if (!this.state?.sketchUi.editMode || this.drag || this.interaction) return;
+    const target = this.state.hoveredTarget;
+    if (!target || target.case !== "TargetDimension") return;
+    this.state = await postStartEditingDimension(target.constraintIndex);
+    this.rebuildRenderData();
+    this.queueRender();
+    this.startOptions.onDocumentDirty?.();
   }
 
   private authoringSketch(): { model: ViewerSketch; frame: SketchFrame } | null {

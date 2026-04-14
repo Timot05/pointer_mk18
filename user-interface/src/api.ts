@@ -128,6 +128,8 @@ export type SelectionTarget =
 export interface SketchUiState {
   editMode: boolean;
   tool: string;
+  toolPoints: LabelPos[];
+  editingDimension: { sketchId: string; constraintIndex: number; key: string; value: number } | null;
   constraintPlacementMode: string | null;
   constraintAvailability: Record<string, boolean>;
   dimensionPlacementAvailability: Record<string, boolean>;
@@ -257,6 +259,26 @@ export async function addConstraintFromSelection(kind: string): Promise<Document
 export async function deleteSketchConstraint(index: number): Promise<DocumentMutation> {
   return requestDocumentMutation(`/sketch-ui/constraint/${index}`, {
     method: "DELETE",
+  });
+}
+
+export async function startEditingDimension(constraintIndex: number): Promise<DocumentMutation> {
+  return requestDocumentMutation("/sketch-ui/dimension-edit/start", {
+    method: "POST",
+    body: JSON.stringify({ constraintIndex }),
+  });
+}
+
+export async function cancelEditingDimension(): Promise<DocumentMutation> {
+  return requestDocumentMutation("/sketch-ui/dimension-edit/cancel", {
+    method: "POST",
+  });
+}
+
+export async function commitEditingDimension(value: number): Promise<DocumentMutation> {
+  return requestDocumentMutation("/sketch-ui/dimension-edit/commit", {
+    method: "POST",
+    body: JSON.stringify({ value }),
   });
 }
 

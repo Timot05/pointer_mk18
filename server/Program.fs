@@ -27,15 +27,19 @@ module Program =
     let mutable selectedTargets : SelectionTarget list = []
     let mutable sketchEditMode = false
     let mutable sketchTool = "none"
+    let mutable sketchToolPoints : LabelPos list = []
     let mutable constraintPlacementMode : string option = None
 
     let sketchUiState () =
-        SketchAuthoring.availabilityForSelection doc sketchEditMode sketchTool constraintPlacementMode selectedTargets
+        let baseState =
+            SketchAuthoring.availabilityForSelection doc sketchEditMode sketchTool constraintPlacementMode selectedTargets
+        { baseState with ToolPoints = if baseState.Tool = "none" then [] else sketchToolPoints }
 
     let normalizeSketchUiState () =
         let next = sketchUiState ()
         sketchEditMode <- next.EditMode
         sketchTool <- next.Tool
+        sketchToolPoints <- if next.Tool = "none" then [] else sketchToolPoints
         constraintPlacementMode <- next.ConstraintPlacementMode
 
     let recompile () =
@@ -347,6 +351,7 @@ module Program =
             Func<string, IResult>(fun id ->
                 hoveredTarget <- None
                 selectedTargets <- []
+                sketchToolPoints <- []
                 mutate (Document.select id))) |> ignore
 
         app.MapPost("/api/sketch-ui/edit/toggle",
@@ -354,6 +359,7 @@ module Program =
                 sketchEditMode <- not sketchEditMode
                 if not sketchEditMode then
                     sketchTool <- "none"
+                    sketchToolPoints <- []
                     constraintPlacementMode <- None
                 normalizeSketchUiState ()
                 withViewerInvalidation "state" (json ()))) |> ignore
@@ -364,6 +370,7 @@ module Program =
                 let tool = body.GetProperty("tool").GetString()
                 sketchEditMode <- true
                 sketchTool <- if String.IsNullOrWhiteSpace(tool) then "none" else tool
+                sketchToolPoints <- []
                 constraintPlacementMode <- None
                 normalizeSketchUiState ()
                 withViewerInvalidation "state" (json ()))) |> ignore
@@ -374,6 +381,7 @@ module Program =
                 let kind = body.GetProperty("kind").GetString()
                 sketchEditMode <- true
                 sketchTool <- "none"
+                sketchToolPoints <- []
                 constraintPlacementMode <-
                     match constraintPlacementMode with
                     | Some active when active = kind -> None
@@ -390,6 +398,7 @@ module Program =
                     doc <- nextDoc
                     hoveredTarget <- None
                     selectedTargets <- []
+                    sketchToolPoints <- []
                     recompile ()
                     withViewerInvalidation "model" (json ())
                 | None ->
@@ -402,6 +411,7 @@ module Program =
                     doc <- SketchAuthoring.withUpdatedSketch doc ctx.Action.Id (SketchAuthoring.removeConstraintAt index ctx.Sketch)
                     hoveredTarget <- None
                     selectedTargets <- []
+                    sketchToolPoints <- []
                     recompile ()
                     withViewerInvalidation "model" (json ())
                 | None ->
@@ -417,8 +427,35 @@ module Program =
                     doc <- SketchAuthoring.withUpdatedSketch doc actionId sketch
                     hoveredTarget <- None
                     selectedTargets <- []
+                    sketchToolPoints <- []
                     recompile ()
                     viewerStateResult ()
+                | _ ->
+                    viewerStateResult ())) |> ignore
+
+        app.MapPost("/api/viewer/tool-click",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let x = body.GetProperty("x").GetDouble()
+                let y = body.GetProperty("y").GetDouble()
+                let nextPoint = { X = x; Y = y }
+                match SketchAuthoring.trySelectedSketch doc with
+                | Some selected when sketchEditMode && sketchTool <> "none" ->
+                    let nextPoints = sketchToolPoints @ [ nextPoint ]
+                    if nextPoints.Length >= SketchAuthoring.requiredToolPoints sketchTool then
+                        match SketchAuthoring.applyToolClick sketchTool nextPoints selected.Sketch with
+                        | Some nextSketch ->
+                            doc <- SketchAuthoring.withUpdatedSketch doc selected.Action.Id nextSketch
+                            sketchToolPoints <- []
+                            hoveredTarget <- None
+                            selectedTargets <- []
+                            recompile ()
+                            viewerStateResult ()
+                        | None ->
+                            viewerStateResult ()
+                    else
+                        sketchToolPoints <- nextPoints
+                        viewerStateResult ()
                 | _ ->
                     viewerStateResult ())) |> ignore
 
@@ -434,6 +471,7 @@ module Program =
                         doc <- nextDoc
                         hoveredTarget <- None
                         selectedTargets <- []
+                        sketchToolPoints <- []
                         constraintPlacementMode <- None
                         recompile ()
                         viewerStateResult ()

@@ -5,6 +5,7 @@ open System
 type SketchUiState =
     { EditMode: bool
       Tool: string
+      ToolPoints: LabelPos list
       ConstraintPlacementMode: string option
       ConstraintAvailability: Map<string, bool>
       DimensionPlacementAvailability: Map<string, bool> }
@@ -14,6 +15,7 @@ module SketchAuthoring =
     let emptyUiState =
         { EditMode = false
           Tool = "none"
+          ToolPoints = []
           ConstraintPlacementMode = None
           ConstraintAvailability = Map.empty
           DimensionPlacementAvailability = Map.empty }
@@ -264,11 +266,13 @@ module SketchAuthoring =
             { emptyUiState with
                 EditMode = false
                 Tool = "none"
+                ToolPoints = []
                 ConstraintPlacementMode = None }
         | Some ctx ->
             let can kind = buildConstraint ctx.Sketch ctx.Action.Id kind targets |> Option.isSome
             { EditMode = editMode
               Tool = if editMode then tool else "none"
+              ToolPoints = []
               ConstraintPlacementMode = if editMode then placementMode else None
               ConstraintAvailability =
                 [ "Coincident"; "Horizontal"; "Vertical"; "Midpoint"; "Parallel"; "Perpendicular"; "Equal"; "Tangent"; "Concentric"; "Fixed" ]
@@ -278,3 +282,78 @@ module SketchAuthoring =
                 [ "distance"; "angle" ]
                 |> List.map (fun kind -> kind, can kind)
                 |> Map.ofList }
+
+    let requiredToolPoints tool =
+        match tool with
+        | "line"
+        | "rectangle"
+        | "roundedRectangle"
+        | "circle" -> 2
+        | "arc" -> 3
+        | _ -> 0
+
+    let private nextEntityId (sketch: ActionSketch) prefix =
+        let taken =
+            sketch.Entities
+            |> List.map (function
+                | REPoint(id, _, _)
+                | RELine(id, _, _)
+                | RECircle(id, _, _)
+                | REArc(id, _, _, _) -> id)
+            |> Set.ofList
+        let rec loop i =
+            let id = $"{prefix}{i}"
+            if Set.contains id taken then loop (i + 1) else id
+        loop 1
+
+    let private addPoint (sketch: ActionSketch) (x, y) =
+        let pointId = nextEntityId sketch "p"
+        { sketch with Entities = sketch.Entities @ [ REPoint(pointId, x, y) ] }, pointId
+
+    let private addLineEntity (sketch: ActionSketch) startId endId =
+        let lineId = nextEntityId sketch "l"
+        { sketch with Entities = sketch.Entities @ [ RELine(lineId, startId, endId) ] }
+
+    let private projectPointToCircle (cx, cy) (sx, sy) (px, py) =
+        let radius = max 1e-6 (dist (cx, cy) (sx, sy))
+        let dx = px - cx
+        let dy = py - cy
+        let length = sqrt (dx * dx + dy * dy)
+        if length < 1e-6 then (cx + radius, cy)
+        else (cx + (dx / length) * radius, cy + (dy / length) * radius)
+
+    let applyToolClick tool points sketch =
+        let coords = points |> List.map (fun p -> (p.X, p.Y))
+        match tool, coords with
+        | "line", [ startPoint; endPoint ] ->
+            let next, startId = addPoint sketch startPoint
+            let next, endId = addPoint next endPoint
+            Some(addLineEntity next startId endId)
+        | "rectangle", [ (x0, y0); (x1, y1) ]
+        | "roundedRectangle", [ (x0, y0); (x1, y1) ] ->
+            let corners = [ (x0, y0); (x1, y0); (x1, y1); (x0, y1) ]
+            let mutable next = sketch
+            let ids =
+                corners
+                |> List.map (fun corner ->
+                    let updated, pointId = addPoint next corner
+                    next <- updated
+                    pointId)
+            next <- addLineEntity next ids.[0] ids.[1]
+            next <- addLineEntity next ids.[1] ids.[2]
+            next <- addLineEntity next ids.[2] ids.[3]
+            Some(addLineEntity next ids.[3] ids.[0])
+        | "circle", [ centerPoint; radiusPoint ] ->
+            let next, centerId = addPoint sketch centerPoint
+            let circleId = nextEntityId next "c"
+            let radius = max 1e-6 (dist centerPoint radiusPoint)
+            Some { next with Entities = next.Entities @ [ RECircle(circleId, centerId, radius) ] }
+        | "arc", [ centerPoint; startPoint; endPoint ] ->
+            let next, centerId = addPoint sketch centerPoint
+            let next, startId = addPoint next startPoint
+            let projectedEnd = projectPointToCircle centerPoint startPoint endPoint
+            let next, endId = addPoint next projectedEnd
+            let arcId = nextEntityId next "a"
+            let clockwise = cross (sub startPoint centerPoint) (sub endPoint centerPoint) < 0.0
+            Some { next with Entities = next.Entities @ [ REArc(arcId, startId, endId, ArcCenter(centerId, clockwise)) ] }
+        | _ -> None

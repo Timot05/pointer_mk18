@@ -100,6 +100,7 @@ export type SelectionTarget =
 export interface SketchUiState {
   editMode: boolean;
   tool: string;
+  toolPoints: Array<{ x: number; y: number }>;
   constraintPlacementMode: string | null;
   constraintAvailability: Record<string, boolean>;
   dimensionPlacementAvailability: Record<string, boolean>;
@@ -164,6 +165,13 @@ export function replaceViewerSketch(actionId: string, sketch: ActionSketch): Pro
 
 export function placeViewerConstraint(x: number, y: number): Promise<ViewerState> {
   return request("/viewer/place-constraint", {
+    method: "POST",
+    body: JSON.stringify({ x, y }),
+  });
+}
+
+export function postViewerToolClick(x: number, y: number): Promise<ViewerState> {
+  return request("/viewer/tool-click", {
     method: "POST",
     body: JSON.stringify({ x, y }),
   });

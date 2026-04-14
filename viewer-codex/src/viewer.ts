@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, placeViewerConstraint, postViewerHover, postViewerPick, replaceViewerSketch, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, placeViewerConstraint, postViewerHover, postViewerPick, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -7,7 +7,6 @@ import { createGpuSolver, type GpuSolver } from "./gpu-solver";
 import { loadFontMetrics, loadMsdfAtlas, type FontMetrics } from "./msdf-atlas";
 import { add2, add3, cross3, dot2, dot3, len2, norm2, norm3, perp, scale2, scale3, sub2, sub3, type Vec2, type Vec3 } from "./math";
 import { createMsdfLabelPipeline, writeLabelUniform } from "./pipeline-msdf-label";
-import { addArc, addCircle, addLine, addRectangle } from "./sketch-authoring";
 
 type PickKind = "point" | "line" | "circle" | "arc" | "loop" | "dimension";
 
@@ -116,11 +115,6 @@ interface DragState {
   kind: "point" | "label";
   pointId?: string;
   constraintIndex?: number;
-}
-
-interface ToolDraft {
-  tool: string;
-  points: Vec2[];
 }
 
 interface SketchFrame {
@@ -592,7 +586,6 @@ export class ViewerApp {
   private resetCameraPending = false;
   private pointer = { x: 0, y: 0 };
   private drag: DragState | null = null;
-  private toolDraft: ToolDraft | null = null;
   private suppressPrimaryUp = false;
   private interaction:
     | { kind: "orbit" | "pan"; x: number; y: number; pointerId: number }
@@ -653,9 +646,6 @@ export class ViewerApp {
   private async reloadState(): Promise<void> {
     if (this.drag) return;
     this.state = await getViewerState();
-    if (this.toolDraft && this.toolDraft.tool !== (this.state.sketchUi.tool ?? "none")) {
-      this.toolDraft = null;
-    }
     await this.solveSketches();
     this.rebuildRenderData();
     if (this.resetCameraPending) {
@@ -776,19 +766,28 @@ export class ViewerApp {
     return { model, frame: this.sketchFrameFor(sketchId) };
   }
 
-  private async tryHandleSketchAuthoringClick(): Promise<boolean> {
+  private currentToolPreview(): { frame: SketchFrame; lineData: Float32Array; pointData: Float32Array } | null {
     const authored = this.authoringSketch();
-    if (!authored) {
-      this.toolDraft = null;
+    if (!authored || !this.state) return null;
+    const tool = this.state.sketchUi.tool;
+    if (!tool || tool === "none") return null;
+    const points = this.state.sketchUi.toolPoints.map((point) => [point.x, point.y] as Vec2);
+    const cursor = pointerToSketchLocal(this.pointer, this.canvas, this.camera, authored.frame);
+    return buildToolPreviewBuffers(tool, points, cursor, authored.frame);
+  }
+
+  private async tryHandleSketchAuthoringClick(): Promise<boolean> {
+    if (!this.authoringSketch()) {
       return false;
     }
+    const authored = this.authoringSketch();
+    if (!authored) return false;
     const local = pointerToSketchLocal(this.pointer, this.canvas, this.camera, authored.frame);
     if (!local) return false;
 
     const placement = this.state?.sketchUi.constraintPlacementMode;
     if (placement) {
       this.state = await placeViewerConstraint(local[0], local[1]);
-      this.toolDraft = null;
       await this.reloadModel(false);
       this.startOptions.onDocumentDirty?.();
       return true;
@@ -796,41 +795,9 @@ export class ViewerApp {
 
     const tool = this.state?.sketchUi.tool ?? "none";
     if (tool === "none") {
-      this.toolDraft = null;
       return false;
     }
-
-    const committed = await this.handleToolClick(authored.model, tool, local);
-    return committed;
-  }
-
-  private async handleToolClick(sketch: ViewerSketch, tool: string, point: Vec2): Promise<boolean> {
-    const nextPoints = this.toolDraft?.tool === tool ? [...this.toolDraft.points, point] : [point];
-    const required = tool === "arc" ? 3 : tool === "none" ? 0 : 2;
-    if (nextPoints.length < required) {
-      this.toolDraft = { tool, points: nextPoints };
-      return true;
-    }
-
-    let nextSketch: ActionSketch | null = null;
-    switch (tool) {
-      case "line":
-        nextSketch = addLine(sketch.sketch, nextPoints[0], nextPoints[1]);
-        break;
-      case "rectangle":
-      case "roundedRectangle":
-        nextSketch = addRectangle(sketch.sketch, nextPoints[0], nextPoints[1]);
-        break;
-      case "circle":
-        nextSketch = addCircle(sketch.sketch, nextPoints[0], nextPoints[1]);
-        break;
-      case "arc":
-        nextSketch = addArc(sketch.sketch, nextPoints[0], nextPoints[1], nextPoints[2]);
-        break;
-    }
-    this.toolDraft = null;
-    if (!nextSketch) return true;
-    this.state = await replaceViewerSketch(sketch.id, nextSketch);
+    this.state = await postViewerToolClick(local[0], local[1]);
     await this.reloadModel(false);
     this.startOptions.onDocumentDirty?.();
     return true;
@@ -1170,6 +1137,40 @@ export class ViewerApp {
         pass.setBindGroup(1, labelBindGroup);
         pass.setVertexBuffer(0, labelBuffer);
         pass.draw(sketch.buffers.labelData.length / 10);
+      }
+    }
+
+    const preview = this.currentToolPreview();
+    if (preview) {
+      const frameData = new Float32Array(12);
+      frameData.set(preview.frame.position, 0);
+      frameData.set(preview.frame.xAxis, 4);
+      frameData.set(preview.frame.yAxis, 8);
+      device.queue.writeBuffer(frameBuffer, 0, frameData);
+      pass.setBindGroup(1, frameBindGroup);
+
+      if (preview.lineData.length > 0) {
+        const lineBuffer = device.createBuffer({
+          size: preview.lineData.byteLength,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(lineBuffer, 0, preview.lineData);
+        pass.setPipeline(linePipeline);
+        pass.setVertexBuffer(0, lineBuffer);
+        pass.draw(preview.lineData.length / 6);
+      }
+
+      if (preview.pointData.length > 0) {
+        const pointBuffer = device.createBuffer({
+          size: preview.pointData.byteLength,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(pointBuffer, 0, preview.pointData);
+        pass.setPipeline(pointPipeline);
+        pass.setBindGroup(2, viewportBindGroup);
+        pass.setVertexBuffer(0, pointQuadBuffer);
+        pass.setVertexBuffer(1, pointBuffer);
+        pass.draw(6, preview.pointData.length / 7);
       }
     }
 
@@ -2029,6 +2030,67 @@ function pushArc(
     if (pickId != null) pickSegments.push({ a: prev, b: next, strokePx: 8, pickId, kind: 4 });
     prev = next;
   }
+}
+
+function buildToolPreviewBuffers(
+  tool: string,
+  toolPoints: Vec2[],
+  cursor: Vec2 | null,
+  _frame: SketchFrame,
+): { frame: SketchFrame; lineData: Float32Array; pointData: Float32Array } | null {
+  const lineVertices: LineVertex[] = [];
+  const pointInstances: PointInstance[] = [];
+  const previewLine = [ACCENT[0], ACCENT[1], ACCENT[2], 0.72] as const;
+  const previewPoint = [ACCENT[0], ACCENT[1], ACCENT[2], 0.92] as const;
+  const allPoints = cursor ? [...toolPoints, cursor] : [...toolPoints];
+  for (const point of allPoints) {
+    pointInstances.push({ x: point[0], y: point[1], radiusPx: 5.5, color: previewPoint });
+  }
+
+  switch (tool) {
+    case "line":
+      if (toolPoints.length >= 1 && cursor) {
+        lineVertices.push({ x: toolPoints[0][0], y: toolPoints[0][1], color: previewLine }, { x: cursor[0], y: cursor[1], color: previewLine });
+      }
+      break;
+    case "rectangle":
+    case "roundedRectangle":
+      if (toolPoints.length >= 1 && cursor) {
+        const [x0, y0] = toolPoints[0];
+        const [x1, y1] = cursor;
+        const corners: Vec2[] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        for (let i = 0; i < 4; i++) {
+          const a = corners[i];
+          const b = corners[(i + 1) % 4];
+          lineVertices.push({ x: a[0], y: a[1], color: previewLine }, { x: b[0], y: b[1], color: previewLine });
+        }
+      }
+      break;
+    case "circle":
+      if (toolPoints.length >= 1 && cursor) {
+        const radius = Math.max(1e-6, len2(sub2(cursor, toolPoints[0])));
+        pushCircle(lineVertices, toolPoints[0], radius, previewLine);
+      }
+      break;
+    case "arc":
+      if (toolPoints.length >= 1 && cursor) {
+        pointInstances.push({ x: toolPoints[0][0], y: toolPoints[0][1], radiusPx: 6.5, color: previewPoint });
+      }
+      if (toolPoints.length >= 2 && cursor) {
+        const clockwise = cross2(sub2(toolPoints[1], toolPoints[0]), sub2(cursor, toolPoints[0])) < 0;
+        pushArc(lineVertices, [], toolPoints[1], cursor, toolPoints[0], clockwise, previewLine, undefined);
+      } else if (toolPoints.length >= 1 && cursor) {
+        lineVertices.push({ x: toolPoints[0][0], y: toolPoints[0][1], color: previewLine }, { x: cursor[0], y: cursor[1], color: previewLine });
+      }
+      break;
+  }
+
+  if (lineVertices.length === 0 && pointInstances.length === 0) return null;
+  return {
+    frame: _frame,
+    lineData: flattenLines(lineVertices),
+    pointData: flattenPoints(pointInstances),
+  };
 }
 
 function flattenLines(lines: LineVertex[]): Float32Array {

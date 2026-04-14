@@ -138,12 +138,13 @@ export async function patchActionParam(id: string, key: string, value: number | 
   });
 }
 
-export function patchActionParamRapid(id: string, key: string, value: number | string | boolean): void {
-  fetch(BASE + `/document/action/${id}/param/rapid`, {
+export async function patchActionParamRapid(id: string, key: string, value: number | string | boolean): Promise<void> {
+  const res = await fetch(BASE + `/document/action/${id}/param/rapid`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key, value }),
   });
+  if (!res.ok) throw new Error(`PATCH /document/action/${id}/param/rapid: ${res.status}`);
 }
 
 export async function toggleActionVisible(id: string): Promise<Document> {

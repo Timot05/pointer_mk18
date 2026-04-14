@@ -5,6 +5,9 @@ import * as palette from "./command-palette";
 export interface UserInterfaceMountOptions {
   embedded?: boolean;
   centerContent?: HTMLElement | null;
+  onViewerStateDirty?: () => void;
+  onViewerModelDirty?: () => void;
+  subscribeDocumentDirty?: (listener: () => void) => () => void;
 }
 
 function defaultKind(kindCase: string): ActionKind | null {
@@ -46,17 +49,22 @@ function rerender() {
 
 function openPalette() {
   if (!palette.isOpen()) {
-    palette.open(refresh);
+    palette.open(refresh, {
+      onViewerStateDirty: mountOptions.onViewerStateDirty,
+      onViewerModelDirty: mountOptions.onViewerModelDirty,
+    });
   }
 }
 
 const callbacks: RenderCallbacks = {
   onSelect: async (id) => {
     refresh(await selectAction(id));
+    mountOptions.onViewerStateDirty?.();
   },
 
   onToggleVisible: async (id) => {
     refresh(await toggleActionVisible(id));
+    mountOptions.onViewerStateDirty?.();
   },
 
   onAddAction: async (kindCase) => {
@@ -64,36 +72,45 @@ const callbacks: RenderCallbacks = {
     if (!kind) return;
     const id = kindCase.toLowerCase() + "_" + Math.random().toString(36).slice(2, 8);
     refresh(await addAction({ id, name: null, kind, visible: true, display: null, fieldSlice: null }));
+    mountOptions.onViewerModelDirty?.();
   },
 
   onOpenPalette: openPalette,
 
   onReorder: async (ids) => {
     refresh(await reorderActions(ids));
+    mountOptions.onViewerModelDirty?.();
   },
 
   onParamRapid: (actionId, key, value) => {
-    patchActionParamRapid(actionId, key, value);
+    void patchActionParamRapid(actionId, key, value).then(() => {
+      mountOptions.onViewerStateDirty?.();
+    });
   },
 
   onParamChange: async (actionId, key, value) => {
     refresh(await patchActionParam(actionId, key, value));
+    mountOptions.onViewerModelDirty?.();
   },
 
   onToggleDisplay: async (id) => {
     refresh(await toggleDisplay(id));
+    mountOptions.onViewerStateDirty?.();
   },
 
   onDisplayChange: async (id, key, value) => {
     refresh(await patchDisplay(id, key, value));
+    mountOptions.onViewerStateDirty?.();
   },
 
   onToggleFieldSlice: async (id) => {
     refresh(await toggleFieldSlice(id));
+    mountOptions.onViewerStateDirty?.();
   },
 
   onFieldSliceChange: async (id, key, value) => {
     refresh(await patchFieldSlice(id, key, value));
+    mountOptions.onViewerStateDirty?.();
   },
 
   onToggleSketchEdit: () => {
@@ -125,6 +142,7 @@ document.addEventListener("keydown", async (e) => {
     if (sel && sel.kind.case !== "Origin") {
       e.preventDefault();
       refresh(await deleteAction(sel.id));
+      mountOptions.onViewerModelDirty?.();
     }
   } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
@@ -134,18 +152,21 @@ document.addEventListener("keydown", async (e) => {
       : Math.max(idx - 1, 0);
     if (next !== idx) {
       refresh(await selectAction(doc.actions[next].id));
+      mountOptions.onViewerStateDirty?.();
     }
   } else if (e.key === "v") {
     const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
     if (sel && sel.kind.case !== "Origin") {
       e.preventDefault();
       refresh(await toggleActionVisible(sel.id));
+      mountOptions.onViewerStateDirty?.();
     }
   } else if (e.key === "s") {
     const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
     if (sel && sel.display) {
       e.preventDefault();
       refresh(await toggleDisplay(sel.id));
+      mountOptions.onViewerStateDirty?.();
     }
   } else if (e.key === "e" || e.key === "E") {
     const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
@@ -159,6 +180,7 @@ document.addEventListener("keydown", async (e) => {
     if (sel && sel.fieldSlice) {
       e.preventDefault();
       refresh(await toggleFieldSlice(sel.id));
+      mountOptions.onViewerStateDirty?.();
     }
   }
 });
@@ -166,5 +188,8 @@ document.addEventListener("keydown", async (e) => {
 export async function mountUserInterface(root: HTMLElement, options: UserInterfaceMountOptions = {}): Promise<void> {
   mountRoot = root;
   mountOptions = options;
+  mountOptions.subscribeDocumentDirty?.(() => {
+    void getDocument().then(refresh);
+  });
   refresh(await getDocument());
 }

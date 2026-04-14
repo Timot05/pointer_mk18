@@ -15,6 +15,8 @@ let activeIndex = 0;
 let currentItems: PaletteItem[] = [];
 let onDocUpdate: ((doc: Document) => void) | null = null;
 let cleanupKeydown: (() => void) | null = null;
+let onViewerStateDirty: (() => void) | null = null;
+let onViewerModelDirty: (() => void) | null = null;
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -28,9 +30,14 @@ export function isOpen(): boolean {
   return backdrop !== null;
 }
 
-export async function open(onDoc: (doc: Document) => void): Promise<void> {
+export async function open(
+  onDoc: (doc: Document) => void,
+  hooks?: { onViewerStateDirty?: () => void; onViewerModelDirty?: () => void },
+): Promise<void> {
   if (backdrop) return;
   onDocUpdate = onDoc;
+  onViewerStateDirty = hooks?.onViewerStateDirty ?? null;
+  onViewerModelDirty = hooks?.onViewerModelDirty ?? null;
   activeIndex = 0;
   const state = await paletteOpen();
   mount(state);
@@ -40,6 +47,8 @@ export async function close(): Promise<void> {
   unmount();
   await paletteClose();
   onDocUpdate = null;
+  onViewerStateDirty = null;
+  onViewerModelDirty = null;
 }
 
 // ── Mount / unmount ───────────────────────────────────────────────────
@@ -59,6 +68,7 @@ function handleResponse(r: PaletteState | PaletteAndDoc) {
   if (isPaletteAndDoc(r)) {
     unmount();
     onDocUpdate?.(r.document);
+    onViewerModelDirty?.();
     if (r.palette.isOpen) {
       activeIndex = 0;
       mount(r.palette);
@@ -124,8 +134,14 @@ function mount(state: PaletteState) {
       const valSpan = el("span", "control-value", field.value.toFixed(1));
       setupDraggable(
         valSpan, field.value,
-        (v) => paletteScalarRapid(field.key, v),
-        (v) => paletteScalarRapid(field.key, v)
+        (v) => {
+          paletteScalarRapid(field.key, v);
+          onViewerStateDirty?.();
+        },
+        (v) => {
+          paletteScalarRapid(field.key, v);
+          onViewerStateDirty?.();
+        }
       );
       cell.appendChild(valSpan);
       valRow.appendChild(cell);
@@ -260,4 +276,3 @@ function patchResults(items: PaletteItem[]) {
   currentItems = items;
   old.replaceWith(buildResultsList(items));
 }
-

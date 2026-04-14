@@ -149,6 +149,13 @@ interface GpuContext {
   pickResultBuffer: GPUBuffer;
 }
 
+export interface ViewerStartOptions {
+  polling?: boolean;
+  onDocumentDirty?: () => void;
+  subscribeViewerStateDirty?: (listener: () => void) => () => void;
+  subscribeViewerModelDirty?: (listener: () => void) => () => void;
+}
+
 const NO_HIT_ID = 0xffffffff;
 const PICK_GRID = 5;
 const PICK_SAMPLES = PICK_GRID * PICK_GRID;
@@ -577,6 +584,7 @@ export class ViewerApp {
   private resizeObserver: ResizeObserver | null = null;
   private stateTimer: number | null = null;
   private modelTimer: number | null = null;
+  private startOptions: ViewerStartOptions = {};
   private renderQueued = false;
   private isPicking = false;
   private solveInFlight: Promise<void> | null = null;
@@ -638,7 +646,8 @@ export class ViewerApp {
     root.appendChild(shell);
   }
 
-  async start(): Promise<void> {
+  async start(options: ViewerStartOptions = {}): Promise<void> {
+    this.startOptions = options;
     this.setStatus("Loading model...");
     this.bindEvents();
     this.gpu = await this.initGpu();
@@ -655,8 +664,16 @@ export class ViewerApp {
     });
     this.resizeObserver.observe(this.canvas);
     this.resizeCanvas();
-    this.stateTimer = window.setInterval(() => { void this.reloadState(); }, 350);
-    this.modelTimer = window.setInterval(() => { void this.reloadModel(false); }, 1800);
+    if (options.polling ?? true) {
+      this.stateTimer = window.setInterval(() => { void this.reloadState(); }, 350);
+      this.modelTimer = window.setInterval(() => { void this.reloadModel(false); }, 1800);
+    }
+    options.subscribeViewerStateDirty?.(() => {
+      void this.reloadState();
+    });
+    options.subscribeViewerModelDirty?.(() => {
+      void this.reloadModel(false).then(() => this.reloadState());
+    });
     this.queueRender();
   }
 
@@ -769,6 +786,7 @@ export class ViewerApp {
     };
     const payload = await postViewerPick(hit.pickId);
     this.selectedActionId = payload.selectedId;
+    this.startOptions.onDocumentDirty?.();
     await this.solveSketches();
     this.rebuildRenderData();
     this.queueRender();
@@ -791,6 +809,7 @@ export class ViewerApp {
       await patchActionParam(drag.sketchId, drag.xPath, drag.target[0]);
       await patchActionParam(drag.sketchId, drag.yPath, drag.target[1]);
       await this.reloadState();
+      this.startOptions.onDocumentDirty?.();
       return;
     }
     const solved = this.solvedSketchParams.get(drag.sketchId);
@@ -808,6 +827,7 @@ export class ViewerApp {
     await patchActionParam(drag.sketchId, drag.xPath, solved[xSlot]);
     await patchActionParam(drag.sketchId, drag.yPath, solved[ySlot]);
     await this.reloadState();
+    this.startOptions.onDocumentDirty?.();
   }
 
   private async updateDragFrame(): Promise<void> {
@@ -1108,6 +1128,7 @@ export class ViewerApp {
       if (commit && hit) {
         const payload = await postViewerPick(hit.pickId);
         this.selectedActionId = payload.selectedId;
+        this.startOptions.onDocumentDirty?.();
         this.rebuildRenderData();
         this.queueRender();
       }

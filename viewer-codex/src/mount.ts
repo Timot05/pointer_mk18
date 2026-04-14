@@ -1,7 +1,7 @@
 import viewerCss from "./styles.css?inline";
-import { ViewerApp } from "./viewer";
+import { ViewerApp, type ViewerStartOptions } from "./viewer";
 
-export async function mountViewer(root: HTMLElement): Promise<ViewerApp> {
+export async function mountViewer(root: HTMLElement, options: ViewerStartOptions = {}): Promise<ViewerApp> {
   const shadow = root.shadowRoot ?? root.attachShadow({ mode: "open" });
   shadow.innerHTML = "";
 
@@ -15,6 +15,6 @@ export async function mountViewer(root: HTMLElement): Promise<ViewerApp> {
   shadow.appendChild(container);
 
   const app = new ViewerApp(container);
-  await app.start();
+  await app.start(options);
   return app;
 }

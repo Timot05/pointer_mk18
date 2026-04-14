@@ -167,6 +167,285 @@ body {
   font-family: "IBM Plex Mono", monospace;
 }
 
+/* ── Sketch authoring overlay (mk17 parity) ────────────────────────── */
+
+.sketch-authoring-overlay {
+  position: absolute;
+  inset: 12px;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sketch-toolbar,
+.constraints-panel {
+  pointer-events: auto;
+}
+
+/* Sketch toolbar — mk17's SketchToolbar.svelte */
+
+.sketch-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--bg-page);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  box-shadow: 0 2px 8px rgba(40, 30, 15, 0.06);
+  font-size: 12px;
+}
+
+.sketch-tool-btn {
+  padding: 4px 10px;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sketch-tool-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+}
+
+.sketch-tool-btn.is-active {
+  background: var(--bg-surface-active);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.sketch-toolbar-hint {
+  margin: 0 4px 0 8px;
+  padding: 2px 6px;
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  font-family: "IBM Plex Mono", monospace;
+  border-left: 1px solid var(--border);
+}
+
+.tool-hint,
+.shortcut {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-page);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+
+.sketch-tool-btn.is-active .tool-hint,
+.sketch-tool-btn:hover .tool-hint {
+  color: var(--text-muted);
+  border-color: var(--text-faint);
+}
+
+/* Constraints panel — mk17's SketchConstraintsPanel.svelte */
+
+.constraints-panel {
+  width: 200px;
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-page);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  box-shadow: 0 2px 8px rgba(40, 30, 15, 0.06);
+  font-size: 11px;
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.constraint-section {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.constraint-section:last-child {
+  border-bottom: none;
+}
+
+.constraint-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 6px 10px 4px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.constraint-section-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.constraint-add-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  padding: 4px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.constraint-add-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  background: var(--bg-page);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 2px;
+}
+
+.constraint-add-btn:hover:not(:disabled) {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border-color: var(--text-faint);
+}
+
+.constraint-add-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.constraint-add-btn:disabled .shortcut {
+  opacity: 0.75;
+}
+
+.constraint-add-btn.is-active {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: var(--accent);
+}
+
+.constraint-add-btn.is-active .sym {
+  color: #ffffff;
+}
+
+.constraint-add-btn .sym {
+  width: 12px;
+  text-align: center;
+  color: var(--accent);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.btn-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.constraint-empty {
+  padding: 14px 12px;
+  font-size: 10px;
+  color: var(--text-faint);
+  line-height: 1.55;
+}
+
+.constraint-list {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  max-height: 180px;
+}
+
+.constraint-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.constraint-row:last-child {
+  border-bottom: none;
+}
+
+.constraint-row .sym {
+  color: var(--accent);
+  font-size: 12px;
+  width: 14px;
+  text-align: center;
+}
+
+.constraint-kind {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.constraint-summary {
+  flex: 1;
+  color: var(--text-faint);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.constraint-value {
+  width: 56px;
+  padding: 2px 4px;
+  background: var(--bg-page);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 10px;
+  font-family: "IBM Plex Mono", monospace;
+  border-radius: 2px;
+  text-align: right;
+  cursor: ew-resize;
+  user-select: none;
+}
+
+.constraint-value:hover {
+  background: var(--bg-surface-hover);
+}
+
+.constraint-delete {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 15px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.constraint-delete:hover {
+  color: var(--error, #c55);
+}
+
 /* ── Actions list (left panel) ─────────────────────────────────────── */
 
 .actions-list {

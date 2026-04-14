@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, postViewerHover, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, placeViewerConstraint, postViewerHover, postViewerPick, replaceViewerSketch, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -7,6 +7,7 @@ import { createGpuSolver, type GpuSolver } from "./gpu-solver";
 import { loadFontMetrics, loadMsdfAtlas, type FontMetrics } from "./msdf-atlas";
 import { add2, add3, cross3, dot2, dot3, len2, norm2, norm3, perp, scale2, scale3, sub2, sub3, type Vec2, type Vec3 } from "./math";
 import { createMsdfLabelPipeline, writeLabelUniform } from "./pipeline-msdf-label";
+import { addArc, addCircle, addLine, addRectangle } from "./sketch-authoring";
 
 type PickKind = "point" | "line" | "circle" | "arc" | "loop" | "dimension";
 
@@ -115,6 +116,11 @@ interface DragState {
   kind: "point" | "label";
   pointId?: string;
   constraintIndex?: number;
+}
+
+interface ToolDraft {
+  tool: string;
+  points: Vec2[];
 }
 
 interface SketchFrame {
@@ -586,6 +592,8 @@ export class ViewerApp {
   private resetCameraPending = false;
   private pointer = { x: 0, y: 0 };
   private drag: DragState | null = null;
+  private toolDraft: ToolDraft | null = null;
+  private suppressPrimaryUp = false;
   private interaction:
     | { kind: "orbit" | "pan"; x: number; y: number; pointerId: number }
     | null = null;
@@ -645,6 +653,9 @@ export class ViewerApp {
   private async reloadState(): Promise<void> {
     if (this.drag) return;
     this.state = await getViewerState();
+    if (this.toolDraft && this.toolDraft.tool !== (this.state.sketchUi.tool ?? "none")) {
+      this.toolDraft = null;
+    }
     await this.solveSketches();
     this.rebuildRenderData();
     if (this.resetCameraPending) {
@@ -699,6 +710,10 @@ export class ViewerApp {
         return;
       }
       if (event.button === 0) {
+        if (this.suppressPrimaryUp) {
+          this.suppressPrimaryUp = false;
+          return;
+        }
         void this.pickAtPointer(event);
       }
     });
@@ -715,6 +730,11 @@ export class ViewerApp {
   }
 
   private async beginPrimaryPointer(event: PointerEvent): Promise<void> {
+    if (await this.tryHandleSketchAuthoringClick()) {
+      this.suppressPrimaryUp = true;
+      this.queueRender();
+      return;
+    }
     const candidates = await this.pickAcrossSketches();
     this.state = await postViewerHover(toPickRequest(candidates));
     this.rebuildRenderData();
@@ -744,6 +764,76 @@ export class ViewerApp {
     await this.solveSketches();
     this.rebuildRenderData();
     this.queueRender();
+  }
+
+  private authoringSketch(): { model: ViewerSketch; frame: SketchFrame } | null {
+    if (!this.model || !this.state) return null;
+    if (!this.state.sketchUi.editMode) return null;
+    const sketchId = this.state.selectedId;
+    if (!sketchId) return null;
+    const model = this.model.sketches.find((candidate) => candidate.id === sketchId);
+    if (!model) return null;
+    return { model, frame: this.sketchFrameFor(sketchId) };
+  }
+
+  private async tryHandleSketchAuthoringClick(): Promise<boolean> {
+    const authored = this.authoringSketch();
+    if (!authored) {
+      this.toolDraft = null;
+      return false;
+    }
+    const local = pointerToSketchLocal(this.pointer, this.canvas, this.camera, authored.frame);
+    if (!local) return false;
+
+    const placement = this.state?.sketchUi.constraintPlacementMode;
+    if (placement) {
+      this.state = await placeViewerConstraint(local[0], local[1]);
+      this.toolDraft = null;
+      await this.reloadModel(false);
+      this.startOptions.onDocumentDirty?.();
+      return true;
+    }
+
+    const tool = this.state?.sketchUi.tool ?? "none";
+    if (tool === "none") {
+      this.toolDraft = null;
+      return false;
+    }
+
+    const committed = await this.handleToolClick(authored.model, tool, local);
+    return committed;
+  }
+
+  private async handleToolClick(sketch: ViewerSketch, tool: string, point: Vec2): Promise<boolean> {
+    const nextPoints = this.toolDraft?.tool === tool ? [...this.toolDraft.points, point] : [point];
+    const required = tool === "arc" ? 3 : tool === "none" ? 0 : 2;
+    if (nextPoints.length < required) {
+      this.toolDraft = { tool, points: nextPoints };
+      return true;
+    }
+
+    let nextSketch: ActionSketch | null = null;
+    switch (tool) {
+      case "line":
+        nextSketch = addLine(sketch.sketch, nextPoints[0], nextPoints[1]);
+        break;
+      case "rectangle":
+      case "roundedRectangle":
+        nextSketch = addRectangle(sketch.sketch, nextPoints[0], nextPoints[1]);
+        break;
+      case "circle":
+        nextSketch = addCircle(sketch.sketch, nextPoints[0], nextPoints[1]);
+        break;
+      case "arc":
+        nextSketch = addArc(sketch.sketch, nextPoints[0], nextPoints[1], nextPoints[2]);
+        break;
+    }
+    this.toolDraft = null;
+    if (!nextSketch) return true;
+    this.state = await replaceViewerSketch(sketch.id, nextSketch);
+    await this.reloadModel(false);
+    this.startOptions.onDocumentDirty?.();
+    return true;
   }
 
   private updateDragTarget(): void {

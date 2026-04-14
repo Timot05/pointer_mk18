@@ -2,7 +2,7 @@
 // Stateless UI renderer — takes a Document, produces DOM
 // ---------------------------------------------------------------------------
 
-import type { Document, Action, ActionKind, ActionError } from "./api";
+import type { Document, Action, ActionKind, ActionError, SketchConstraint } from "./api";
 import { renderIcon, renderIconForKind } from "./icons";
 import { el, setupDraggable } from "./dom";
 
@@ -103,6 +103,10 @@ export type OnDisplayChange = (id: string, key: string, value: number | number[]
 export type OnToggleFieldSlice = (id: string) => void;
 export type OnFieldSliceChange = (id: string, key: string, value: number | string) => void;
 export type OnToggleSketchEdit = () => void;
+export type OnSetSketchTool = (tool: string) => void;
+export type OnToggleConstraintPlacement = (kind: string) => void;
+export type OnAddConstraintFromSelection = (kind: string) => void;
+export type OnDeleteSketchConstraint = (index: number) => void;
 
 export interface RenderCallbacks {
   onSelect: OnSelect;
@@ -117,6 +121,10 @@ export interface RenderCallbacks {
   onToggleFieldSlice: OnToggleFieldSlice;
   onFieldSliceChange: OnFieldSliceChange;
   onToggleSketchEdit: OnToggleSketchEdit;
+  onSetSketchTool: OnSetSketchTool;
+  onToggleConstraintPlacement: OnToggleConstraintPlacement;
+  onAddConstraintFromSelection: OnAddConstraintFromSelection;
+  onDeleteSketchConstraint: OnDeleteSketchConstraint;
   getSketchEditMode: () => boolean;
 }
 
@@ -297,6 +305,7 @@ export function render(root: HTMLElement, doc: Document, cb: RenderCallbacks, op
     const vp = el("div", "viewport-placeholder", "WebGPU viewport");
     center.appendChild(vp);
   }
+  renderSketchAuthoringOverlay(center, doc, cb);
   layout.appendChild(center);
 
   // Right panel — params
@@ -308,6 +317,249 @@ export function render(root: HTMLElement, doc: Document, cb: RenderCallbacks, op
   layout.appendChild(right);
 
   root.appendChild(layout);
+}
+
+function renderSketchAuthoringOverlay(center: HTMLElement, doc: Document, cb: RenderCallbacks): void {
+  const selected = doc.actions.find((action) => action.id === doc.selectedId);
+  if (!selected || selected.kind.case !== "Sketch" || !doc.sketchUi.editMode) return;
+
+  const overlay = el("div", "sketch-authoring-overlay");
+  const tools = [
+    { id: "none", label: "select", hint: null },
+    { id: "line", label: "line", hint: "L" },
+    { id: "rectangle", label: "rect", hint: "G" },
+    { id: "roundedRectangle", label: "rrect", hint: "⇧G" },
+    { id: "circle", label: "circle", hint: "C" },
+    { id: "arc", label: "arc", hint: "U" },
+  ];
+
+  const toolbar = el("div", "sketch-toolbar");
+  for (const tool of tools) {
+    const button = el("button", "sketch-tool-btn");
+    (button as HTMLButtonElement).type = "button";
+    if (doc.sketchUi.tool === tool.id) button.classList.add("is-active");
+    button.appendChild(el("span", "", tool.label));
+    if (tool.hint) button.appendChild(el("kbd", "tool-hint", tool.hint));
+    button.addEventListener("click", () => cb.onSetSketchTool(tool.id));
+    toolbar.appendChild(button);
+  }
+  if (doc.sketchUi.tool !== "none") {
+    toolbar.appendChild(el("span", "sketch-toolbar-hint", "click in the viewer to place geometry"));
+  }
+  overlay.appendChild(toolbar);
+
+  const panel = el("div", "constraints-panel");
+  panel.appendChild(renderConstraintSection("Constraints", geometricConstraintButtons(), doc, selected, cb));
+  panel.appendChild(renderConstraintSection("Dimensions", dimensionConstraintButtons(), doc, selected, cb));
+  overlay.appendChild(panel);
+
+  center.appendChild(overlay);
+}
+
+function geometricConstraintButtons() {
+  return [
+    { id: "Coincident", label: "Coincident", symbol: "≡", shortcut: "I", dimension: false },
+    { id: "Horizontal", label: "Horizontal", symbol: "↔", shortcut: "H", dimension: false },
+    { id: "Vertical", label: "Vertical", symbol: "↕", shortcut: "V", dimension: false },
+    { id: "Midpoint", label: "Midpoint", symbol: "·|·", shortcut: "⇧M", dimension: false },
+    { id: "Parallel", label: "Parallel", symbol: "∥", shortcut: "B", dimension: false },
+    { id: "Perpendicular", label: "Perpendicular", symbol: "⊥", shortcut: "⇧L", dimension: false },
+    { id: "Equal", label: "Equal", symbol: "=", shortcut: "E", dimension: false },
+    { id: "Tangent", label: "Tangent", symbol: "⌒", shortcut: "T", dimension: false },
+    { id: "Concentric", label: "Concentric", symbol: "◎", shortcut: "⇧O", dimension: false },
+    { id: "Fixed", label: "Fixed", symbol: "⊙", shortcut: "⇧J", dimension: false },
+  ];
+}
+
+function dimensionConstraintButtons() {
+  return [
+    { id: "distance", label: "Distance", symbol: "↦", shortcut: "D", dimension: true },
+    { id: "angle", label: "Angle", symbol: "∠", shortcut: "A", dimension: true },
+  ];
+}
+
+function renderConstraintSection(
+  title: string,
+  buttons: Array<{ id: string; label: string; symbol: string; shortcut: string; dimension: boolean }>,
+  doc: Document,
+  selected: Action,
+  cb: RenderCallbacks,
+): HTMLElement {
+  const section = el("div", "constraint-section");
+  const header = el("div", "constraint-section-header");
+  header.appendChild(el("span", "constraint-section-title", title));
+  section.appendChild(header);
+
+  const row = el("div", "constraint-add-row");
+  for (const item of buttons) {
+    const button = el("button", "constraint-add-btn");
+    (button as HTMLButtonElement).type = "button";
+    const availability = item.dimension
+      ? !!doc.sketchUi.dimensionPlacementAvailability[item.id]
+      : !!doc.sketchUi.constraintAvailability[item.id];
+    (button as HTMLButtonElement).disabled = !availability;
+    if (item.dimension && doc.sketchUi.constraintPlacementMode === item.id) button.classList.add("is-active");
+    button.appendChild(el("span", "sym", item.symbol));
+    button.appendChild(el("span", "btn-label", item.label));
+    button.appendChild(el("kbd", "shortcut", item.shortcut));
+    button.addEventListener("click", () => {
+      if (item.dimension) cb.onToggleConstraintPlacement(item.id);
+      else cb.onAddConstraintFromSelection(item.id);
+    });
+    row.appendChild(button);
+  }
+  section.appendChild(row);
+
+  const sketch = selected.kind.sketch;
+  const constraints = itemizedConstraints(sketch.constraints, title === "Dimensions");
+  if (constraints.length === 0) {
+    section.appendChild(el("div", "constraint-empty", title === "Dimensions"
+      ? "Use the viewer to place a dimension label."
+      : "Select entities in the viewer to enable constraints."));
+    return section;
+  }
+
+  const list = el("div", "constraint-list");
+  for (const entry of constraints) {
+    const rowEl = el("div", "constraint-row");
+    rowEl.appendChild(el("span", "sym", constraintSymbol(entry.constraint.case)));
+    rowEl.appendChild(el("span", "constraint-kind", constraintLabel(entry.constraint.case)));
+    rowEl.appendChild(el("span", "constraint-summary", constraintSummary(entry.constraint)));
+    const valueKey = numericKeyForConstraint(entry.constraint.case);
+    if (valueKey) {
+      const value = numericValueForConstraint(entry.constraint);
+      if (value != null) {
+        const val = el("span", "constraint-value", value.toFixed(1));
+        setupDraggable(
+          val,
+          value,
+          (next) => cb.onParamRapid(selected.id, `sketch.constraint.${entry.index}.${valueKey}`, next),
+          (next) => cb.onParamChange(selected.id, `sketch.constraint.${entry.index}.${valueKey}`, next),
+        );
+        rowEl.appendChild(val);
+      }
+    }
+    const del = el("button", "constraint-delete", "×");
+    (del as HTMLButtonElement).type = "button";
+    del.addEventListener("click", () => cb.onDeleteSketchConstraint(entry.index));
+    rowEl.appendChild(del);
+    list.appendChild(rowEl);
+  }
+  section.appendChild(list);
+  return section;
+}
+
+function itemizedConstraints(constraints: SketchConstraint[], dimensions: boolean) {
+  const dimensionKinds = new Set([
+    "Distance",
+    "FrameDistance",
+    "LineDistance",
+    "FrameLineDistance",
+    "PointLineDistance",
+    "FramePointLineDistance",
+    "PointCircleDistance",
+    "LineCircleDistance",
+    "CircleCircleDistance",
+    "Angle",
+    "CircleDiameter",
+  ]);
+  return constraints
+    .map((constraint, index) => ({ constraint, index }))
+    .filter((entry) => dimensionKinds.has(entry.constraint.case) === dimensions);
+}
+
+function constraintLabel(kind: string): string {
+  return kind === "CurveTangent" ? "Tangent" : kind;
+}
+
+function constraintSymbol(kind: string): string {
+  switch (kind) {
+    case "Fixed": return "⊙";
+    case "Coincident":
+    case "FrameCoincident": return "≡";
+    case "Horizontal": return "↔";
+    case "Vertical": return "↕";
+    case "Parallel":
+    case "FrameParallel": return "∥";
+    case "Perpendicular":
+    case "FramePerpendicular": return "⊥";
+    case "Midpoint": return "·|·";
+    case "Tangent":
+    case "CurveTangent": return "⌒";
+    case "Concentric": return "◎";
+    case "Equal":
+    case "EqualRadius": return "=";
+    case "Angle": return "∠";
+    case "CircleDiameter": return "⌀";
+    default: return "↦";
+  }
+}
+
+function constraintSummary(constraint: SketchConstraint): string {
+  switch (constraint.case) {
+    case "Fixed": return constraint.point;
+    case "Coincident":
+    case "Horizontal":
+    case "Vertical":
+    case "Distance": return `${constraint.a} · ${constraint.b}`;
+    case "Midpoint":
+    case "PointLineDistance": return `${constraint.point} · ${constraint.lineA}`;
+    case "Parallel":
+    case "Perpendicular":
+    case "Equal":
+    case "LineDistance":
+    case "Angle": return `${constraint.lineA} · ${constraint.lineB}`;
+    case "Tangent": return `${constraint.lineA} · ${constraint.circle}`;
+    case "Concentric":
+    case "EqualRadius": return `${constraint.entityA} · ${constraint.entityB}`;
+    case "CircleDiameter": return constraint.circle;
+    case "PointCircleDistance": return `${constraint.point} · ${constraint.circle}`;
+    case "LineCircleDistance": return `${constraint.lineA} · ${constraint.circle}`;
+    case "CircleCircleDistance": return `${constraint.circleA} · ${constraint.circleB}`;
+    default: return "";
+  }
+}
+
+function numericKeyForConstraint(kind: string): string | null {
+  switch (kind) {
+    case "Distance":
+    case "FrameDistance":
+    case "LineDistance":
+    case "FrameLineDistance":
+    case "PointLineDistance":
+    case "FramePointLineDistance":
+    case "PointCircleDistance":
+    case "LineCircleDistance":
+    case "CircleCircleDistance":
+      return "distance";
+    case "CircleDiameter":
+      return "diameter";
+    case "Angle":
+      return "angleDegrees";
+    default:
+      return null;
+  }
+}
+
+function numericValueForConstraint(constraint: SketchConstraint): number | null {
+  switch (constraint.case) {
+    case "Distance":
+    case "FrameDistance":
+    case "LineDistance":
+    case "FrameLineDistance":
+    case "PointLineDistance":
+    case "FramePointLineDistance":
+    case "PointCircleDistance":
+    case "LineCircleDistance":
+    case "CircleCircleDistance":
+      return constraint.distance;
+    case "CircleDiameter":
+      return constraint.diameter;
+    case "Angle":
+      return constraint.angleDegrees;
+    default:
+      return null;
+  }
 }
 
 function renderActionRow(
@@ -502,7 +754,7 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
 
   // ── Sketch edit toggle (Sketch nodes only)
   if (kind.case === "Sketch") {
-    const sketchEditMode = cb.getSketchEditMode();
+    const sketchEditMode = doc.sketchUi.editMode;
     const sketchSection = el("div", "sketch-edit-section");
     if (sketchEditMode) sketchSection.classList.add("is-active");
     const toggle = el("button", "sketch-edit-toggle");

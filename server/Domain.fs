@@ -176,36 +176,51 @@ module Document =
 
     let private patchSketchConstraintParam (key: string) (value: System.Text.Json.JsonElement) (sketch: ActionSketch) =
         let parts = key.Split('.')
-        if parts.Length <> 5 || parts.[0] <> "sketch" || parts.[1] <> "constraint" || parts.[3] <> "labelPosition" then sketch
+        if parts.Length < 4 || parts.[0] <> "sketch" || parts.[1] <> "constraint" then sketch
         else
             match System.Int32.TryParse(parts.[2]) with
             | false, _ -> sketch
             | true, index ->
-                let field = parts.[4]
                 let constraints =
                     sketch.Constraints
                     |> List.mapi (fun i item ->
                         if i <> index then item
                         else
-                            let patchLabel current =
-                                let pos = current |> Option.defaultValue { X = 0.0; Y = 0.0 }
-                                let pos' =
-                                    { X = if field = "x" then value.GetDouble() else pos.X
-                                      Y = if field = "y" then value.GetDouble() else pos.Y }
-                                Some pos'
-                            match item with
-                            | Distance(a, b, dist, lp) -> Distance(a, b, dist, patchLabel lp)
-                            | FrameDistance(point, frame, part, dist, lp) -> FrameDistance(point, frame, part, dist, patchLabel lp)
-                            | LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, dist, lp) -> LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, dist, patchLabel lp)
-                            | FrameLineDistance(lineA, aStart, aEnd, frame, part, dist, lp) -> FrameLineDistance(lineA, aStart, aEnd, frame, part, dist, patchLabel lp)
-                            | PointLineDistance(point, lineA, aStart, aEnd, dist, lp) -> PointLineDistance(point, lineA, aStart, aEnd, dist, patchLabel lp)
-                            | FramePointLineDistance(point, frame, part, dist, lp) -> FramePointLineDistance(point, frame, part, dist, patchLabel lp)
-                            | PointCircleDistance(point, circle, center, dist, lp) -> PointCircleDistance(point, circle, center, dist, patchLabel lp)
-                            | LineCircleDistance(lineA, aStart, aEnd, circle, center, dist, lp) -> LineCircleDistance(lineA, aStart, aEnd, circle, center, dist, patchLabel lp)
-                            | CircleCircleDistance(circleA, centerA, circleB, centerB, dist, internalFlag, lp) -> CircleCircleDistance(circleA, centerA, circleB, centerB, dist, internalFlag, patchLabel lp)
-                            | CircleDiameter(circle, center, diam, lp) -> CircleDiameter(circle, center, diam, patchLabel lp)
-                            | Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, lp) -> Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, patchLabel lp)
-                            | other -> other)
+                            match parts.[3], item with
+                            | "labelPosition", _ when parts.Length = 5 ->
+                                let field = parts.[4]
+                                let patchLabel current =
+                                    let pos = current |> Option.defaultValue { X = 0.0; Y = 0.0 }
+                                    let pos' =
+                                        { X = if field = "x" then value.GetDouble() else pos.X
+                                          Y = if field = "y" then value.GetDouble() else pos.Y }
+                                    Some pos'
+                                match item with
+                                | Distance(a, b, dist, lp) -> Distance(a, b, dist, patchLabel lp)
+                                | FrameDistance(point, frame, part, dist, lp) -> FrameDistance(point, frame, part, dist, patchLabel lp)
+                                | LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, dist, lp) -> LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, dist, patchLabel lp)
+                                | FrameLineDistance(lineA, aStart, aEnd, frame, part, dist, lp) -> FrameLineDistance(lineA, aStart, aEnd, frame, part, dist, patchLabel lp)
+                                | PointLineDistance(point, lineA, aStart, aEnd, dist, lp) -> PointLineDistance(point, lineA, aStart, aEnd, dist, patchLabel lp)
+                                | FramePointLineDistance(point, frame, part, dist, lp) -> FramePointLineDistance(point, frame, part, dist, patchLabel lp)
+                                | PointCircleDistance(point, circle, center, dist, lp) -> PointCircleDistance(point, circle, center, dist, patchLabel lp)
+                                | LineCircleDistance(lineA, aStart, aEnd, circle, center, dist, lp) -> LineCircleDistance(lineA, aStart, aEnd, circle, center, dist, patchLabel lp)
+                                | CircleCircleDistance(circleA, centerA, circleB, centerB, dist, internalFlag, lp) -> CircleCircleDistance(circleA, centerA, circleB, centerB, dist, internalFlag, patchLabel lp)
+                                | CircleDiameter(circle, center, diam, lp) -> CircleDiameter(circle, center, diam, patchLabel lp)
+                                | Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, lp) -> Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, patchLabel lp)
+                                | other -> other
+                            | "distance", Distance(a, b, _, lp) -> Distance(a, b, value.GetDouble(), lp)
+                            | "distance", FrameDistance(point, frame, part, _, lp) -> FrameDistance(point, frame, part, value.GetDouble(), lp)
+                            | "distance", LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, _, lp) -> LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, value.GetDouble(), lp)
+                            | "distance", FrameLineDistance(lineA, aStart, aEnd, frame, part, _, lp) -> FrameLineDistance(lineA, aStart, aEnd, frame, part, value.GetDouble(), lp)
+                            | "distance", PointLineDistance(point, lineA, aStart, aEnd, _, lp) -> PointLineDistance(point, lineA, aStart, aEnd, value.GetDouble(), lp)
+                            | "distance", FramePointLineDistance(point, frame, part, _, lp) -> FramePointLineDistance(point, frame, part, value.GetDouble(), lp)
+                            | "distance", PointCircleDistance(point, circle, center, _, lp) -> PointCircleDistance(point, circle, center, value.GetDouble(), lp)
+                            | "distance", LineCircleDistance(lineA, aStart, aEnd, circle, center, _, lp) -> LineCircleDistance(lineA, aStart, aEnd, circle, center, value.GetDouble(), lp)
+                            | "distance", CircleCircleDistance(circleA, centerA, circleB, centerB, _, internalFlag, lp) -> CircleCircleDistance(circleA, centerA, circleB, centerB, value.GetDouble(), internalFlag, lp)
+                            | "diameter", CircleDiameter(circle, center, _, lp) -> CircleDiameter(circle, center, value.GetDouble(), lp)
+                            | "angleDegrees", Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, _, aReverse, bReverse, ccw, lp) ->
+                                Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, value.GetDouble(), aReverse, bReverse, ccw, lp)
+                            | _ -> item)
                 { sketch with Constraints = constraints }
 
     let patchParam (id: string) (key: string) (value: System.Text.Json.JsonElement) (doc: Document) : Document =

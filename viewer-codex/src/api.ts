@@ -79,6 +79,7 @@ export interface ViewerState {
   selectedId: string | null;
   hoveredTarget: SelectionTarget | null;
   selectedTargets: SelectionTarget[];
+  sketchUi: SketchUiState;
   frames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchFrames: Array<{ id: string; transform: JsonRigidTransform }>;
   visible: Record<string, boolean>;
@@ -95,6 +96,14 @@ export type SelectionTarget =
   | { case: "TargetLoop"; sketchId: string; loopId: string }
   | { case: "TargetDimension"; sketchId: string; constraintIndex: number }
   | { case: "TargetSurface"; actionId: string };
+
+export interface SketchUiState {
+  editMode: boolean;
+  tool: string;
+  constraintPlacementMode: string | null;
+  constraintAvailability: Record<string, boolean>;
+  dimensionPlacementAvailability: Record<string, boolean>;
+}
 
 const BASE = "/api";
 
@@ -143,5 +152,19 @@ export function patchActionParam(id: string, key: string, value: number | string
   return request(`/document/action/${id}/param`, {
     method: "PATCH",
     body: JSON.stringify({ key, value }),
+  });
+}
+
+export function replaceViewerSketch(actionId: string, sketch: ActionSketch): Promise<ViewerState> {
+  return request("/viewer/sketch", {
+    method: "PUT",
+    body: JSON.stringify({ actionId, sketch }),
+  });
+}
+
+export function placeViewerConstraint(x: number, y: number): Promise<ViewerState> {
+  return request("/viewer/place-constraint", {
+    method: "POST",
+    body: JSON.stringify({ x, y }),
   });
 }

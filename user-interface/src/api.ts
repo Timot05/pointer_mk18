@@ -110,8 +110,27 @@ export interface Document {
   name: string;
   actions: Action[];
   selectedId: string | null;
+  selectedTargets: SelectionTarget[];
+  sketchUi: SketchUiState;
   refOptions: Record<string, string[]>;
   errors: ActionError[];
+}
+
+export type SelectionTarget =
+  | { case: "TargetPoint"; sketchId: string; entityId: string }
+  | { case: "TargetLine"; sketchId: string; entityId: string }
+  | { case: "TargetCircle"; sketchId: string; entityId: string }
+  | { case: "TargetArc"; sketchId: string; entityId: string }
+  | { case: "TargetLoop"; sketchId: string; loopId: string }
+  | { case: "TargetDimension"; sketchId: string; constraintIndex: number }
+  | { case: "TargetSurface"; actionId: string };
+
+export interface SketchUiState {
+  editMode: boolean;
+  tool: string;
+  constraintPlacementMode: string | null;
+  constraintAvailability: Record<string, boolean>;
+  dimensionPlacementAvailability: Record<string, boolean>;
 }
 
 async function request(url: string, opts?: RequestInit): Promise<Document> {
@@ -207,6 +226,37 @@ export async function reorderActions(ids: string[]): Promise<Document> {
   return request("/document/reorder", {
     method: "PUT",
     body: JSON.stringify(ids),
+  });
+}
+
+export async function toggleSketchEdit(): Promise<DocumentMutation> {
+  return requestDocumentMutation("/sketch-ui/edit/toggle", { method: "POST" });
+}
+
+export async function setSketchTool(tool: string): Promise<DocumentMutation> {
+  return requestDocumentMutation("/sketch-ui/tool", {
+    method: "PUT",
+    body: JSON.stringify({ tool }),
+  });
+}
+
+export async function toggleConstraintPlacement(kind: string): Promise<DocumentMutation> {
+  return requestDocumentMutation("/sketch-ui/constraint-placement/toggle", {
+    method: "POST",
+    body: JSON.stringify({ kind }),
+  });
+}
+
+export async function addConstraintFromSelection(kind: string): Promise<DocumentMutation> {
+  return requestDocumentMutation("/sketch-ui/add-constraint", {
+    method: "POST",
+    body: JSON.stringify({ kind }),
+  });
+}
+
+export async function deleteSketchConstraint(index: number): Promise<DocumentMutation> {
+  return requestDocumentMutation(`/sketch-ui/constraint/${index}`, {
+    method: "DELETE",
   });
 }
 

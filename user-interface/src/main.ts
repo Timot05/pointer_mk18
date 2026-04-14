@@ -1,4 +1,4 @@
-import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, toggleDisplay, patchDisplay, toggleFieldSlice, patchFieldSlice, addAction, deleteAction, reorderActions, type Action, type Document, type ActionKind } from "./api";
+import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, toggleDisplay, patchDisplay, toggleFieldSlice, patchFieldSlice, addAction, deleteAction, reorderActions, toggleSketchEdit, setSketchTool, toggleConstraintPlacement, addConstraintFromSelection, deleteSketchConstraint, type Action, type Document, type ActionKind } from "./api";
 import { render, type RenderCallbacks } from "./render";
 import * as palette from "./command-palette";
 
@@ -120,11 +120,37 @@ const callbacks: RenderCallbacks = {
   },
 
   onToggleSketchEdit: () => {
-    sketchEditMode = !sketchEditMode;
-    rerender();
+    void toggleSketchEdit().then((result) => {
+      refresh(result.document);
+      emitViewerInvalidation(result.viewerInvalidation);
+    });
   },
 
-  getSketchEditMode: () => sketchEditMode,
+  getSketchEditMode: () => doc?.sketchUi.editMode ?? sketchEditMode,
+
+  onSetSketchTool: async (tool) => {
+    const result = await setSketchTool(tool);
+    refresh(result.document);
+    emitViewerInvalidation(result.viewerInvalidation);
+  },
+
+  onToggleConstraintPlacement: async (kind) => {
+    const result = await toggleConstraintPlacement(kind);
+    refresh(result.document);
+    emitViewerInvalidation(result.viewerInvalidation);
+  },
+
+  onAddConstraintFromSelection: async (kind) => {
+    const result = await addConstraintFromSelection(kind);
+    refresh(result.document);
+    emitViewerInvalidation(result.viewerInvalidation);
+  },
+
+  onDeleteSketchConstraint: async (index) => {
+    const result = await deleteSketchConstraint(index);
+    refresh(result.document);
+    emitViewerInvalidation(result.viewerInvalidation);
+  },
 };
 
 function isEditable(el: EventTarget | null): boolean {
@@ -178,8 +204,9 @@ document.addEventListener("keydown", async (e) => {
     const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
     if (sel && sel.kind.case === "Sketch") {
       e.preventDefault();
-      sketchEditMode = !sketchEditMode;
-      rerender();
+      const result = await toggleSketchEdit();
+      refresh(result.document);
+      emitViewerInvalidation(result.viewerInvalidation);
     }
   } else if (e.key === "f") {
     const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);

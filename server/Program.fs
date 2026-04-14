@@ -25,6 +25,18 @@ module Program =
     let mutable paletteSession = Palette.empty
     let mutable hoveredTarget : SelectionTarget option = None
     let mutable selectedTargets : SelectionTarget list = []
+    let mutable sketchEditMode = false
+    let mutable sketchTool = "none"
+    let mutable constraintPlacementMode : string option = None
+
+    let sketchUiState () =
+        SketchAuthoring.availabilityForSelection doc sketchEditMode sketchTool constraintPlacementMode selectedTargets
+
+    let normalizeSketchUiState () =
+        let next = sketchUiState ()
+        sketchEditMode <- next.EditMode
+        sketchTool <- next.Tool
+        constraintPlacementMode <- next.ConstraintPlacementMode
 
     let recompile () =
         compiled <- Pipeline.compile doc.Actions
@@ -36,6 +48,7 @@ module Program =
             selectedTargets
             |> List.filter (fun target ->
                 compiled.Pickables |> List.exists (Pickable.sameTarget target))
+        normalizeSketchUiState ()
 
     let formatErrors (errs: TypeError list) =
         errs |> List.map (fun e ->
@@ -81,6 +94,8 @@ module Program =
                     { a with Display = None; FieldSlice = None })
 
         {| Name = doc.Name; Actions = actions; SelectedId = doc.SelectedId
+           SelectedTargets = selectedTargets
+           SketchUi = sketchUiState ()
            RefOptions = refOptions; Errors = errors |}
 
     let json () =
@@ -178,6 +193,7 @@ module Program =
            SelectedId = doc.SelectedId
            HoveredTarget = hoveredTarget
            SelectedTargets = selectedTargets
+           SketchUi = sketchUiState ()
            Frames = frames
            SketchFrames = sketchFrames
            Visible = visibleByAction
@@ -332,6 +348,99 @@ module Program =
                 hoveredTarget <- None
                 selectedTargets <- []
                 mutate (Document.select id))) |> ignore
+
+        app.MapPost("/api/sketch-ui/edit/toggle",
+            Func<IResult>(fun () ->
+                sketchEditMode <- not sketchEditMode
+                if not sketchEditMode then
+                    sketchTool <- "none"
+                    constraintPlacementMode <- None
+                normalizeSketchUiState ()
+                withViewerInvalidation "state" (json ()))) |> ignore
+
+        app.MapPut("/api/sketch-ui/tool",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let tool = body.GetProperty("tool").GetString()
+                sketchEditMode <- true
+                sketchTool <- if String.IsNullOrWhiteSpace(tool) then "none" else tool
+                constraintPlacementMode <- None
+                normalizeSketchUiState ()
+                withViewerInvalidation "state" (json ()))) |> ignore
+
+        app.MapPost("/api/sketch-ui/constraint-placement/toggle",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let kind = body.GetProperty("kind").GetString()
+                sketchEditMode <- true
+                sketchTool <- "none"
+                constraintPlacementMode <-
+                    match constraintPlacementMode with
+                    | Some active when active = kind -> None
+                    | _ -> Some kind
+                normalizeSketchUiState ()
+                withViewerInvalidation "state" (json ()))) |> ignore
+
+        app.MapPost("/api/sketch-ui/add-constraint",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let kind = body.GetProperty("kind").GetString()
+                match SketchAuthoring.addConstraintFromSelection doc selectedTargets kind with
+                | Some nextDoc ->
+                    doc <- nextDoc
+                    hoveredTarget <- None
+                    selectedTargets <- []
+                    recompile ()
+                    withViewerInvalidation "model" (json ())
+                | None ->
+                    withViewerInvalidation "state" (json ()))) |> ignore
+
+        app.MapDelete("/api/sketch-ui/constraint/{index}",
+            Func<int, IResult>(fun index ->
+                match SketchAuthoring.trySelectedSketch doc with
+                | Some ctx ->
+                    doc <- SketchAuthoring.withUpdatedSketch doc ctx.Action.Id (SketchAuthoring.removeConstraintAt index ctx.Sketch)
+                    hoveredTarget <- None
+                    selectedTargets <- []
+                    recompile ()
+                    withViewerInvalidation "model" (json ())
+                | None ->
+                    withViewerInvalidation "state" (json ()))) |> ignore
+
+        app.MapPut("/api/viewer/sketch",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let actionId = body.GetProperty("actionId").GetString()
+                let sketch = JsonSerializer.Deserialize<ActionSketch>(body.GetProperty("sketch").GetRawText(), jsonOpts)
+                match doc.Actions |> List.tryFind (fun action -> action.Id = actionId) with
+                | Some { Kind = Sketch(_, _) } ->
+                    doc <- SketchAuthoring.withUpdatedSketch doc actionId sketch
+                    hoveredTarget <- None
+                    selectedTargets <- []
+                    recompile ()
+                    viewerStateResult ()
+                | _ ->
+                    viewerStateResult ())) |> ignore
+
+        app.MapPost("/api/viewer/place-constraint",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let x = body.GetProperty("x").GetDouble()
+                let y = body.GetProperty("y").GetDouble()
+                match constraintPlacementMode with
+                | Some kind ->
+                    match SketchAuthoring.placeConstraintFromSelection doc selectedTargets kind { X = x; Y = y } with
+                    | Some nextDoc ->
+                        doc <- nextDoc
+                        hoveredTarget <- None
+                        selectedTargets <- []
+                        constraintPlacementMode <- None
+                        recompile ()
+                        viewerStateResult ()
+                    | None ->
+                        viewerStateResult ()
+                | None ->
+                    viewerStateResult ())) |> ignore
 
         app.MapPut("/api/document/action/{id}",
             Func<string, HttpContext, IResult>(fun id ctx ->

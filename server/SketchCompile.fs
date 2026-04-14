@@ -134,6 +134,7 @@ module SketchCompile =
               Circles = Dictionary()
               ArcThrough = Dictionary() }
         let fixedSlots = HashSet<int>()
+        let fixedInputSlots = HashSet<int>()
 
         // Allocate params for every entity.
         for e in sketch.Entities do
@@ -168,6 +169,12 @@ module SketchCompile =
 
         let emitDiffConst a k =
             outputs.Add(b.Sub(a, constant b k))
+
+        let fixedParam value =
+            let slot = b.ParamCount
+            let node = b.Param value
+            fixedInputSlots.Add slot |> ignore
+            node
 
         for c in sketch.Constraints do
             match c with
@@ -212,7 +219,7 @@ module SketchCompile =
                 match tryPoint aId, tryPoint bId with
                 | Some pa, Some pb ->
                     let dx, dy = vecSub b pa pb
-                    emitDiffConst (length b dx dy) d
+                    emitDiff (length b dx dy) (fixedParam d)
                 | _ -> skipped <- skipped + 1
 
             // ── Equal-length lines: |a|² = |b|² ─────────────────────
@@ -277,7 +284,7 @@ module SketchCompile =
                 match tryCircle circleId with
                 | Some cir ->
                     let twoR = b.Mul(cir.RadiusNode, constant b 2.0)
-                    emitDiffConst twoR diameter
+                    emitDiff twoR (fixedParam diameter)
                 | _ -> skipped <- skipped + 1
 
             // ── LineDistance (two parallel lines; emit separation only) ─
@@ -289,7 +296,7 @@ module SketchCompile =
                     let dyR = b.Sub(bS.YNode, aS.YNode)
                     let cross = crossZ b dxL dyL dxR dyR
                     let lineLen = length b dxL dyL
-                    outputs.Add(b.Sub(cross, b.Mul(constant b distance, lineLen)))
+                    outputs.Add(b.Sub(cross, b.Mul(fixedParam distance, lineLen)))
                 | _ -> skipped <- skipped + 1
 
             | PointLineDistance(pid, _, asId, aeId, distance, _) ->
@@ -300,7 +307,7 @@ module SketchCompile =
                     let dyR = b.Sub(p.YNode, aS.YNode)
                     let cross = crossZ b dxL dyL dxR dyR
                     let lineLen = length b dxL dyL
-                    outputs.Add(b.Sub(cross, b.Mul(constant b distance, lineLen)))
+                    outputs.Add(b.Sub(cross, b.Mul(fixedParam distance, lineLen)))
                 | _ -> skipped <- skipped + 1
 
             | PointCircleDistance(pid, circleId, centerId, distance, _) ->
@@ -309,7 +316,7 @@ module SketchCompile =
                     let dx = b.Sub(p.XNode, c.XNode)
                     let dy = b.Sub(p.YNode, c.YNode)
                     let dist = length b dx dy
-                    let target = b.Add(cr.RadiusNode, constant b distance)
+                    let target = b.Add(cr.RadiusNode, fixedParam distance)
                     outputs.Add(b.Sub(dist, target))
                 | _ -> skipped <- skipped + 1
 
@@ -321,7 +328,7 @@ module SketchCompile =
                     let dyR = b.Sub(c.YNode, aS.YNode)
                     let cross = crossZ b dxL dyL dxR dyR
                     let lineLen = length b dxL dyL
-                    let target = b.Add(cr.RadiusNode, constant b distance)
+                    let target = b.Add(cr.RadiusNode, fixedParam distance)
                     outputs.Add(b.Sub(cross, b.Mul(target, lineLen)))
                 | _ -> skipped <- skipped + 1
 
@@ -336,9 +343,9 @@ module SketchCompile =
                             // the signed form: assume rA ≥ rB, residual is
                             // centerDist - (rA - rB) + d.
                             let rDiff = b.Sub(crA.RadiusNode, crB.RadiusNode)
-                            b.Sub(rDiff, constant b distance)
+                            b.Sub(rDiff, fixedParam distance)
                         else
-                            b.Add(b.Add(crA.RadiusNode, crB.RadiusNode), constant b distance)
+                            b.Add(b.Add(crA.RadiusNode, crB.RadiusNode), fixedParam distance)
                     outputs.Add(b.Sub(centerDist, target))
                 | _ -> skipped <- skipped + 1
 
@@ -361,7 +368,7 @@ module SketchCompile =
                     // Flip sign if ccwFromAToB is false.
                     let angleSigned =
                         if ccwFromAToB then angle else b.Neg angle
-                    let target = constant b (angleDeg * Math.PI / 180.0)
+                    let target = b.Mul(fixedParam angleDeg, constant b (Math.PI / 180.0))
                     emitDiff angleSigned target
                 | _ -> skipped <- skipped + 1
 
@@ -388,14 +395,14 @@ module SketchCompile =
                     | Some (FGPoint(fx, fy)) ->
                         let dx = b.Sub(p.XNode, constant b fx)
                         let dy = b.Sub(p.YNode, constant b fy)
-                        emitDiffConst (length b dx dy) distance
+                        emitDiff (length b dx dy) (fixedParam distance)
                     | Some (FGLine(ox, oy, dx, dy)) ->
                         // Perpendicular distance = cross((p - o), (dx,dy)) / |dir|.
                         // dir is already unit from frameGeometry.
                         let dpx = b.Sub(p.XNode, constant b ox)
                         let dpy = b.Sub(p.YNode, constant b oy)
                         let cross = crossZ b (constant b dx) (constant b dy) dpx dpy
-                        emitDiffConst cross distance
+                        emitDiff cross (fixedParam distance)
                     | None -> skipped <- skipped + 1
                 | _ -> skipped <- skipped + 1
 
@@ -431,7 +438,7 @@ module SketchCompile =
                         let dpx = b.Sub(aS.XNode, constant b ox)
                         let dpy = b.Sub(aS.YNode, constant b oy)
                         let cross = crossZ b (constant b dx) (constant b dy) dpx dpy
-                        emitDiffConst cross distance
+                        emitDiff cross (fixedParam distance)
                     | _ -> skipped <- skipped + 1
                 | _ -> skipped <- skipped + 1
 
@@ -443,7 +450,7 @@ module SketchCompile =
                         let dpx = b.Sub(p.XNode, constant b ox)
                         let dpy = b.Sub(p.YNode, constant b oy)
                         let cross = crossZ b (constant b dx) (constant b dy) dpx dpy
-                        emitDiffConst cross distance
+                        emitDiff cross (fixedParam distance)
                     | _ -> skipped <- skipped + 1
                 | _ -> skipped <- skipped + 1
 
@@ -464,6 +471,6 @@ module SketchCompile =
         let paramCount = b.ParamCount
         let varSlots =
             [| 0 .. paramCount - 1 |]
-            |> Array.filter (fun s -> not (fixedSlots.Contains s))
+            |> Array.filter (fun s -> not (fixedSlots.Contains s || fixedInputSlots.Contains s))
 
         b.Build(outputs.ToArray(), varSlots)

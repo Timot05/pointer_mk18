@@ -1845,12 +1845,12 @@ function pushConstraintGeometry(
         highlightLines.push({ x: aa[0], y: aa[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
       }
       labels.push({
-        text: formatNumber(constraint.distance),
+        text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)),
         anchor,
         pickId,
         hovered: false,
       });
-      if (activeDimension) highlightLabels.push({ text: formatNumber(constraint.distance), anchor, pickId, hovered: true });
+      if (activeDimension) highlightLabels.push({ text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)), anchor, pickId, hovered: true });
       return;
     }
     case "CircleDiameter": {
@@ -1873,12 +1873,12 @@ function pushConstraintGeometry(
         );
       }
       labels.push({
-        text: `⌀ ${formatNumber(constraint.diameter)}`,
+        text: `⌀ ${formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.diameter`, constraint.diameter))}`,
         anchor,
         pickId,
         hovered: false,
       });
-      if (activeDimension) highlightLabels.push({ text: `⌀ ${formatNumber(constraint.diameter)}`, anchor, pickId, hovered: true });
+      if (activeDimension) highlightLabels.push({ text: `⌀ ${formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.diameter`, constraint.diameter))}`, anchor, pickId, hovered: true });
       return;
     }
     case "Angle": {
@@ -1900,12 +1900,12 @@ function pushConstraintGeometry(
         highlightLines.push({ x: vertex[0], y: vertex[1], color: DIM_HOVER }, { x: vertex[0] + rb[0] * r, y: vertex[1] + rb[1] * r, color: DIM_HOVER });
       }
       labels.push({
-        text: `${formatNumber(constraint.angleDegrees)}°`,
+        text: `${formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.angleDegrees`, constraint.angleDegrees))}°`,
         anchor,
         pickId,
         hovered: false,
       });
-      if (activeDimension) highlightLabels.push({ text: `${formatNumber(constraint.angleDegrees)}°`, anchor, pickId, hovered: true });
+      if (activeDimension) highlightLabels.push({ text: `${formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.angleDegrees`, constraint.angleDegrees))}°`, anchor, pickId, hovered: true });
       return;
     }
     default:
@@ -2476,6 +2476,29 @@ async function createSketchSolverBinding(
         break;
     }
   }
+  sketch.sketch.constraints.forEach((constraint, index) => {
+    switch (constraint.case) {
+      case "Distance":
+      case "FrameDistance":
+      case "LineDistance":
+      case "FrameLineDistance":
+      case "PointLineDistance":
+      case "FramePointLineDistance":
+      case "PointCircleDistance":
+      case "LineCircleDistance":
+      case "CircleCircleDistance":
+        localByPath.set(`sketch.constraint.${index}.distance`, localSlot++);
+        break;
+      case "CircleDiameter":
+        localByPath.set(`sketch.constraint.${index}.diameter`, localSlot++);
+        break;
+      case "Angle":
+        localByPath.set(`sketch.constraint.${index}.angleDegrees`, localSlot++);
+        break;
+      default:
+        break;
+    }
+  });
 
   const localToGlobal = new Array<number>(localByPath.size);
   for (const [path, local] of localByPath) {

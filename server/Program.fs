@@ -171,7 +171,10 @@ module Program =
                             let ctx : SketchCompileContext =
                                 { SketchOrigin = sketchOrigin; Frames = compiled.Frames }
                             let graph = SketchCompile.compile sk ctx
-                            Some {| Id = a.Id; Origin = origin; Sketch = sk; Graph = graph |}
+                            let loops =
+                                SketchLoops.detectLoops sk.Entities
+                                |> List.map (fun l -> {| Id = l.Id; EntityIds = l.EntityIds |})
+                            Some {| Id = a.Id; Origin = origin; SketchFrame = sketchOrigin; Sketch = sk; Graph = graph; Loops = loops |}
                         | _ -> None)
                 let payload =
                     {| Surfaces = compiled.Surfaces

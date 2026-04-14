@@ -1,0 +1,15 @@
+export const PAGE_BG = "#FEFCF3";
+export const SURFACE_BG = "#F5F0E4";
+export const SURFACE_BORDER = "#D5D0C4";
+export const TEXT_PRIMARY = "#333333";
+export const TEXT_MUTED = "#666666";
+export const ACCENT = [0.502, 0.745, 0.549, 1.0] as const;
+export const ACCENT_SOFT = [0.502, 0.745, 0.549, 0.2] as const;
+export const GRID_MINOR = [0.835, 0.816, 0.769, 0.35] as const;
+export const GRID_MAJOR = [0.835, 0.816, 0.769, 0.75] as const;
+export const AXIS = [0.6, 0.58, 0.52, 0.9] as const;
+export const SKETCH_LINE = [0.231, 0.231, 0.231, 1.0] as const;
+export const SKETCH_POINT = [0.231, 0.231, 0.231, 1.0] as const;
+export const DIM_COLOR = [0.427, 0.341, 0.192, 1.0] as const;
+export const DIM_HOVER = [0.725, 0.510, 0.170, 1.0] as const;
+export const FIXED_COLOR = [0.690, 0.350, 0.416, 1.0] as const;

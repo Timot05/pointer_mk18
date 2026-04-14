@@ -879,12 +879,14 @@ export class ViewerApp {
     let worldMin: Vec3 = [Infinity, Infinity, Infinity];
     let worldMax: Vec3 = [-Infinity, -Infinity, -Infinity];
     for (const frame of this.state.frames) {
+      if (!this.isVisible(frame.id)) continue;
       const t = toSketchFrame(frame.transform);
       const p = t.position;
       worldMin = [Math.min(worldMin[0], p[0]), Math.min(worldMin[1], p[1]), Math.min(worldMin[2], p[2])];
       worldMax = [Math.max(worldMax[0], p[0]), Math.max(worldMax[1], p[1]), Math.max(worldMax[2], p[2])];
     }
     for (const sketch of this.model.sketches) {
+      if (!this.isVisible(sketch.id)) continue;
       const frame = this.sketchFrameFor(sketch.id);
       const points = sketch.sketch.entities.filter((entity): entity is Extract<RenderEntity, { case: "REPoint" }> => entity.case === "REPoint");
       for (const p of points) {
@@ -907,7 +909,9 @@ export class ViewerApp {
 
   private rebuildRenderData(): void {
     if (!this.model || !this.state) return;
-    this.renderSketches = this.model.sketches.map((sketch) => {
+    this.renderSketches = this.model.sketches
+      .filter((sketch) => this.isVisible(sketch.id))
+      .map((sketch) => {
       const frame = this.sketchFrameFor(sketch.id);
       const built = buildSketchBuffers(
         sketch,
@@ -928,13 +932,18 @@ export class ViewerApp {
         loops: built.loops,
       };
     });
-    this.metaEl.textContent = `${this.model.sketches.length} sketch${this.model.sketches.length === 1 ? "" : "es"}  ·  ${this.model.frames.length} frame${this.model.frames.length === 1 ? "" : "s"}  ·  ${this.model.numSlots} slots`;
+    const visibleFrameCount = this.state.frames.filter((frame) => this.isVisible(frame.id)).length;
+    this.metaEl.textContent = `${this.renderSketches.length} sketch${this.renderSketches.length === 1 ? "" : "es"}  ·  ${visibleFrameCount} frame${visibleFrameCount === 1 ? "" : "s"}  ·  ${this.model.numSlots} slots`;
   }
 
   private sketchFrameFor(sketchId: string): SketchFrame {
     const live = this.state?.sketchFrames.find((candidate) => candidate.id === sketchId);
-    const fallback = this.model?.sketches.find((candidate) => candidate.id === sketchId)?.sketchFrame;
-    return toSketchFrame((live ?? { transform: fallback! }).transform);
+    if (live) return toSketchFrame(live.transform);
+    throw new Error(`Missing sketch frame for ${sketchId}`);
+  }
+
+  private isVisible(actionId: string): boolean {
+    return this.state?.visible[actionId] ?? true;
   }
 
   private async buildSolverBindings(): Promise<void> {
@@ -1047,7 +1056,9 @@ export class ViewerApp {
     });
     pass.setBindGroup(0, cameraBindGroup);
 
-    const frameLineData = this.state ? buildFrameLineData(this.state.frames, this.selectedActionId) : new Float32Array();
+    const frameLineData = this.state
+      ? buildFrameLineData(this.state.frames.filter((frame) => this.isVisible(frame.id)), this.selectedActionId)
+      : new Float32Array();
     if (frameLineData.length > 0) {
       const gizmoBuffer = device.createBuffer({
         size: frameLineData.byteLength,

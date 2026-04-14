@@ -85,6 +85,7 @@ export interface ViewerState {
   params: number[];
   frames: ViewerFrame[];
   sketchFrames: Array<{ id: string; transform: JsonRigidTransform }>;
+  visible: Record<string, boolean>;
   display: Record<string, unknown>;
   errors: Array<{ actionId: string; key: string; error: string }>;
 }

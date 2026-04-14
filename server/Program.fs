@@ -132,9 +132,15 @@ module Program =
                     Some {| Id = a.Id; Transform = sketchOrigin |}
                 | _ -> None)
 
+        let visibleByAction =
+            doc.Actions
+            |> List.map (fun a -> a.Id, a.Visible)
+            |> Map.ofList
+
         {| Params = compiled.Slots.Values
            Frames = frames
            SketchFrames = sketchFrames
+           Visible = visibleByAction
            Display = displayByAction
            Errors = formatErrors compiled.Errors |}
 

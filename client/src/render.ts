@@ -459,6 +459,7 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
       break;
 
     case "Sketch":
+      strip.appendChild(controlRef("origin", kind.origin, refOptsFor("origin"), selected.id, "origin", cb));
       break;
 
     case "FromSketch":

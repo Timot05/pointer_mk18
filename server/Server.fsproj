@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <Compile Include="Math.fs" />
+    <Compile Include="Sketch.fs" />
     <Compile Include="Domain.fs" />
     <Compile Include="TypeCheck.fs" />
     <Compile Include="Element.fs" />

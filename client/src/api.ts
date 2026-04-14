@@ -27,6 +27,61 @@ export interface Action {
   fieldSlice: FieldSliceSettings | null;
 }
 
+// ── Sketch data model ─────────────────────────────────────────────────
+
+export interface FreePoint { x: number; y: number; }
+
+export type ArcData =
+  | { case: "ArcCenter"; center: string; clockwise: boolean }
+  | { case: "ArcThreePoint"; through: FreePoint };
+
+export type RenderEntity =
+  | { case: "REPoint"; id: string; x: number; y: number }
+  | { case: "RELine"; id: string; startId: string; endId: string }
+  | { case: "RECircle"; id: string; center: string; radius: number }
+  | { case: "REArc"; id: string; startId: string; endId: string; data: ArcData };
+
+export interface LabelPos { x: number; y: number; }
+
+export type SketchConstraint =
+  | { case: "Fixed"; point: string; x: number; y: number }
+  | { case: "Coincident"; a: string; b: string }
+  | { case: "FrameCoincident"; point: string; frame: string; part: string }
+  | { case: "Concentric"; entityA: string; entityB: string; centerA: string; centerB: string }
+  | { case: "Horizontal"; a: string; b: string }
+  | { case: "Vertical"; a: string; b: string }
+  | { case: "Distance"; a: string; b: string; distance: number; labelPosition: LabelPos | null }
+  | { case: "FrameDistance"; point: string; frame: string; part: string; distance: number; labelPosition: LabelPos | null }
+  | { case: "Equal"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string }
+  | { case: "EqualRadius"; entityA: string; entityB: string }
+  | { case: "Midpoint"; point: string; lineA: string; aStart: string; aEnd: string }
+  | { case: "Parallel"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string }
+  | { case: "FrameParallel"; aStart: string; aEnd: string; lineA: string; frame: string; part: string }
+  | { case: "Perpendicular"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string }
+  | { case: "FramePerpendicular"; aStart: string; aEnd: string; lineA: string; frame: string; part: string }
+  | { case: "Tangent"; aStart: string; aEnd: string; center: string; circle: string; lineA: string; radius: number }
+  | { case: "CurveTangent"; entityA: string; centerA: string; entityB: string; centerB: string; internal: boolean }
+  | { case: "CircleDiameter"; circle: string; center: string; diameter: number; labelPosition: LabelPos | null }
+  | { case: "LineDistance"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; distance: number; labelPosition: LabelPos | null }
+  | { case: "FrameLineDistance"; lineA: string; aStart: string; aEnd: string; frame: string; part: string; distance: number; labelPosition: LabelPos | null }
+  | { case: "PointLineDistance"; point: string; lineA: string; aStart: string; aEnd: string; distance: number; labelPosition: LabelPos | null }
+  | { case: "FramePointLineDistance"; point: string; frame: string; part: string; distance: number; labelPosition: LabelPos | null }
+  | { case: "PointCircleDistance"; point: string; circle: string; center: string; distance: number; labelPosition: LabelPos | null }
+  | { case: "LineCircleDistance"; lineA: string; aStart: string; aEnd: string; circle: string; center: string; distance: number; labelPosition: LabelPos | null }
+  | { case: "CircleCircleDistance"; circleA: string; centerA: string; circleB: string; centerB: string; distance: number; internal: boolean; labelPosition: LabelPos | null }
+  | { case: "Angle"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; angleDegrees: number; aReverse: boolean; bReverse: boolean; ccwFromAToB: boolean; labelPosition: LabelPos | null };
+
+export interface ActionSketch {
+  entities: RenderEntity[];
+  constraints: SketchConstraint[];
+}
+
+export type FromSketchSelection =
+  | { case: "SelectionLoop"; loopId: string | null }
+  | { case: "SelectionElements"; lineIds: string[] };
+
+// ── Actions ───────────────────────────────────────────────────────────
+
 export type ActionKind =
   | { case: "Origin" }
   | { case: "Cylinder"; radius: number; height: number }
@@ -39,8 +94,8 @@ export type ActionKind =
   | { case: "Union"; a: string | null; b: string | null; radius: number }
   | { case: "Subtract"; a: string | null; b: string | null; radius: number }
   | { case: "Intersect"; a: string | null; b: string | null; radius: number }
-  | { case: "Sketch" }
-  | { case: "FromSketch"; child: string | null; closed: boolean; flip: boolean }
+  | { case: "Sketch"; origin: string | null; sketch: ActionSketch }
+  | { case: "FromSketch"; child: string | null; closed: boolean; flip: boolean; selection: FromSketchSelection }
   | { case: "Thicken"; child: string | null; amount: number }
   | { case: "Shell"; child: string | null; thickness: number }
   | { case: "Mesh"; child: string | null; size: number; resolution: number };

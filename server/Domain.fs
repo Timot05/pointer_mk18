@@ -20,8 +20,8 @@ type ActionKind =
     | Union of a: ActionId option * b: ActionId option * radius: float
     | Subtract of a: ActionId option * b: ActionId option * radius: float
     | Intersect of a: ActionId option * b: ActionId option * radius: float
-    | Sketch
-    | FromSketch of child: ActionId option * closed: bool * flip: bool
+    | Sketch of origin: ActionId option * sketch: ActionSketch
+    | FromSketch of child: ActionId option * closed: bool * flip: bool * selection: FromSketchSelection
     | Thicken of child: ActionId option * amount: float
     | Shell of child: ActionId option * thickness: float
     | Mesh of child: ActionId option * size: float * resolution: int
@@ -206,11 +206,16 @@ module Document =
                                     (if key = "a" then optStr value else a),
                                     (if key = "b" then optStr value else b),
                                     (if key = "radius" then value.GetDouble() else r))
-                            | FromSketch(c, closed, flip) ->
+                            | Sketch(origin, s) ->
+                                Sketch(
+                                    (if key = "origin" then optStr value else origin),
+                                    s)
+                            | FromSketch(c, closed, flip, sel) ->
                                 FromSketch(
                                     (if key = "child" then optStr value else c),
                                     (if key = "closed" then value.GetBoolean() else closed),
-                                    (if key = "flip" then value.GetBoolean() else flip))
+                                    (if key = "flip" then value.GetBoolean() else flip),
+                                    sel)
                             | Thicken(c, amt) ->
                                 Thicken(
                                     (if key = "child" then optStr value else c),

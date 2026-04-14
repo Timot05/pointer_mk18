@@ -63,7 +63,8 @@ module Palette =
         | "Union" -> Some (Union(None, None, 0.0))
         | "Subtract" -> Some (Subtract(None, None, 0.0))
         | "Intersect" -> Some (Intersect(None, None, 0.0))
-        | "FromSketch" -> Some (FromSketch(None, true, false))
+        | "Sketch" -> Some (ActionKind.Sketch(None, ActionSketch.empty))
+        | "FromSketch" -> Some (FromSketch(None, true, false, FromSketchSelection.defaults))
         | "Thicken" -> Some (Thicken(None, 0.0))
         | "Shell" -> Some (Shell(None, 0.0))
         | "Mesh" -> Some (Mesh(None, 0.0, 0))
@@ -97,6 +98,8 @@ module Palette =
               scalars "rotation" [ s "angle" "angle" 0.0 ] ]
         | "Move" ->
             [ ref' "child" "from"; ref' "frame" "to frame" ]
+        | "Sketch" ->
+            [ ref' "origin" "on frame" ]
         | "FromSketch" ->
             [ ref' "child" "sketch" ]
         | "Union" | "Subtract" | "Intersect" ->
@@ -276,8 +279,8 @@ module Palette =
                 | "Union" -> Union(str "a", str "b", flt "radius" 0.0)
                 | "Subtract" -> Subtract(str "a", str "b", flt "radius" 0.0)
                 | "Intersect" -> Intersect(str "a", str "b", flt "radius" 0.0)
-                | "Sketch" -> ActionKind.Sketch
-                | "FromSketch" -> FromSketch(str "child", true, false)
+                | "Sketch" -> ActionKind.Sketch(str "origin", ActionSketch.empty)
+                | "FromSketch" -> FromSketch(str "child", true, false, FromSketchSelection.defaults)
                 | "Thicken" -> Thicken(str "child", flt "amount" 2.0)
                 | "Shell" -> Shell(str "child", flt "thickness" 1.0)
                 | "Mesh" -> Mesh(str "child", flt "size" 0.2, int "resolution" 96)

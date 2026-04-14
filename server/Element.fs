@@ -54,7 +54,7 @@ module Element =
             | Cylinder(r, h) -> ECylinder(r, h), built
             | Box(w, h, d) -> EBox(w, h, d), built
             | HalfPlane(ax, off, fl) -> EHalfPlane(ax, off, fl), built
-            | Sketch -> EEmpty, built
+            | Sketch _ -> EEmpty, built  // TODO (Phase 2): sketch → Element
 
             | Translate(child, x, y, z) ->
                 let childElem, built = resolveChild child built
@@ -104,9 +104,9 @@ module Element =
                 let childElem, built = resolveChild child built
                 EShell(childElem, t), built
 
-            | FromSketch(child, _, _) ->
+            | FromSketch(child, _, _, _) ->
                 let _childElem, built = resolveChild child built
-                EEmpty, built // TODO: sketch compilation
+                EEmpty, built // TODO (Phase 2): sketch compilation
 
             | Mesh(child, _, _) ->
                 let _childElem, built = resolveChild child built

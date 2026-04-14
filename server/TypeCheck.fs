@@ -83,6 +83,7 @@ module TypeCheck =
         | Rotate _ -> Map.ofList [ "child", fieldOrFrame ]
         | Move _ -> Map.ofList [ "child", fieldOrFrame; "frame", frameOnly ]
         | Union _ | Subtract _ | Intersect _ -> Map.ofList [ "a", fieldOnly; "b", fieldOnly ]
+        | Sketch _ -> Map.ofList [ "origin", frameOnly ]
         | FromSketch _ -> Map.ofList [ "child", sketchOnly ]
         | Thicken _ | Shell _ -> Map.ofList [ "child", fieldOnly ]
         | Mesh _ -> Map.ofList [ "child", fieldOnly ]
@@ -122,8 +123,13 @@ module TypeCheck =
             | Sphere _ | Cylinder _ | Box _ | HalfPlane _ ->
                 emit id FieldType.Field Map.empty types typed errors
 
-            | Sketch ->
-                emit id FieldType.Sketch Map.empty types typed errors
+            | Sketch(origin, _) ->
+                // origin is an optional Frame reference; type-check if present
+                let resolved, errors =
+                    match origin with
+                    | None -> None, errors
+                    | Some _ -> resolveTyped id "origin" origin [ FieldType.Frame ] seen types index errors
+                emit id FieldType.Sketch (addInput "origin" resolved Map.empty) types typed errors
 
             // ── Polymorphic transforms (output = input type) ─────────
             | Translate(child, _, _, _) ->
@@ -155,7 +161,7 @@ module TypeCheck =
                 emit id FieldType.Field (addInput "child" resolved Map.empty) types typed errors
 
             // ── Type converters ──────────────────────────────────────
-            | FromSketch(child, _, _) ->
+            | FromSketch(child, _, _, _) ->
                 let resolved, errors = resolveTyped id "child" child [ FieldType.Sketch ] seen types index errors
                 emit id FieldType.Field (addInput "child" resolved Map.empty) types typed errors
 

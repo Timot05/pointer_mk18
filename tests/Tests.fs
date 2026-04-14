@@ -63,7 +63,7 @@ let ``HalfPlane produces Field`` () =
 [<Fact>]
 let ``Sketch produces Sketch`` () =
     let typed =
-        [ action "s" Sketch ]
+        [ action "s" (Sketch(None, ActionSketch.empty)) ]
         |> TypeCheck.typecheck |> ok
     Assert.Equal(FieldType.Sketch, outputOf "s" typed)
 
@@ -149,8 +149,8 @@ let ``Move with Field child produces Field`` () =
 [<Fact>]
 let ``FromSketch converts Sketch to Field`` () =
     let typed =
-        [ action "sk" Sketch
-          action "fs" (FromSketch(Some "sk", true, false)) ]
+        [ action "sk" (Sketch(None, ActionSketch.empty))
+          action "fs" (FromSketch(Some "sk", true, false, FromSketchSelection.defaults)) ]
         |> TypeCheck.typecheck |> ok
     Assert.Equal(FieldType.Field, outputOf "fs" typed)
     Assert.Equal(("sk", FieldType.Sketch), inputOf "fs" "child" typed)
@@ -237,7 +237,7 @@ let ``Forward reference produces ForwardRef`` () =
 [<Fact>]
 let ``Union with Sketch input produces TypeMismatch`` () =
     let errs =
-        [ action "sk" Sketch
+        [ action "sk" (Sketch(None, ActionSketch.empty))
           action "s" (Sphere 5.0)
           action "u" (Union(Some "sk", Some "s", 0.0)) ]
         |> TypeCheck.typecheck |> errors
@@ -253,7 +253,7 @@ let ``Union with Sketch input produces TypeMismatch`` () =
 let ``FromSketch with Field input produces TypeMismatch`` () =
     let errs =
         [ action "s" (Sphere 5.0)
-          action "fs" (FromSketch(Some "s", true, false)) ]
+          action "fs" (FromSketch(Some "s", true, false, FromSketchSelection.defaults)) ]
         |> TypeCheck.typecheck |> errors
     match errs with
     | [ TypeMismatch(id, key, expected, got) ] ->
@@ -266,7 +266,7 @@ let ``FromSketch with Field input produces TypeMismatch`` () =
 [<Fact>]
 let ``Mesh with Sketch input produces TypeMismatch`` () =
     let errs =
-        [ action "sk" Sketch
+        [ action "sk" (Sketch(None, ActionSketch.empty))
           action "m" (Mesh(Some "sk", 0.2, 96)) ]
         |> TypeCheck.typecheck |> errors
     match errs with

@@ -24,10 +24,17 @@ function defaultKind(kindCase: string): ActionKind | null {
 }
 
 let doc: Document | null = null;
+let sketchEditMode = false;
 
 function refresh(newDoc: Document) {
   doc = newDoc;
+  const sel = doc.actions.find((a) => a.id === doc!.selectedId);
+  if (!sel || sel.kind.case !== "Sketch") sketchEditMode = false;
   render(doc, callbacks);
+}
+
+function rerender() {
+  if (doc) render(doc, callbacks);
 }
 
 function openPalette() {
@@ -81,6 +88,13 @@ const callbacks: RenderCallbacks = {
   onFieldSliceChange: async (id, key, value) => {
     refresh(await patchFieldSlice(id, key, value));
   },
+
+  onToggleSketchEdit: () => {
+    sketchEditMode = !sketchEditMode;
+    rerender();
+  },
+
+  getSketchEditMode: () => sketchEditMode,
 };
 
 function isEditable(el: EventTarget | null): boolean {
@@ -125,6 +139,13 @@ document.addEventListener("keydown", async (e) => {
     if (sel && sel.display) {
       e.preventDefault();
       refresh(await toggleDisplay(sel.id));
+    }
+  } else if (e.key === "e" || e.key === "E") {
+    const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
+    if (sel && sel.kind.case === "Sketch") {
+      e.preventDefault();
+      sketchEditMode = !sketchEditMode;
+      rerender();
     }
   } else if (e.key === "f") {
     const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);

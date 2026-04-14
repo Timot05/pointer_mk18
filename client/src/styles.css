@@ -458,6 +458,45 @@ body {
   color: var(--error-text-faint);
 }
 
+/* ── Sketch edit toggle ────────────────────────────────────────────── */
+
+.sketch-edit-section {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+.sketch-edit-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-page);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sketch-edit-toggle:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.sketch-edit-toggle.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.sketch-edit-label {
+  flex: 1;
+}
+
 /* ── Field display settings ────────────────────────────────────────── */
 
 .display-section {

@@ -102,6 +102,7 @@ export type OnToggleDisplay = (id: string) => void;
 export type OnDisplayChange = (id: string, key: string, value: number | number[]) => void;
 export type OnToggleFieldSlice = (id: string) => void;
 export type OnFieldSliceChange = (id: string, key: string, value: number | string) => void;
+export type OnToggleSketchEdit = () => void;
 
 export interface RenderCallbacks {
   onSelect: OnSelect;
@@ -115,6 +116,8 @@ export interface RenderCallbacks {
   onDisplayChange: OnDisplayChange;
   onToggleFieldSlice: OnToggleFieldSlice;
   onFieldSliceChange: OnFieldSliceChange;
+  onToggleSketchEdit: OnToggleSketchEdit;
+  getSketchEditMode: () => boolean;
 }
 
 // ── Action templates for the "+" dropdown ─────────────────────────────
@@ -485,6 +488,21 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
 
   section.appendChild(strip);
   container.appendChild(section);
+
+  // ── Sketch edit toggle (Sketch nodes only)
+  if (kind.case === "Sketch") {
+    const sketchEditMode = cb.getSketchEditMode();
+    const sketchSection = el("div", "sketch-edit-section");
+    if (sketchEditMode) sketchSection.classList.add("is-active");
+    const toggle = el("button", "sketch-edit-toggle");
+    (toggle as HTMLButtonElement).type = "button";
+    if (sketchEditMode) toggle.classList.add("is-active");
+    toggle.appendChild(el("span", "sketch-edit-label", sketchEditMode ? "Exit sketch edit" : "Edit sketch"));
+    toggle.appendChild(el("kbd", "kbd-hint", "E"));
+    toggle.addEventListener("click", () => cb.onToggleSketchEdit());
+    sketchSection.appendChild(toggle);
+    container.appendChild(sketchSection);
+  }
 
   // ── Field display settings (backend includes display only for Field-type nodes)
   if (selected.display) {

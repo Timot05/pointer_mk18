@@ -78,6 +78,7 @@ export interface ViewerState {
   params: number[];
   selectedId: string | null;
   hoveredTarget: SelectionTarget | null;
+  dragTarget: SelectionTarget | null;
   selectedTargets: SelectionTarget[];
   sketchUi: SketchUiState;
   frames: Array<{ id: string; transform: JsonRigidTransform }>;

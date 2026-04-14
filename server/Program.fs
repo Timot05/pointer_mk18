@@ -126,6 +126,15 @@ module Program =
 
     // ── Viewer state (slot values + display settings only; no topology) ──
     let viewerStatePayload () =
+        let dragTarget =
+            let isActiveSketchTarget =
+                function
+                | TargetPoint(sketchId, _)
+                | TargetDimension(sketchId, _) ->
+                    sketchEditMode && doc.SelectedId = Some sketchId
+                | _ -> false
+            hoveredTarget |> Option.filter isActiveSketchTarget
+
         // Per-action display & field-slice settings, for actions where they
         // apply. Slots ARE in Slots.Values, but sending the original
         // settings is simpler for the UI right now.
@@ -196,6 +205,7 @@ module Program =
         {| Params = compiled.Slots.Values
            SelectedId = doc.SelectedId
            HoveredTarget = hoveredTarget
+           DragTarget = dragTarget
            SelectedTargets = selectedTargets
            SketchUi = sketchUiState ()
            Frames = frames

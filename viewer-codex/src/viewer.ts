@@ -754,10 +754,10 @@ export class ViewerApp {
     this.rebuildRenderData();
     this.queueRender();
     if (event.shiftKey) return;
-    const hoveredTarget = this.state.hoveredTarget;
-    if (!hoveredTarget) return;
+    const dragTarget = this.state.dragTarget;
+    if (!dragTarget) return;
 
-    const target = this.resolveDragTarget(hoveredTarget);
+    const target = this.resolveDragTarget(dragTarget);
     if (!target) return;
     this.pendingPrimary = {
       pointerId: event.pointerId,

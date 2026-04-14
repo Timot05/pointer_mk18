@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, placeViewerConstraint, postViewerHover, postViewerPick, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postViewerHover, postViewerPick, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -115,6 +115,12 @@ interface DragState {
   kind: "point" | "label";
   pointId?: string;
   constraintIndex?: number;
+}
+
+interface PendingPrimaryState {
+  pointerId: number;
+  start: { x: number; y: number };
+  target: NonNullable<ReturnType<ViewerApp["resolveDragTarget"]>>;
 }
 
 interface SketchFrame {
@@ -565,6 +571,7 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
 `;
 
 export class ViewerApp {
+  private static readonly DRAG_START_PX = 4;
   private readonly root: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
   private gpu: GpuContext | null = null;
@@ -586,6 +593,7 @@ export class ViewerApp {
   private resetCameraPending = false;
   private pointer = { x: 0, y: 0 };
   private drag: DragState | null = null;
+  private pendingPrimary: PendingPrimaryState | null = null;
   private suppressPrimaryUp = false;
   private interaction:
     | { kind: "orbit" | "pan"; x: number; y: number; pointerId: number }
@@ -676,6 +684,14 @@ export class ViewerApp {
         void this.updateDragFrame();
         return;
       }
+      if (this.pendingPrimary?.pointerId === event.pointerId) {
+        const dx = this.pointer.x - this.pendingPrimary.start.x;
+        const dy = this.pointer.y - this.pendingPrimary.start.y;
+        if ((dx * dx) + (dy * dy) >= ViewerApp.DRAG_START_PX * ViewerApp.DRAG_START_PX) {
+          void this.startPendingDrag(event.pointerId);
+          return;
+        }
+      }
       if (this.interaction) {
         const dx = event.clientX - this.interaction.x;
         const dy = event.clientY - this.interaction.y;
@@ -690,9 +706,14 @@ export class ViewerApp {
     });
     this.canvas.addEventListener("pointerup", (event) => {
       if (this.drag?.pointerId === event.pointerId) {
+        this.pointer = this.eventPos(event);
         this.canvas.releasePointerCapture(event.pointerId);
         void this.finishDrag();
         return;
+      }
+      if (this.pendingPrimary?.pointerId === event.pointerId) {
+        this.canvas.releasePointerCapture(event.pointerId);
+        this.pendingPrimary = null;
       }
       if (this.interaction?.pointerId === event.pointerId) {
         this.canvas.releasePointerCapture(event.pointerId);
@@ -735,12 +756,27 @@ export class ViewerApp {
 
     const target = this.resolveDragTarget(hoveredTarget);
     if (!target) return;
-    const local = pointerToSketchLocal(this.pointer, this.canvas, this.camera, target.frame);
-    if (!local) return;
-
-    this.canvas.setPointerCapture(event.pointerId);
-    this.drag = {
+    this.pendingPrimary = {
       pointerId: event.pointerId,
+      start: { ...this.pointer },
+      target,
+    };
+    this.canvas.setPointerCapture(event.pointerId);
+  }
+
+  private async startPendingDrag(pointerId: number): Promise<void> {
+    const pending = this.pendingPrimary;
+    if (!pending || pending.pointerId !== pointerId) return;
+    const target = pending.target;
+    if (!target) {
+      this.pendingPrimary = null;
+      return;
+    }
+    const local = pointerToSketchLocal(this.pointer, this.canvas, this.camera, target.frame);
+    this.pendingPrimary = null;
+    if (!local) return;
+    this.drag = {
+      pointerId,
       sketchId: target.sketchId,
       kind: target.kind,
       pointId: target.pointId,
@@ -749,8 +785,6 @@ export class ViewerApp {
       yPath: target.yPath,
       target: local,
     };
-    this.state = await postViewerPick(toPickRequest(candidates), "replace");
-    this.startOptions.onDocumentDirty?.();
     await this.solveSketches();
     this.rebuildRenderData();
     this.queueRender();
@@ -814,8 +848,10 @@ export class ViewerApp {
 
   private async finishDrag(): Promise<void> {
     const drag = this.drag;
-    this.drag = null;
     if (!drag) return;
+    this.updateDragTarget();
+    await this.solveSketches();
+    this.drag = null;
     if (drag.kind === "label") {
       await patchActionParam(drag.sketchId, drag.xPath, drag.target[0]);
       await patchActionParam(drag.sketchId, drag.yPath, drag.target[1]);
@@ -829,15 +865,16 @@ export class ViewerApp {
       await this.reloadState();
       return;
     }
-    const xSlot = binding.localByPath.get(drag.xPath);
-    const ySlot = binding.localByPath.get(drag.yPath);
-    if (xSlot == null || ySlot == null) {
+    const params = [...binding.localByPath.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .map(([key, localSlot]) => ({ key, value: solved[localSlot] }));
+    if (params.length === 0) {
       await this.reloadState();
       return;
     }
-    await patchActionParam(drag.sketchId, drag.xPath, solved[xSlot]);
-    await patchActionParam(drag.sketchId, drag.yPath, solved[ySlot]);
-    await this.reloadState();
+    this.state = await patchViewerSketchParams(drag.sketchId, params);
+    this.rebuildRenderData();
+    this.queueRender();
     this.startOptions.onDocumentDirty?.();
   }
 

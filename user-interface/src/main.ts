@@ -36,6 +36,38 @@ let sketchEditMode = false;
 let mountRoot: HTMLElement | null = null;
 let mountOptions: UserInterfaceMountOptions = {};
 
+const SKETCH_TOOL_SHORTCUTS: Record<string, string> = {
+  l: "line",
+  g: "rectangle",
+  c: "circle",
+  u: "arc",
+};
+
+const SKETCH_TOOL_SHIFT_SHORTCUTS: Record<string, string> = {
+  g: "roundedRectangle",
+};
+
+const SKETCH_CONSTRAINT_SHORTCUTS: Record<string, string> = {
+  i: "Coincident",
+  h: "Horizontal",
+  v: "Vertical",
+  b: "Parallel",
+  t: "Tangent",
+  e: "Equal",
+};
+
+const SKETCH_CONSTRAINT_SHIFT_SHORTCUTS: Record<string, string> = {
+  o: "Concentric",
+  l: "Perpendicular",
+  m: "Midpoint",
+  j: "Fixed",
+};
+
+const SKETCH_DIMENSION_SHORTCUTS: Record<string, string> = {
+  d: "distance",
+  a: "angle",
+};
+
 function emitViewerInvalidation(kind: "state" | "model"): void {
   if (kind === "state") mountOptions.onViewerStateDirty?.();
   else mountOptions.onViewerModelDirty?.();
@@ -159,6 +191,69 @@ function isEditable(el: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
+function selectedSketch(): Action | null {
+  if (!doc) return null;
+  const sel = doc.actions.find((action) => action.id === doc.selectedId) ?? null;
+  return sel?.kind.case === "Sketch" ? sel : null;
+}
+
+async function handleSketchShortcut(e: KeyboardEvent): Promise<boolean> {
+  const sketch = selectedSketch();
+  if (!sketch || !doc?.sketchUi.editMode) return false;
+  if (e.metaKey || e.ctrlKey || e.altKey) return false;
+
+  const key = e.key.toLowerCase();
+
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (doc.sketchUi.constraintPlacementMode) {
+      const result = await toggleConstraintPlacement(doc.sketchUi.constraintPlacementMode);
+      refresh(result.document);
+      emitViewerInvalidation(result.viewerInvalidation);
+      return true;
+    }
+    if (doc.sketchUi.tool !== "none") {
+      const result = await setSketchTool("none");
+      refresh(result.document);
+      emitViewerInvalidation(result.viewerInvalidation);
+      return true;
+    }
+    const result = await toggleSketchEdit();
+    refresh(result.document);
+    emitViewerInvalidation(result.viewerInvalidation);
+    return true;
+  }
+
+  const tool = e.shiftKey ? SKETCH_TOOL_SHIFT_SHORTCUTS[key] : SKETCH_TOOL_SHORTCUTS[key];
+  if (tool) {
+    e.preventDefault();
+    const result = await setSketchTool(tool);
+    refresh(result.document);
+    emitViewerInvalidation(result.viewerInvalidation);
+    return true;
+  }
+
+  const dimension = !e.shiftKey ? SKETCH_DIMENSION_SHORTCUTS[key] : undefined;
+  if (dimension) {
+    e.preventDefault();
+    const result = await toggleConstraintPlacement(dimension);
+    refresh(result.document);
+    emitViewerInvalidation(result.viewerInvalidation);
+    return true;
+  }
+
+  const constraint = e.shiftKey ? SKETCH_CONSTRAINT_SHIFT_SHORTCUTS[key] : SKETCH_CONSTRAINT_SHORTCUTS[key];
+  if (constraint && doc.sketchUi.constraintAvailability[constraint]) {
+    e.preventDefault();
+    const result = await addConstraintFromSelection(constraint);
+    refresh(result.document);
+    emitViewerInvalidation(result.viewerInvalidation);
+    return true;
+  }
+
+  return false;
+}
+
 document.addEventListener("keydown", async (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
@@ -168,6 +263,7 @@ document.addEventListener("keydown", async (e) => {
 
   if (palette.isOpen()) return;
   if (!doc || isEditable(e.target)) return;
+  if (await handleSketchShortcut(e)) return;
 
   if (e.key === "Delete" || e.key === "Backspace") {
     const sel = doc.actions.find((a) => a.id === doc!.selectedId);

@@ -433,6 +433,20 @@ module Program =
                 | _ ->
                     viewerStateResult ())) |> ignore
 
+        app.MapPatch("/api/viewer/sketch-params",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let actionId = body.GetProperty("actionId").GetString()
+                let updates =
+                    body.GetProperty("params").EnumerateArray()
+                    |> Seq.map (fun item -> item.GetProperty("key").GetString(), item.GetProperty("value"))
+                    |> Seq.toList
+                doc <-
+                    updates
+                    |> List.fold (fun current (key, value) -> Document.patchParam actionId key value current) doc
+                recompile ()
+                viewerStateResult ())) |> ignore
+
         app.MapPost("/api/viewer/tool-click",
             Func<HttpContext, IResult>(fun ctx ->
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result

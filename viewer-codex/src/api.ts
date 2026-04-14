@@ -156,6 +156,16 @@ export function patchActionParam(id: string, key: string, value: number | string
   });
 }
 
+export function patchViewerSketchParams(
+  actionId: string,
+  params: Array<{ key: string; value: number }>,
+): Promise<ViewerState> {
+  return request("/viewer/sketch-params", {
+    method: "PATCH",
+    body: JSON.stringify({ actionId, params }),
+  });
+}
+
 export function replaceViewerSketch(actionId: string, sketch: ActionSketch): Promise<ViewerState> {
   return request("/viewer/sketch", {
     method: "PUT",

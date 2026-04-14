@@ -83,6 +83,8 @@ interface ViewerModelJson extends Omit<ViewerModel, "sketches"> {
 
 export interface ViewerState {
   params: number[];
+  frames: ViewerFrame[];
+  sketchFrames: Array<{ id: string; transform: JsonRigidTransform }>;
   display: Record<string, unknown>;
   errors: Array<{ actionId: string; key: string; error: string }>;
 }

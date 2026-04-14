@@ -36,6 +36,28 @@ let sketchEditMode = false;
 let mountRoot: HTMLElement | null = null;
 let mountOptions: UserInterfaceMountOptions = {};
 
+function viewerInvalidationForParam(actionId: string, key: string, value: number | string | boolean): "state" | "model" {
+  if (key.startsWith("sketch.entity.") || key.startsWith("sketch.constraint.")) return "state";
+  if (typeof value !== "number") return "model";
+
+  const action = doc?.actions.find((candidate) => candidate.id === actionId);
+  switch (action?.kind.case) {
+    case "Mesh":
+      return key === "size" || key === "resolution" ? "model" : "state";
+    case "Sketch":
+      return key === "origin" ? "model" : "state";
+    case "FromSketch":
+      return "model";
+    default:
+      return "state";
+  }
+}
+
+function emitViewerInvalidation(kind: "state" | "model"): void {
+  if (kind === "state") mountOptions.onViewerStateDirty?.();
+  else mountOptions.onViewerModelDirty?.();
+}
+
 function refresh(newDoc: Document) {
   doc = newDoc;
   const sel = doc.actions.find((a) => a.id === doc!.selectedId);
@@ -90,7 +112,7 @@ const callbacks: RenderCallbacks = {
 
   onParamChange: async (actionId, key, value) => {
     refresh(await patchActionParam(actionId, key, value));
-    mountOptions.onViewerModelDirty?.();
+    emitViewerInvalidation(viewerInvalidationForParam(actionId, key, value));
   },
 
   onToggleDisplay: async (id) => {

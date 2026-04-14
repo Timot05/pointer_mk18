@@ -111,7 +111,30 @@ module Program =
                 | _ -> None)
             |> Map.ofList
 
+        let frames =
+            doc.Actions
+            |> List.choose (fun a ->
+                match Map.tryFind a.Id compiled.TypeMap with
+                | Some FieldType.Frame ->
+                    Map.tryFind a.Id compiled.Frames
+                    |> Option.map (fun t -> {| Id = a.Id; Transform = t |})
+                | _ -> None)
+
+        let sketchFrames =
+            doc.Actions
+            |> List.choose (fun a ->
+                match a.Kind with
+                | Sketch(origin, _sk) ->
+                    let sketchOrigin =
+                        origin
+                        |> Option.bind (fun id -> Map.tryFind id compiled.Frames)
+                        |> Option.defaultValue RigidTransform.Identity
+                    Some {| Id = a.Id; Transform = sketchOrigin |}
+                | _ -> None)
+
         {| Params = compiled.Slots.Values
+           Frames = frames
+           SketchFrames = sketchFrames
            Display = displayByAction
            Errors = formatErrors compiled.Errors |}
 

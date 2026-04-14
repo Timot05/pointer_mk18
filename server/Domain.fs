@@ -284,4 +284,14 @@ module Document =
                               Distance("p_bl", "p_tl", 10.0, None) ] })
                 Visible = true
                 Display = None
+                FieldSlice = None }
+              { Id = "from1"
+                Name = Some "from-sketch"
+                Kind = FromSketch(
+                    child = Some "sketch1",
+                    closed = true,
+                    flip = false,
+                    selection = SelectionLoop None)
+                Visible = true
+                Display = None
                 FieldSlice = None } ] }

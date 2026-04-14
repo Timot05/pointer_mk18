@@ -33,6 +33,16 @@ type Element =
     | EIntersect of actionId: ActionId * a: Element * b: Element * radius: float
     | EThicken of actionId: ActionId * child: Element * amount: float
     | EShell of actionId: ActionId * child: Element * thickness: float
+    /// FromSketch — compiles to FSketch at the field IR layer.
+    /// Carries a snapshot of the source sketch's entities/constraints so
+    /// the field compile doesn't need to look actions back up.
+    | EFromSketch of
+        actionId: ActionId *          // the FromSketch action
+        sketchActionId: ActionId *    // the source Sketch action
+        sketch: ActionSketch *
+        selection: FromSketchSelection *
+        closed: bool *
+        flip: bool
 
 type BuildResult =
     { Elements: Map<ActionId, Element>
@@ -167,10 +177,28 @@ module Element =
                 let childElem, state = resolveChild child state
                 EShell(id, childElem, t), state
 
-            | FromSketch(child, _, _, _) ->
-                // Phase 2: compile sketch → field. For now, empty.
-                let _childElem, state = resolveChild child state
-                EEmpty, state
+            | FromSketch(child, closed, flip, selection) ->
+                // Look up the source Sketch action to snapshot its entities
+                // and its origin frame chain.
+                match child with
+                | None -> EEmpty, state
+                | Some sketchId ->
+                    match Map.tryFind sketchId actionMap with
+                    | Some sketchAction ->
+                        match sketchAction.Kind with
+                        | Sketch(originId, sketch) ->
+                            let frameChain', state =
+                                match originId with
+                                | Some fid ->
+                                    let (built, frames) = state
+                                    let c, frames' = frameChain fid frames
+                                    c, (built, frames')
+                                | None -> [], state
+                            let core =
+                                EFromSketch(id, sketchId, sketch, selection, closed, flip)
+                            applyFrame frameChain' core, state
+                        | _ -> EEmpty, state
+                    | None -> EEmpty, state
 
             | Mesh(child, _, _) ->
                 // Mesh is a type-converter to Mesh, not Field.

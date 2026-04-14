@@ -50,28 +50,38 @@ module Pipeline =
                 a (sprintf "sketch.entity.%s.throughY" eid) through.Y
             | REArc _ -> ()  // ArcCenter: no numeric slots (clockwise is bool)
 
-        // Note: label positions stay in topology (not slots) for now — they
-        // need a "set vs unset" signal that NaN sentinels break for JSON.
-        // Revisit when the sketch canvas UI lands.
+        // Label positions are slots too. When the constraint's LabelPos is
+        // None, we allocate with default 0.0 — the topology's `labelPosition`
+        // field (which remains Option) tells the renderer whether to read the
+        // slots or fall back to auto-layout. Once the user drags the label,
+        // the option becomes Some and the slot values carry the real position.
+        let labelXY i (lp: LabelPos option) =
+            let pos = lp |> Option.defaultValue { X = 0.0; Y = 0.0 }
+            a (sprintf "sketch.constraint.%d.labelPosition.x" i) pos.X
+            a (sprintf "sketch.constraint.%d.labelPosition.y" i) pos.Y
+
         s.Constraints |> List.iteri (fun i c ->
             match c with
             | Fixed(_, x, y) ->
                 a (sprintf "sketch.constraint.%d.x" i) x
                 a (sprintf "sketch.constraint.%d.y" i) y
-            | Distance(_, _, dist, _)
-            | FrameDistance(_, _, _, dist, _)
-            | LineDistance(_, _, _, _, _, _, dist, _)
-            | FrameLineDistance(_, _, _, _, _, dist, _)
-            | PointLineDistance(_, _, _, _, dist, _)
-            | FramePointLineDistance(_, _, _, dist, _)
-            | PointCircleDistance(_, _, _, dist, _)
-            | LineCircleDistance(_, _, _, _, _, dist, _)
-            | CircleCircleDistance(_, _, _, _, dist, _, _) ->
+            | Distance(_, _, dist, lp)
+            | FrameDistance(_, _, _, dist, lp)
+            | LineDistance(_, _, _, _, _, _, dist, lp)
+            | FrameLineDistance(_, _, _, _, _, dist, lp)
+            | PointLineDistance(_, _, _, _, dist, lp)
+            | FramePointLineDistance(_, _, _, dist, lp)
+            | PointCircleDistance(_, _, _, dist, lp)
+            | LineCircleDistance(_, _, _, _, _, dist, lp)
+            | CircleCircleDistance(_, _, _, _, dist, _, lp) ->
                 a (sprintf "sketch.constraint.%d.distance" i) dist
-            | CircleDiameter(_, _, diam, _) ->
+                labelXY i lp
+            | CircleDiameter(_, _, diam, lp) ->
                 a (sprintf "sketch.constraint.%d.diameter" i) diam
-            | Angle(_, _, _, _, _, _, deg, _, _, _, _) ->
+                labelXY i lp
+            | Angle(_, _, _, _, _, _, deg, _, _, _, lp) ->
                 a (sprintf "sketch.constraint.%d.angleDegrees" i) deg
+                labelXY i lp
             | Tangent(_, _, _, _, _, radius) ->
                 a (sprintf "sketch.constraint.%d.radius" i) radius
             | _ -> ())

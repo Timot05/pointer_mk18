@@ -169,11 +169,11 @@ let ``Frame actions produce no surfaces`` () =
     Assert.Empty(r.Surfaces)
 
 [<Fact>]
-let ``Default document compiles to three surfaces`` () =
+let ``Default document compiles to four surfaces`` () =
     let actions = (Document.defaultDocument()).Actions
     let r = pipeline actions
-    // cyl1, sph1, sub1 are visible Field-producing actions
-    Assert.Equal(3, r.Surfaces.Length)
+    // cyl1, sph1, sub1 are visible Field-producing actions, plus from1 (FSketch)
+    Assert.Equal(4, r.Surfaces.Length)
 
 [<Fact>]
 let ``Move applies frame transform as FTranslate wrapping the child`` () =
@@ -241,3 +241,90 @@ let ``Display slots are NOT allocated for non-Field actions`` () =
     let r = pipeline [ action "o" Origin ]
     let colorSlot = Map.tryFind { ActionId = "o"; Path = "display.color.0" } r.Slots.Index
     Assert.True(colorSlot.IsNone)
+
+// ── FSketch / FromSketch tests ───────────────────────────────────────────
+
+let squareSketch : ActionSketch =
+    { Entities =
+        [ REPoint("p_bl", 0.0, 0.0)
+          REPoint("p_br", 10.0, 0.0)
+          REPoint("p_tr", 10.0, 10.0)
+          REPoint("p_tl", 0.0, 10.0)
+          RELine("l_bottom", "p_bl", "p_br")
+          RELine("l_right", "p_br", "p_tr")
+          RELine("l_top", "p_tr", "p_tl")
+          RELine("l_left", "p_tl", "p_bl") ]
+      Constraints = [] }
+
+[<Fact>]
+let ``FromSketch with SelectionLoop None compiles to FSketch with 4 line segments`` () =
+    let r =
+        pipeline [ action "sk" (Sketch(None, squareSketch))
+                   action "f" (FromSketch(Some "sk", true, false, SelectionLoop None)) ]
+    let f = surfaceFor "f" r.Surfaces
+    match f.Field with
+    | FSketch { Primitives = prims; Closed = true; Flip = false } ->
+        Assert.Equal(4, prims.Length)
+        // Every primitive should be a line segment
+        for p in prims do
+            match p with
+            | SpLineSegment _ -> ()
+            | other -> failwithf "Expected SpLineSegment, got %A" other
+    | other -> failwithf "Expected FSketch, got %A" other
+
+[<Fact>]
+let ``FromSketch with SelectionElements compiles lines in the given order`` () =
+    let r =
+        pipeline [ action "sk" (Sketch(None, squareSketch))
+                   action "f" (FromSketch(
+                       Some "sk",
+                       false,
+                       false,
+                       SelectionElements [ "l_bottom"; "l_right" ])) ]
+    let f = surfaceFor "f" r.Surfaces
+    match f.Field with
+    | FSketch { Primitives = [ SpLineSegment _; SpLineSegment _ ]; Closed = false } -> ()
+    | other -> failwithf "Expected two-line FSketch, got %A" other
+
+[<Fact>]
+let ``FSketch primitive slots match the sketch's pre-allocated point slots`` () =
+    let r =
+        pipeline [ action "sk" (Sketch(None, squareSketch))
+                   action "f" (FromSketch(Some "sk", true, false, SelectionLoop None)) ]
+    let f = surfaceFor "f" r.Surfaces
+    // Grab the first segment and verify its start-point slots coincide
+    // with sketch "sk"'s authored point slots for one of the corners.
+    let firstSeg =
+        match f.Field with
+        | FSketch { Primitives = (SpLineSegment(s, _)) :: _ } -> s
+        | _ -> failwith "no line segment"
+    // The allocated slot for p_bl.x lives in r.Slots.Index
+    let expectedXSlots =
+        [ "p_bl"; "p_br"; "p_tr"; "p_tl" ]
+        |> List.map (fun id -> Map.find { ActionId = "sk"; Path = sprintf "sketch.entity.%s.x" id } r.Slots.Index)
+        |> Set.ofList
+    Assert.Contains(firstSeg.XSlot, expectedXSlots)
+
+[<Fact>]
+let ``FromSketch with a Sketch origin wraps FSketch in FTranslate`` () =
+    let r =
+        pipeline [ action "o" Origin
+                   action "tf" (Translate(Some "o", 5.0, 0.0, 0.0))
+                   action "sk" (Sketch(Some "tf", squareSketch))
+                   action "f" (FromSketch(Some "sk", true, false, SelectionLoop None)) ]
+    let f = surfaceFor "f" r.Surfaces
+    match f.Field with
+    | FTranslate(xSlot, _, _, FSketch _) ->
+        Assert.Equal(5.0, r.Slots.Values.[xSlot])
+    | other -> failwithf "Expected FTranslate wrapping FSketch, got %A" other
+
+[<Fact>]
+let ``Default document now includes the from1 FSketch surface`` () =
+    let actions = (Document.defaultDocument()).Actions
+    let r = pipeline actions
+    // cyl1, sph1, sub1 (Fields) + from1 (FSketch) = 4 surfaces
+    Assert.Equal(4, r.Surfaces.Length)
+    let from1 = r.Surfaces |> List.find (fun s -> s.ActionId = "from1")
+    match from1.Field with
+    | FSketch { Primitives = prims } -> Assert.Equal(4, prims.Length)
+    | other -> failwithf "Expected FSketch for from1, got %A" other

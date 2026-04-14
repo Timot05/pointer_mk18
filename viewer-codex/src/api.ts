@@ -76,6 +76,9 @@ interface ViewerModelJson extends Omit<ViewerModel, "sketches"> {
 
 export interface ViewerState {
   params: number[];
+  selectedId: string | null;
+  hoveredTarget: SelectionTarget | null;
+  selectedTargets: SelectionTarget[];
   frames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchFrames: Array<{ id: string; transform: JsonRigidTransform }>;
   visible: Record<string, boolean>;
@@ -84,9 +87,14 @@ export interface ViewerState {
   errors: Array<{ actionId: string; key: string; error: string }>;
 }
 
-export interface DocumentPayload {
-  selectedId: string | null;
-}
+export type SelectionTarget =
+  | { case: "TargetPoint"; sketchId: string; entityId: string }
+  | { case: "TargetLine"; sketchId: string; entityId: string }
+  | { case: "TargetCircle"; sketchId: string; entityId: string }
+  | { case: "TargetArc"; sketchId: string; entityId: string }
+  | { case: "TargetLoop"; sketchId: string; loopId: string }
+  | { case: "TargetDimension"; sketchId: string; constraintIndex: number }
+  | { case: "TargetSurface"; actionId: string };
 
 const BASE = "/api";
 
@@ -114,14 +122,24 @@ export function getViewerState(): Promise<ViewerState> {
   return request("/viewer/state");
 }
 
-export function postViewerPick(pickId: number): Promise<DocumentPayload> {
-  return request("/viewer/pick", {
+export function postViewerHover(candidates: Array<{ pickId: number; score: number }>): Promise<ViewerState> {
+  return request("/viewer/hover", {
     method: "POST",
-    body: JSON.stringify({ pickId }),
+    body: JSON.stringify({ candidates }),
   });
 }
 
-export function patchActionParam(id: string, key: string, value: number | string | boolean): Promise<DocumentPayload> {
+export function postViewerPick(
+  candidates: Array<{ pickId: number; score: number }>,
+  intent: "replace" | "toggle",
+): Promise<ViewerState> {
+  return request("/viewer/pick", {
+    method: "POST",
+    body: JSON.stringify({ candidates, intent }),
+  });
+}
+
+export function patchActionParam(id: string, key: string, value: number | string | boolean): Promise<Record<string, unknown>> {
   return request(`/document/action/${id}/param`, {
     method: "PATCH",
     body: JSON.stringify({ key, value }),

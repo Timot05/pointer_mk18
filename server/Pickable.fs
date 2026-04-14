@@ -28,6 +28,19 @@ type Pickable =
     // Coarse SDF surface — the whole surface of a Field-producing action.
     | PickSurface of pickId: PickId * actionId: ActionId
 
+type SelectionTarget =
+    | TargetPoint of sketchId: ActionId * entityId: string
+    | TargetLine of sketchId: ActionId * entityId: string
+    | TargetCircle of sketchId: ActionId * entityId: string
+    | TargetArc of sketchId: ActionId * entityId: string
+    | TargetLoop of sketchId: ActionId * loopId: string
+    | TargetDimension of sketchId: ActionId * constraintIndex: int
+    | TargetSurface of actionId: ActionId
+
+type PickCandidate =
+    { PickId: PickId
+      Score: float32 }
+
 module Pickable =
 
     /// Extract the PickId from any variant.
@@ -52,3 +65,32 @@ module Pickable =
         | PickLoop(_, sketchId, _, _) -> sketchId
         | PickDimension(_, sketchId, _, _) -> sketchId
         | PickSurface(_, actionId) -> actionId
+
+    let selectionTarget =
+        function
+        | PickPoint(_, sketchId, entityId, _, _) -> TargetPoint(sketchId, entityId)
+        | PickLine(_, sketchId, entityId, _, _) -> TargetLine(sketchId, entityId)
+        | PickCircle(_, sketchId, entityId, _, _) -> TargetCircle(sketchId, entityId)
+        | PickArc(_, sketchId, entityId, _, _, _, _) -> TargetArc(sketchId, entityId)
+        | PickLoop(_, sketchId, loopId, _) -> TargetLoop(sketchId, loopId)
+        | PickDimension(_, sketchId, constraintIndex, _) -> TargetDimension(sketchId, constraintIndex)
+        | PickSurface(_, actionId) -> TargetSurface(actionId)
+
+    let sameTarget target pickable =
+        selectionTarget pickable = target
+
+    let private priority =
+        function
+        | PickPoint _ -> 0
+        | PickLine _ | PickCircle _ | PickArc _ -> 1
+        | PickDimension _ -> 2
+        | PickLoop _ -> 3
+        | PickSurface _ -> 4
+
+    let reduceCandidates (pickables: Pickable list) (candidates: PickCandidate list) : Pickable option =
+        let byId = pickables |> List.map (fun p -> pickId p, p) |> Map.ofList
+        candidates
+        |> List.choose (fun c -> Map.tryFind c.PickId byId |> Option.map (fun p -> c, p))
+        |> List.sortBy (fun (c, p) -> priority p, c.Score, pickId p)
+        |> List.tryHead
+        |> Option.map snd

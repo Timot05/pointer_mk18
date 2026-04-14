@@ -23,9 +23,19 @@ module Program =
     let mutable doc = Document.defaultDocument ()
     let mutable compiled = Pipeline.compile doc.Actions
     let mutable paletteSession = Palette.empty
+    let mutable hoveredTarget : SelectionTarget option = None
+    let mutable selectedTargets : SelectionTarget list = []
 
     let recompile () =
         compiled <- Pipeline.compile doc.Actions
+        hoveredTarget <-
+            hoveredTarget
+            |> Option.filter (fun target ->
+                compiled.Pickables |> List.exists (Pickable.sameTarget target))
+        selectedTargets <-
+            selectedTargets
+            |> List.filter (fun target ->
+                compiled.Pickables |> List.exists (Pickable.sameTarget target))
 
     let formatErrors (errs: TypeError list) =
         errs |> List.map (fun e ->
@@ -165,6 +175,9 @@ module Program =
             |> List.concat
 
         {| Params = compiled.Slots.Values
+           SelectedId = doc.SelectedId
+           HoveredTarget = hoveredTarget
+           SelectedTargets = selectedTargets
            Frames = frames
            SketchFrames = sketchFrames
            Visible = visibleByAction
@@ -254,23 +267,71 @@ module Program =
         app.MapGet("/api/viewer/state",
             Func<IResult>(fun () -> viewerStateResult ())) |> ignore
 
-        // Pick report — frontend posts the GPU-returned pickId after a click.
-        // Server resolves it to an action id and calls Document.select.
-        // Stale ids (from a pre-recompile model) are silently ignored.
+        let readPickCandidates (body: JsonElement) =
+            let mutable candidatesEl = Unchecked.defaultof<JsonElement>
+            if body.TryGetProperty("candidates", &candidatesEl) then
+                candidatesEl.EnumerateArray()
+                |> Seq.choose (fun item ->
+                    let mutable pickIdEl = Unchecked.defaultof<JsonElement>
+                    let mutable scoreEl = Unchecked.defaultof<JsonElement>
+                    if item.TryGetProperty("pickId", &pickIdEl) && item.TryGetProperty("score", &scoreEl) then
+                        Some { PickId = pickIdEl.GetInt32(); Score = float32 (scoreEl.GetDouble()) }
+                    else None)
+                |> Seq.toList
+            else []
+
+        let readPickIntent (body: JsonElement) =
+            let mutable intentEl = Unchecked.defaultof<JsonElement>
+            if body.TryGetProperty("intent", &intentEl) then
+                match intentEl.GetString() with
+                | "toggle" -> "toggle"
+                | _ -> "replace"
+            else
+                "replace"
+
+        let applySelectionIntent intent target current =
+            match intent with
+            | "toggle" ->
+                if current |> List.exists ((=) target) then
+                    current |> List.filter ((<>) target)
+                else
+                    target :: current
+            | _ ->
+                [ target ]
+
+        app.MapPost("/api/viewer/hover",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let candidates = readPickCandidates body
+                hoveredTarget <-
+                    Pickable.reduceCandidates compiled.Pickables candidates
+                    |> Option.map Pickable.selectionTarget
+                viewerStateResult ())) |> ignore
+
         app.MapPost("/api/viewer/pick",
             Func<HttpContext, IResult>(fun ctx ->
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
-                let pid = body.GetProperty("pickId").GetInt32()
-                let target =
-                    compiled.Pickables
-                    |> List.tryFind (fun p -> Pickable.pickId p = pid)
-                    |> Option.map Pickable.targetAction
-                match target with
-                | Some actionId -> mutate (Document.select actionId)
-                | None -> json ())) |> ignore
+                let candidates = readPickCandidates body
+                let intent = readPickIntent body
+                let targetPickable = Pickable.reduceCandidates compiled.Pickables candidates
+                match targetPickable with
+                | Some pickable ->
+                    let target = Pickable.selectionTarget pickable
+                    hoveredTarget <- Some target
+                    selectedTargets <- applySelectionIntent intent target selectedTargets
+                    doc <- Document.select (Pickable.targetAction pickable) doc
+                    recompile ()
+                    viewerStateResult ()
+                | None ->
+                    hoveredTarget <- None
+                    if intent = "replace" then selectedTargets <- []
+                    viewerStateResult ())) |> ignore
 
         app.MapPut("/api/document/select/{id}",
-            Func<string, IResult>(fun id -> mutate (Document.select id))) |> ignore
+            Func<string, IResult>(fun id ->
+                hoveredTarget <- None
+                selectedTargets <- []
+                mutate (Document.select id))) |> ignore
 
         app.MapPut("/api/document/action/{id}",
             Func<string, HttpContext, IResult>(fun id ctx ->

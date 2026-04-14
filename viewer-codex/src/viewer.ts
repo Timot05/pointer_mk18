@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, postViewerHover, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -99,7 +99,7 @@ interface ResolvedLoopGeometry {
   boundary: Vec2[];
 }
 
-interface HoverHit {
+interface PickCandidateHit {
   pickId: number;
   kind: PickKind;
   score: number;
@@ -567,9 +567,6 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
 export class ViewerApp {
   private readonly root: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
-  private readonly statusEl: HTMLElement;
-  private readonly hoverEl: HTMLElement;
-  private readonly errorEl: HTMLElement;
   private gpu: GpuContext | null = null;
   private model: ViewerModel | null = null;
   private state: ViewerState | null = null;
@@ -578,8 +575,6 @@ export class ViewerApp {
   private solverBindings = new Map<string, SketchSolverBinding>();
   private solvedSketchParams = new Map<string, Float32Array>();
   private renderSketches: RenderSketch[] = [];
-  private selectedActionId: string | null = null;
-  private hovered: HoverHit | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private stateTimer: number | null = null;
   private modelTimer: number | null = null;
@@ -605,54 +600,16 @@ export class ViewerApp {
     this.root = root;
     this.canvas = document.createElement("canvas");
     this.canvas.className = "viewer-canvas";
-
-    this.statusEl = document.createElement("div");
-    this.hoverEl = document.createElement("div");
-    this.errorEl = document.createElement("div");
-    this.errorEl.className = "status-row is-error";
-    const shell = document.createElement("div");
-    shell.className = "viewer-shell";
-    shell.innerHTML = `<div class="viewer-main"></div>`;
-    const main = shell.querySelector(".viewer-main");
-    if (!main) throw new Error("Missing viewer main");
-    main.appendChild(this.canvas);
-
-    const overlay = document.createElement("div");
-    overlay.className = "viewer-overlay";
-    overlay.innerHTML = `
-      <section class="panel">
-        <h2>Status</h2>
-      </section>
-      <section class="panel">
-        <h2>Legend</h2>
-        <div class="legend-row"><span class="swatch" style="background:${toCssColor(SKETCH_LINE)}"></span><span>sketch geometry</span></div>
-        <div class="legend-row"><span class="swatch" style="background:${toCssColor(ACCENT)}"></span><span>hover / selection accent</span></div>
-        <div class="legend-row"><span class="swatch" style="background:${toCssColor(DIM_COLOR)}"></span><span>constraints</span></div>
-        <div class="legend-row"><span class="swatch" style="background:${toCssColor(FIXED_COLOR)}"></span><span>fixed points</span></div>
-      </section>
-    `;
-    const statusPanel = overlay.querySelector(".panel");
-    if (!statusPanel) throw new Error("Missing status panel");
-    this.statusEl.className = "status-row";
-    this.hoverEl.className = "status-row mono";
-    statusPanel.appendChild(this.statusEl);
-    statusPanel.appendChild(this.hoverEl);
-    statusPanel.appendChild(this.errorEl);
-    main.appendChild(overlay);
-
-    root.appendChild(shell);
+    root.replaceChildren(this.canvas);
   }
 
   async start(options: ViewerStartOptions = {}): Promise<void> {
     this.startOptions = options;
-    this.setStatus("Loading model...");
     this.bindEvents();
     this.gpu = await this.initGpu();
     try {
       this.fontMetrics = await loadFontMetrics("/fonts/dekal.json");
-    } catch (error) {
-      this.setStatus(`Font metrics failed: ${String(error)}`);
-    }
+    } catch (_error) {}
     await this.reloadModel(true);
     await this.reloadState();
     this.resizeObserver = new ResizeObserver(() => {
@@ -688,9 +645,6 @@ export class ViewerApp {
   private async reloadState(): Promise<void> {
     if (this.drag) return;
     this.state = await getViewerState();
-    this.errorEl.textContent = this.state.errors.length > 0
-      ? `errors: ${this.state.errors[0].actionId}.${this.state.errors[0].key} ${this.state.errors[0].error}`
-      : "";
     await this.solveSketches();
     this.rebuildRenderData();
     if (this.resetCameraPending) {
@@ -745,7 +699,7 @@ export class ViewerApp {
         return;
       }
       if (event.button === 0) {
-        void this.pickAtPointer(true);
+        void this.pickAtPointer(event);
       }
     });
     this.canvas.addEventListener("wheel", (event) => {
@@ -761,15 +715,15 @@ export class ViewerApp {
   }
 
   private async beginPrimaryPointer(event: PointerEvent): Promise<void> {
-    const hit = await this.pickAcrossSketches();
-    this.hovered = hit;
+    const candidates = await this.pickAcrossSketches();
+    this.state = await postViewerHover(toPickRequest(candidates));
     this.rebuildRenderData();
     this.queueRender();
-    if (!hit || (hit.kind !== "point" && hit.kind !== "dimension")) return;
+    if (event.shiftKey) return;
+    const hoveredTarget = this.state.hoveredTarget;
+    if (!hoveredTarget) return;
 
-    const target = hit.kind === "point"
-      ? this.resolveDragPoint(hit)
-      : this.resolveDragDimension(hit);
+    const target = this.resolveDragTarget(hoveredTarget);
     if (!target) return;
     const local = pointerToSketchLocal(this.pointer, this.canvas, this.camera, target.frame);
     if (!local) return;
@@ -785,8 +739,7 @@ export class ViewerApp {
       yPath: target.yPath,
       target: local,
     };
-    const payload = await postViewerPick(hit.pickId);
-    this.selectedActionId = payload.selectedId;
+    this.state = await postViewerPick(toPickRequest(candidates), "replace");
     this.startOptions.onDocumentDirty?.();
     await this.solveSketches();
     this.rebuildRenderData();
@@ -838,36 +791,35 @@ export class ViewerApp {
     this.queueRender();
   }
 
-  private resolveDragPoint(hit: HoverHit): { sketchId: string; pointId: string; frame: SketchFrame } | null {
-    if (!this.model) return null;
-    const pickable = this.model.pickables.find((candidate) => candidate.pickId === hit.pickId && candidate.case === "PickPoint");
-    if (!pickable?.entityId || !pickable.sketchId) return null;
-    const sketch = this.renderSketches.find((candidate) => candidate.sketchId === pickable.sketchId);
-    if (!sketch) return null;
-    return {
-      kind: "point",
-      sketchId: pickable.sketchId,
-      pointId: pickable.entityId,
-      xPath: `sketch.entity.${pickable.entityId}.x`,
-      yPath: `sketch.entity.${pickable.entityId}.y`,
-      frame: sketch.frame,
-    };
-  }
-
-  private resolveDragDimension(hit: HoverHit): { kind: "label"; sketchId: string; constraintIndex: number; xPath: string; yPath: string; frame: SketchFrame } | null {
-    if (!this.model) return null;
-    const pickable = this.model.pickables.find((candidate) => candidate.pickId === hit.pickId && candidate.case === "PickDimension");
-    if (pickable?.constraintIndex == null || !pickable.sketchId) return null;
-    const sketch = this.renderSketches.find((candidate) => candidate.sketchId === pickable.sketchId);
-    if (!sketch) return null;
-    return {
-      kind: "label",
-      sketchId: pickable.sketchId,
-      constraintIndex: pickable.constraintIndex,
-      xPath: `sketch.constraint.${pickable.constraintIndex}.labelPosition.x`,
-      yPath: `sketch.constraint.${pickable.constraintIndex}.labelPosition.y`,
-      frame: sketch.frame,
-    };
+  private resolveDragTarget(target: SelectionTarget): { kind: "point" | "label"; sketchId: string; pointId?: string; constraintIndex?: number; xPath: string; yPath: string; frame: SketchFrame } | null {
+    switch (target.case) {
+      case "TargetPoint": {
+        const sketch = this.renderSketches.find((candidate) => candidate.sketchId === target.sketchId);
+        if (!sketch) return null;
+        return {
+          kind: "point",
+          sketchId: target.sketchId,
+          pointId: target.entityId,
+          xPath: `sketch.entity.${target.entityId}.x`,
+          yPath: `sketch.entity.${target.entityId}.y`,
+          frame: sketch.frame,
+        };
+      }
+      case "TargetDimension": {
+        const sketch = this.renderSketches.find((candidate) => candidate.sketchId === target.sketchId);
+        if (!sketch) return null;
+        return {
+          kind: "label",
+          sketchId: target.sketchId,
+          constraintIndex: target.constraintIndex,
+          xPath: `sketch.constraint.${target.constraintIndex}.labelPosition.x`,
+          yPath: `sketch.constraint.${target.constraintIndex}.labelPosition.y`,
+          frame: sketch.frame,
+        };
+      }
+      default:
+        return null;
+    }
   }
 
   private fitCamera(): void {
@@ -915,8 +867,8 @@ export class ViewerApp {
         this.model!.pickables,
         this.slotLookup,
         this.state!.params,
-        this.hovered,
-        this.selectedActionId,
+        this.state!.hoveredTarget,
+        this.state.selectedTargets,
         this.fontMetrics,
         this.solverBindings.get(sketch.id),
         this.solvedSketchParams.get(sketch.id),
@@ -1015,10 +967,6 @@ export class ViewerApp {
     }
   }
 
-  private setStatus(text: string): void {
-    this.statusEl.textContent = text;
-  }
-
   private queueRender(): void {
     if (this.renderQueued) return;
     this.renderQueued = true;
@@ -1059,7 +1007,7 @@ export class ViewerApp {
     pass.setBindGroup(0, cameraBindGroup);
 
     const frameLineData = this.state
-      ? buildFrameLineData(this.state.frames.filter((frame) => this.isVisible(frame.id)), this.selectedActionId)
+      ? buildFrameLineData(this.state.frames.filter((frame) => this.isVisible(frame.id)), this.state.selectedId)
       : new Float32Array();
     if (frameLineData.length > 0) {
       const gizmoBuffer = device.createBuffer({
@@ -1137,43 +1085,38 @@ export class ViewerApp {
 
     pass.end();
     device.queue.submit([encoder.finish()]);
-    this.setStatus("Orbit: right-drag · Pan: middle-drag · Pick: left-click");
   }
 
-  private async pickAtPointer(commit: boolean): Promise<void> {
+  private async pickAtPointer(event?: PointerEvent): Promise<void> {
     if (!this.gpu || this.isPicking || this.renderSketches.length === 0) return;
     this.isPicking = true;
     try {
-      const hit = await this.pickAcrossSketches();
-      this.hovered = hit;
-      this.hoverEl.textContent = hit ? `${hit.sketchId} · ${hit.kind} · pick ${hit.pickId}` : "no hover target";
+      const candidates = await this.pickAcrossSketches();
+      if (event) {
+        const intent = event.shiftKey ? "toggle" : "replace";
+        this.state = await postViewerPick(toPickRequest(candidates), intent);
+        this.startOptions.onDocumentDirty?.();
+      } else {
+        this.state = await postViewerHover(toPickRequest(candidates));
+      }
       this.rebuildRenderData();
       this.queueRender();
-      if (commit && hit) {
-        const payload = await postViewerPick(hit.pickId);
-        this.selectedActionId = payload.selectedId;
-        this.startOptions.onDocumentDirty?.();
-        this.rebuildRenderData();
-        this.queueRender();
-      }
     } finally {
       this.isPicking = false;
     }
   }
 
-  private async pickAcrossSketches(): Promise<HoverHit | null> {
-    if (!this.gpu) return null;
-    let best: HoverHit | null = null;
+  private async pickAcrossSketches(): Promise<PickCandidateHit[]> {
+    if (!this.gpu) return [];
+    const hits: PickCandidateHit[] = [];
     for (const sketch of this.renderSketches) {
-      const hit = await this.runPickPass(sketch);
-      if (!hit) continue;
-      if (!best || hit.score < best.score) best = hit;
+      hits.push(...(await this.runPickPass(sketch)));
     }
-    return best;
+    return hits;
   }
 
-  private async runPickPass(sketch: RenderSketch): Promise<HoverHit | null> {
-    if (!this.gpu) return null;
+  private async runPickPass(sketch: RenderSketch): Promise<PickCandidateHit[]> {
+    if (!this.gpu) return [];
     const { device, cameraBuffer, frameBuffer, pickPipeline, pickBindGroupLayout, pickStateBuffer, pickResultBuffer } = this.gpu;
 
     const frameData = new Float32Array(12);
@@ -1253,7 +1196,7 @@ export class ViewerApp {
     pickReadBuffer.destroy();
     const view = new DataView(copy);
 
-    let best: HoverHit | null = null;
+    const hits = new Map<number, PickCandidateHit>();
     for (let i = 0; i < PICK_SAMPLES; i++) {
       const base = i * 16;
       const id = view.getUint32(base, true);
@@ -1262,11 +1205,12 @@ export class ViewerApp {
       if (id === NO_HIT_ID || !Number.isFinite(score)) continue;
       const resolved = pickKind(kind);
       if (!resolved) continue;
-      if (!best || score < best.score) {
-        best = { pickId: id, kind: resolved, score, sketchId: sketch.sketchId };
+      const current = hits.get(id);
+      if (!current || score < current.score) {
+        hits.set(id, { pickId: id, kind: resolved, score, sketchId: sketch.sketchId });
       }
     }
-    return best;
+    return [...hits.values()];
   }
 
   private async initGpu(): Promise<GpuContext> {
@@ -1494,8 +1438,8 @@ function buildSketchBuffers(
   pickables: Pickable[],
   slotLookup: Map<string, number>,
   params: number[],
-  hovered: HoverHit | null,
-  selectedActionId: string | null,
+  hoveredTarget: SelectionTarget | null,
+  selectedTargets: SelectionTarget[],
   fontMetrics: FontMetrics | null,
   solverBinding?: SketchSolverBinding,
   solvedLocal?: Float32Array,
@@ -1512,8 +1456,11 @@ function buildSketchBuffers(
   const pickCircles: PickCircle[] = [];
   const pickLoopTriangles: PickLoopTriangle[] = [];
   const pickMap = buildPickIndex(pickables, viewerSketch.id);
-  const sketchHovered = hovered?.sketchId === viewerSketch.id ? hovered : null;
   const labels: ConstraintLabel[] = [];
+  const isHovered = (kind: PickKind, id: string | number): boolean =>
+    selectionMatches(hoveredTarget, viewerSketch.id, kind, id);
+  const isSelected = (kind: PickKind, id: string | number): boolean =>
+    selectionMatchesAny(selectedTargets, viewerSketch.id, kind, id);
   const resolveValue = (path: string, fallback: number) =>
     resolvedSketchValue(solverBinding, solvedLocal, params, slotLookup, viewerSketch.id, path, fallback);
   const resolveLabelAnchor = (index: number, fallback: Vec2): Vec2 => {
@@ -1537,8 +1484,8 @@ function buildSketchBuffers(
     .filter((loop): loop is ResolvedLoopGeometry => loop !== null);
   for (const loop of resolvedLoops) {
     loop.pickId = pickMap.get(`loop:${loop.id}`) ?? null;
-    const hoveredLoop = sketchHovered?.pickId === loop.pickId;
-    pushLoopFill(triVertices, pickLoopTriangles, loop.boundary, hoveredLoop ? ACCENT_SOFT : LOOP_FILL, loop.pickId);
+    const activeLoop = isHovered("loop", loop.id) || isSelected("loop", loop.id);
+    pushLoopFill(triVertices, pickLoopTriangles, loop.boundary, activeLoop ? ACCENT_SOFT : LOOP_FILL, loop.pickId);
   }
 
   const [minPoint, maxPoint] = computeBounds(viewerSketch.sketch, pointMap, resolveValue);
@@ -1548,9 +1495,9 @@ function buildSketchBuffers(
     if (entity.case === "REPoint") {
       const p = pointMap.get(entity.id);
       if (!p) continue;
-      const hoveredPoint = sketchHovered?.pickId === pickMap.get(`point:${entity.id}`);
-      const color = hoveredPoint ? ACCENT : SKETCH_POINT;
-      pointInstances.push({ x: p[0], y: p[1], radiusPx: hoveredPoint ? 6.5 : 5.0, color });
+      const activePoint = isHovered("point", entity.id) || isSelected("point", entity.id);
+      const color = activePoint ? ACCENT : SKETCH_POINT;
+      pointInstances.push({ x: p[0], y: p[1], radiusPx: activePoint ? 6.5 : 5.0, color });
       const pickId = pickMap.get(`point:${entity.id}`);
       if (pickId != null) pickPoints.push({ x: p[0], y: p[1], radiusPx: 10, pickId });
       continue;
@@ -1561,8 +1508,8 @@ function buildSketchBuffers(
       const b = pointMap.get(entity.endId);
       if (!a || !b) continue;
       const pickId = pickMap.get(`line:${entity.id}`);
-      const hoveredLine = sketchHovered?.pickId === pickId;
-      const color = hoveredLine ? ACCENT : SKETCH_LINE;
+      const activeLine = isHovered("line", entity.id) || isSelected("line", entity.id);
+      const color = activeLine ? ACCENT : SKETCH_LINE;
       lineVertices.push({ x: a[0], y: a[1], color }, { x: b[0], y: b[1], color });
       if (pickId != null) pickSegments.push({ a, b, strokePx: 8, pickId, kind: 2 });
       continue;
@@ -1573,8 +1520,8 @@ function buildSketchBuffers(
       if (!c) continue;
       const radius = resolveValue(`sketch.entity.${entity.id}.radius`, entity.radius);
       const pickId = pickMap.get(`circle:${entity.id}`);
-      const hoveredCircle = sketchHovered?.pickId === pickId;
-      const color = hoveredCircle ? ACCENT : SKETCH_LINE;
+      const activeCircle = isHovered("circle", entity.id) || isSelected("circle", entity.id);
+      const color = activeCircle ? ACCENT : SKETCH_LINE;
       pushCircle(lineVertices, c, radius, color);
       if (pickId != null) pickCircles.push({ center: c, radius, strokePx: 8, pickId });
       continue;
@@ -1586,8 +1533,8 @@ function buildSketchBuffers(
       const c = pointMap.get(entity.data.center);
       if (!s || !e || !c) continue;
       const pickId = pickMap.get(`arc:${entity.id}`);
-      const hoveredArc = sketchHovered?.pickId === pickId;
-      const color = hoveredArc ? ACCENT : SKETCH_LINE;
+      const activeArc = isHovered("arc", entity.id) || isSelected("arc", entity.id);
+      const color = activeArc ? ACCENT : SKETCH_LINE;
       pushArc(lineVertices, pickSegments, s, e, c, entity.data.clockwise, color, pickId);
     }
   }
@@ -1603,7 +1550,9 @@ function buildSketchBuffers(
       constraint,
       index,
       pickMap.get(`dimension:${index}`) ?? null,
-      sketchHovered,
+      hoveredTarget,
+      selectedTargets,
+      viewerSketch.id,
     );
   });
 
@@ -1633,9 +1582,14 @@ function pushConstraintGeometry(
   constraint: ActionSketch["constraints"][number],
   constraintIndex: number,
   pickId: number | null,
-  hovered: HoverHit | null,
+  hoveredTarget: SelectionTarget | null,
+  selectedTargets: SelectionTarget[],
+  sketchId: string,
 ): void {
-  const color = hovered?.kind === "dimension" ? DIM_HOVER : DIM_COLOR;
+  const activeDimension =
+    selectionMatches(hoveredTarget, sketchId, "dimension", constraintIndex) ||
+    selectionMatchesAny(selectedTargets, sketchId, "dimension", constraintIndex);
+  const color = activeDimension ? DIM_HOVER : DIM_COLOR;
   switch (constraint.case) {
     case "Fixed": {
       const p = pointMap.get(constraint.point);
@@ -1679,7 +1633,7 @@ function pushConstraintGeometry(
         text: formatNumber(constraint.distance),
         anchor,
         pickId,
-        hovered: hovered?.kind === "dimension",
+        hovered: activeDimension,
       });
       return;
     }
@@ -1700,7 +1654,7 @@ function pushConstraintGeometry(
         text: `⌀ ${formatNumber(constraint.diameter)}`,
         anchor,
         pickId,
-        hovered: hovered?.kind === "dimension",
+        hovered: activeDimension,
       });
       return;
     }
@@ -1722,7 +1676,7 @@ function pushConstraintGeometry(
         text: `${formatNumber(constraint.angleDegrees)}°`,
         anchor,
         pickId,
-        hovered: hovered?.kind === "dimension",
+        hovered: activeDimension,
       });
       return;
     }
@@ -2133,6 +2087,44 @@ function buildPickIndex(pickables: Pickable[], sketchId: string): Map<string, nu
   return map;
 }
 
+function toPickRequest(candidates: PickCandidateHit[]): Array<{ pickId: number; score: number }> {
+  return candidates.map((candidate) => ({ pickId: candidate.pickId, score: candidate.score }));
+}
+
+function selectionMatches(
+  target: SelectionTarget | null,
+  sketchId: string,
+  kind: PickKind,
+  id: string | number,
+): boolean {
+  if (!target) return false;
+  switch (target.case) {
+    case "TargetPoint":
+      return kind === "point" && target.sketchId === sketchId && target.entityId === id;
+    case "TargetLine":
+      return kind === "line" && target.sketchId === sketchId && target.entityId === id;
+    case "TargetCircle":
+      return kind === "circle" && target.sketchId === sketchId && target.entityId === id;
+    case "TargetArc":
+      return kind === "arc" && target.sketchId === sketchId && target.entityId === id;
+    case "TargetLoop":
+      return kind === "loop" && target.sketchId === sketchId && target.loopId === id;
+    case "TargetDimension":
+      return kind === "dimension" && target.sketchId === sketchId && target.constraintIndex === id;
+    default:
+      return false;
+  }
+}
+
+function selectionMatchesAny(
+  targets: SelectionTarget[],
+  sketchId: string,
+  kind: PickKind,
+  id: string | number,
+): boolean {
+  return targets.some((target) => selectionMatches(target, sketchId, kind, id));
+}
+
 function buildFrameLineData(frames: Array<{ id: string; transform: JsonRigidTransform }>, selectedActionId: string | null): Float32Array {
   const data: number[] = [];
   for (const frame of frames) {
@@ -2403,10 +2395,6 @@ function pushGlyphQuad(
   push(x0, y0, u0, v0);
   push(x1, y1, u1, v1);
   push(x0, y1, u0, v1);
-}
-
-function toCssColor(color: readonly number[]): string {
-  return `rgba(${Math.round(color[0] * 255)}, ${Math.round(color[1] * 255)}, ${Math.round(color[2] * 255)}, ${color[3]})`;
 }
 
 function hexToGpuColor(hex: string): GPUColor {

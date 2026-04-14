@@ -176,9 +176,18 @@ module Program =
                                 |> List.map (fun l -> {| Id = l.Id; EntityIds = l.EntityIds |})
                             Some {| Id = a.Id; Origin = origin; SketchFrame = sketchOrigin; Sketch = sk; Graph = graph; Loops = loops |}
                         | _ -> None)
+                let frames =
+                    doc.Actions
+                    |> List.choose (fun a ->
+                        match Map.tryFind a.Id compiled.TypeMap with
+                        | Some FieldType.Frame ->
+                            Map.tryFind a.Id compiled.Frames
+                            |> Option.map (fun t -> {| Id = a.Id; Transform = t |})
+                        | _ -> None)
                 let payload =
                     {| Surfaces = compiled.Surfaces
                        Sketches = sketches
+                       Frames = frames
                        NumSlots = compiled.Slots.Values.Length
                        SlotIndex = indexList
                        Pickables = compiled.Pickables |}

@@ -346,6 +346,12 @@ module Document =
                 Visible = true
                 Display = None
                 FieldSlice = None }
+              { Id = "frame1"
+                Name = Some "frame"
+                Kind = Translate(child = Some "origin", x = 18.0, y = 6.0, z = 12.0)
+                Visible = true
+                Display = None
+                FieldSlice = None }
               { Id = "from1"
                 Name = Some "from-sketch"
                 Kind = FromSketch(

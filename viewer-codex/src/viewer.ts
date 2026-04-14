@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SketchLoop, type ViewerFrame, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -130,6 +130,7 @@ interface GpuContext {
   format: GPUTextureFormat;
   cameraBuffer: GPUBuffer;
   cameraBindGroup: GPUBindGroup;
+  gizmoPipeline: GPURenderPipeline;
   triPipeline: GPURenderPipeline;
   linePipeline: GPURenderPipeline;
   pointPipeline: GPURenderPipeline;
@@ -205,6 +206,74 @@ fn project_world(pos: vec3<f32>) -> vec4<f32> {
 fn vs_main(input: VsIn) -> VsOut {
   let p = input.position_2d;
   let world = frame.pos.xyz + p.x * frame.x_axis.xyz + p.y * frame.y_axis.xyz;
+  var out: VsOut;
+  out.clip_pos = project_world(world);
+  out.color = input.color;
+  return out;
+}
+
+@fragment
+fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
+  return input.color;
+}
+`;
+
+const GIZMO_SHADER = `
+struct Camera {
+  eye: vec3<f32>, _p0: f32,
+  forward: vec3<f32>, _p1: f32,
+  right: vec3<f32>, _p2: f32,
+  up: vec3<f32>, aspect: f32,
+};
+
+struct Viewport {
+  size: vec2<f32>,
+  _pad: vec2<f32>,
+};
+
+@group(0) @binding(0) var<uniform> cam: Camera;
+@group(1) @binding(0) var<uniform> viewport: Viewport;
+
+struct VsIn {
+  @location(0) origin: vec3<f32>,
+  @location(1) axis: vec3<f32>,
+  @location(2) axis_px: f32,
+  @location(3) endpoint: f32,
+  @location(4) color: vec4<f32>,
+};
+
+struct VsOut {
+  @builtin(position) clip_pos: vec4<f32>,
+  @location(0) color: vec4<f32>,
+};
+
+fn project_world(pos: vec3<f32>) -> vec4<f32> {
+  let f = cam.forward;
+  let r = cam.right;
+  let u = cam.up;
+  let view = mat4x4<f32>(
+    vec4<f32>(r.x, u.x, -f.x, 0.0),
+    vec4<f32>(r.y, u.y, -f.y, 0.0),
+    vec4<f32>(r.z, u.z, -f.z, 0.0),
+    vec4<f32>(-dot(r, cam.eye), -dot(u, cam.eye), dot(f, cam.eye), 1.0),
+  );
+  let near = 0.001;
+  let far = 1000.0;
+  let t = tan(${HALF_FOV});
+  let proj = mat4x4<f32>(
+    vec4<f32>(1.0 / (cam.aspect * t), 0.0, 0.0, 0.0),
+    vec4<f32>(0.0, 1.0 / t, 0.0, 0.0),
+    vec4<f32>(0.0, 0.0, -(far + near) / (far - near), -1.0),
+    vec4<f32>(0.0, 0.0, -2.0 * far * near / (far - near), 0.0),
+  );
+  return proj * view * vec4<f32>(pos, 1.0);
+}
+
+@vertex
+fn vs_main(input: VsIn) -> VsOut {
+  let depth = max(abs(dot(input.origin - cam.eye, cam.forward)), 1e-3);
+  let world_per_px = (2.0 * depth * tan(${HALF_FOV})) / max(viewport.size.y, 1.0);
+  let world = input.origin + input.axis * (input.axis_px * world_per_px * input.endpoint);
   var out: VsOut;
   out.clip_pos = project_world(world);
   out.color = input.color;
@@ -794,6 +863,12 @@ export class ViewerApp {
     if (!this.model || this.model.sketches.length === 0) return;
     let worldMin: Vec3 = [Infinity, Infinity, Infinity];
     let worldMax: Vec3 = [-Infinity, -Infinity, -Infinity];
+    for (const frame of this.model.frames) {
+      const t = toSketchFrame(frame.transform);
+      const p = t.position;
+      worldMin = [Math.min(worldMin[0], p[0]), Math.min(worldMin[1], p[1]), Math.min(worldMin[2], p[2])];
+      worldMax = [Math.max(worldMax[0], p[0]), Math.max(worldMax[1], p[1]), Math.max(worldMax[2], p[2])];
+    }
     for (const sketch of this.model.sketches) {
       const frame = toSketchFrame(sketch.sketchFrame);
       const points = sketch.sketch.entities.filter((entity): entity is Extract<RenderEntity, { case: "REPoint" }> => entity.case === "REPoint");
@@ -838,7 +913,7 @@ export class ViewerApp {
         loops: built.loops,
       };
     });
-    this.metaEl.textContent = `${this.model.sketches.length} sketch${this.model.sketches.length === 1 ? "" : "es"}  ·  ${this.model.numSlots} slots`;
+    this.metaEl.textContent = `${this.model.sketches.length} sketch${this.model.sketches.length === 1 ? "" : "es"}  ·  ${this.model.frames.length} frame${this.model.frames.length === 1 ? "" : "s"}  ·  ${this.model.numSlots} slots`;
   }
 
   private async buildSolverBindings(): Promise<void> {
@@ -923,7 +998,7 @@ export class ViewerApp {
 
   private render(): void {
     if (!this.gpu) return;
-    const { device, context, cameraBuffer, cameraBindGroup, triPipeline, linePipeline, pointPipeline, frameBuffer, frameBindGroup, viewportBuffer, viewportBindGroup, pointQuadBuffer, labelPipeline, labelBindGroup, labelUniformBuffer } = this.gpu;
+    const { device, context, cameraBuffer, cameraBindGroup, gizmoPipeline, triPipeline, linePipeline, pointPipeline, frameBuffer, frameBindGroup, viewportBuffer, viewportBindGroup, pointQuadBuffer, labelPipeline, labelBindGroup, labelUniformBuffer } = this.gpu;
     this.resizeCanvas();
 
     const width = this.canvas.width;
@@ -950,6 +1025,19 @@ export class ViewerApp {
       }],
     });
     pass.setBindGroup(0, cameraBindGroup);
+
+    const frameLineData = this.model ? buildFrameLineData(this.model.frames, this.selectedActionId) : new Float32Array();
+    if (frameLineData.length > 0) {
+      const gizmoBuffer = device.createBuffer({
+        size: frameLineData.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(gizmoBuffer, 0, frameLineData);
+      pass.setPipeline(gizmoPipeline);
+      pass.setBindGroup(1, viewportBindGroup);
+      pass.setVertexBuffer(0, gizmoBuffer);
+      pass.draw(frameLineData.length / 12);
+    }
 
     for (const sketch of this.renderSketches) {
       const frameData = new Float32Array(12);
@@ -1173,6 +1261,37 @@ export class ViewerApp {
     const frameBindGroup = device.createBindGroup({ layout: sketchFrameLayout, entries: [{ binding: 0, resource: { buffer: frameBuffer } }] });
     const viewportBindGroup = device.createBindGroup({ layout: viewportLayout, entries: [{ binding: 0, resource: { buffer: viewportBuffer } }] });
 
+    const gizmoModule = device.createShaderModule({ code: GIZMO_SHADER });
+    const gizmoPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [cameraLayout, viewportLayout] }),
+      vertex: {
+        module: gizmoModule,
+        entryPoint: "vs_main",
+        buffers: [{
+          arrayStride: 48,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x3" },
+            { shaderLocation: 1, offset: 12, format: "float32x3" },
+            { shaderLocation: 2, offset: 24, format: "float32" },
+            { shaderLocation: 3, offset: 28, format: "float32" },
+            { shaderLocation: 4, offset: 32, format: "float32x4" },
+          ],
+        }],
+      },
+      fragment: {
+        module: gizmoModule,
+        entryPoint: "fs_main",
+        targets: [{
+          format,
+          blend: {
+            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+          },
+        }],
+      },
+      primitive: { topology: "line-list" },
+    });
+
     const lineModule = device.createShaderModule({ code: LINE_SHADER });
     const triPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [cameraLayout, sketchFrameLayout] }),
@@ -1313,6 +1432,7 @@ export class ViewerApp {
       format,
       cameraBuffer,
       cameraBindGroup,
+      gizmoPipeline,
       triPipeline,
       linePipeline,
       pointPipeline,
@@ -1977,6 +2097,24 @@ function buildPickIndex(pickables: Pickable[], sketchId: string): Map<string, nu
     }
   }
   return map;
+}
+
+function buildFrameLineData(frames: ViewerFrame[], selectedActionId: string | null): Float32Array {
+  const data: number[] = [];
+  for (const frame of frames) {
+    const t = toSketchFrame(frame.transform);
+    const axisPx = frame.id === "origin" ? 64 : 52;
+    const alpha = selectedActionId === frame.id ? 1.0 : 0.88;
+    pushFrameAxis(data, t.position, t.xAxis, axisPx, [0.88, 0.42, 0.42, alpha]);
+    pushFrameAxis(data, t.position, t.yAxis, axisPx, [0.48, 0.78, 0.54, alpha]);
+    pushFrameAxis(data, t.position, t.zAxis, axisPx, [0.45, 0.56, 0.92, alpha]);
+  }
+  return new Float32Array(data);
+}
+
+function pushFrameAxis(target: number[], origin: Vec3, axis: Vec3, axisPx: number, color: readonly number[]): void {
+  target.push(origin[0], origin[1], origin[2], axis[0], axis[1], axis[2], axisPx, 0, color[0], color[1], color[2], color[3]);
+  target.push(origin[0], origin[1], origin[2], axis[0], axis[1], axis[2], axisPx, 1, color[0], color[1], color[2], color[3]);
 }
 
 function slotValue(params: number[], slotLookup: Map<string, number>, actionId: string, path: string, fallback: number): number {

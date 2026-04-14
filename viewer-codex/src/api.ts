@@ -48,6 +48,11 @@ export interface ViewerSketch {
   loops: SketchLoop[];
 }
 
+export interface ViewerFrame {
+  id: string;
+  transform: JsonRigidTransform;
+}
+
 export interface Pickable {
   case: string;
   pickId: number;
@@ -62,6 +67,7 @@ export interface Pickable {
 export interface ViewerModel {
   surfaces: unknown[];
   sketches: ViewerSketch[];
+  frames: ViewerFrame[];
   numSlots: number;
   slotIndex: SlotIndexEntry[];
   pickables: Pickable[];

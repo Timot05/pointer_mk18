@@ -169,11 +169,27 @@ module Program =
                     {| Surfaces = compiled.Surfaces
                        Sketches = sketches
                        NumSlots = compiled.Slots.Values.Length
-                       SlotIndex = indexList |}
+                       SlotIndex = indexList
+                       Pickables = compiled.Pickables |}
                 Results.Content(JsonSerializer.Serialize(payload, jsonOpts), "application/json"))) |> ignore
 
         app.MapGet("/api/viewer/state",
             Func<IResult>(fun () -> viewerStateResult ())) |> ignore
+
+        // Pick report — frontend posts the GPU-returned pickId after a click.
+        // Server resolves it to an action id and calls Document.select.
+        // Stale ids (from a pre-recompile model) are silently ignored.
+        app.MapPost("/api/viewer/pick",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let pid = body.GetProperty("pickId").GetInt32()
+                let target =
+                    compiled.Pickables
+                    |> List.tryFind (fun p -> Pickable.pickId p = pid)
+                    |> Option.map Pickable.targetAction
+                match target with
+                | Some actionId -> mutate (Document.select actionId)
+                | None -> json ())) |> ignore
 
         app.MapPut("/api/document/select/{id}",
             Func<string, IResult>(fun id -> mutate (Document.select id))) |> ignore

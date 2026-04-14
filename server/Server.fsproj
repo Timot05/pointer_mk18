@@ -13,6 +13,7 @@
     <Compile Include="SlotTable.fs" />
     <Compile Include="Element.fs" />
     <Compile Include="FieldIR.fs" />
+    <Compile Include="Pickable.fs" />
     <Compile Include="Pipeline.fs" />
     <Compile Include="Palette.fs" />
     <Compile Include="Program.fs" />

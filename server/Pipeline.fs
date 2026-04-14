@@ -10,7 +10,8 @@ type PipelineResult =
     { Surfaces: FieldSurface list
       TypeMap: Map<ActionId, FieldType>
       Errors: TypeError list
-      Slots: SlotTable }
+      Slots: SlotTable
+      Pickables: Pickable list }
 
 module Pipeline =
 
@@ -86,6 +87,100 @@ module Pipeline =
                 a (sprintf "sketch.constraint.%d.radius" i) radius
             | _ -> ())
 
+    // ── Pickable list construction ────────────────────────────────────────
+    //
+    // Walks actions in authored order, allocating sequential PickIds.
+    // Reuses the slot keys already allocated by the sketch/surface compile,
+    // so coord refs are shared with the SDF shader's param buffer.
+
+    let private slotOf (b: SlotTable.Builder) (actionId: ActionId) (path: string) : Slot =
+        // Idempotent lookup — the slot was already allocated upstream with
+        // a real default; this call returns the same index.
+        SlotTable.alloc b { ActionId = actionId; Path = path } 0.0
+
+    let private ptSlot (b: SlotTable.Builder) (sketchId: ActionId) (pointId: string) : SlotPt2 =
+        { XSlot = slotOf b sketchId (sprintf "sketch.entity.%s.x" pointId)
+          YSlot = slotOf b sketchId (sprintf "sketch.entity.%s.y" pointId) }
+
+    let private labelSlot (b: SlotTable.Builder) (sketchId: ActionId) (i: int) : SlotPt2 =
+        { XSlot = slotOf b sketchId (sprintf "sketch.constraint.%d.labelPosition.x" i)
+          YSlot = slotOf b sketchId (sprintf "sketch.constraint.%d.labelPosition.y" i) }
+
+    let private buildSketchPickables
+        (b: SlotTable.Builder)
+        (counter: int ref)
+        (sketchId: ActionId)
+        (sketch: ActionSketch)
+        : Pickable list =
+        let nextId () =
+            let id = !counter
+            counter := id + 1
+            id
+
+        let entityPickables =
+            sketch.Entities
+            |> List.choose (fun e ->
+                match e with
+                | REPoint(eid, _, _) ->
+                    let x = slotOf b sketchId (sprintf "sketch.entity.%s.x" eid)
+                    let y = slotOf b sketchId (sprintf "sketch.entity.%s.y" eid)
+                    Some (PickPoint(nextId(), sketchId, eid, x, y))
+                | RELine(eid, startId, endId) ->
+                    Some (PickLine(nextId(), sketchId, eid, ptSlot b sketchId startId, ptSlot b sketchId endId))
+                | RECircle(eid, centerId, _) ->
+                    let r = slotOf b sketchId (sprintf "sketch.entity.%s.radius" eid)
+                    Some (PickCircle(nextId(), sketchId, eid, ptSlot b sketchId centerId, r))
+                | REArc(eid, startId, endId, ArcCenter(centerId, cw)) ->
+                    Some (PickArc(nextId(), sketchId, eid,
+                                  ptSlot b sketchId startId,
+                                  ptSlot b sketchId endId,
+                                  ptSlot b sketchId centerId,
+                                  cw))
+                | REArc(_, _, _, ArcThreePoint _) -> None)
+
+        let loopPickables =
+            SketchLoops.detectLoops sketch.Entities
+            |> List.map (fun loop ->
+                PickLoop(nextId(), sketchId, loop.Id, loop.EntityIds))
+
+        let dimensionPickables =
+            sketch.Constraints
+            |> List.mapi (fun i c -> i, c)
+            |> List.choose (fun (i, c) ->
+                let hasLabel =
+                    match c with
+                    | Distance _ | FrameDistance _ | LineDistance _ | FrameLineDistance _
+                    | PointLineDistance _ | FramePointLineDistance _ | PointCircleDistance _
+                    | LineCircleDistance _ | CircleCircleDistance _ | CircleDiameter _ | Angle _ -> true
+                    | _ -> false
+                if hasLabel then
+                    Some (PickDimension(nextId(), sketchId, i, labelSlot b sketchId i))
+                else None)
+
+        entityPickables @ loopPickables @ dimensionPickables
+
+    let private buildPickables
+        (b: SlotTable.Builder)
+        (actions: DocAction list)
+        (typeMap: Map<ActionId, FieldType>)
+        : Pickable list =
+        let counter = ref 0
+        let nextId () =
+            let id = !counter
+            counter := id + 1
+            id
+
+        actions
+        |> List.collect (fun action ->
+            match Map.tryFind action.Id typeMap with
+            | Some FieldType.Field when action.Visible ->
+                [ PickSurface(nextId(), action.Id) ]
+            | Some FieldType.Sketch ->
+                match action.Kind with
+                | Sketch(_, sk) -> buildSketchPickables b counter action.Id sk
+                | _ -> []
+            | _ -> [])
+
     // ── Full pipeline ─────────────────────────────────────────────────────
 
     let compile (actions: DocAction list) : PipelineResult =
@@ -111,7 +206,10 @@ module Pipeline =
                 | _ -> ()
             | _ -> ()
 
+        let pickables = buildPickables b actions typeMap
+
         { Surfaces = surfaces
           TypeMap = typeMap
           Errors = tc.Errors
-          Slots = SlotTable.toTable b }
+          Slots = SlotTable.toTable b
+          Pickables = pickables }

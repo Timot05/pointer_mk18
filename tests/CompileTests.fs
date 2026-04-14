@@ -328,3 +328,75 @@ let ``Default document now includes the from1 FSketch surface`` () =
     match from1.Field with
     | FSketch { Primitives = prims } -> Assert.Equal(4, prims.Length)
     | other -> failwithf "Expected FSketch for from1, got %A" other
+
+// ── Pickable tests ───────────────────────────────────────────────────────
+
+let pickIds (picks: Pickable list) = picks |> List.map Pickable.pickId
+
+[<Fact>]
+let ``Default document produces the expected pickable counts`` () =
+    let actions = (Document.defaultDocument()).Actions
+    let r = pipeline actions
+    let countBy pred = r.Pickables |> List.filter pred |> List.length
+    // 4 visible Field actions → 4 PickSurface
+    Assert.Equal(4, countBy (function PickSurface _ -> true | _ -> false))
+    // sketch1: 4 points + 4 lines + 1 loop + 2 dimensions
+    Assert.Equal(4, countBy (function PickPoint _ -> true | _ -> false))
+    Assert.Equal(4, countBy (function PickLine _ -> true | _ -> false))
+    Assert.Equal(1, countBy (function PickLoop _ -> true | _ -> false))
+    Assert.Equal(2, countBy (function PickDimension _ -> true | _ -> false))
+
+[<Fact>]
+let ``PickIds form a contiguous zero-based range`` () =
+    let actions = (Document.defaultDocument()).Actions
+    let r = pipeline actions
+    let ids = pickIds r.Pickables |> List.sort
+    Assert.Equal<int list>([ 0 .. r.Pickables.Length - 1 ], ids)
+
+[<Fact>]
+let ``PickPoint xSlot matches the sketch entity's authored slot`` () =
+    let r = pipeline (Document.defaultDocument()).Actions
+    let p_bl_xSlot = Map.find { ActionId = "sketch1"; Path = "sketch.entity.p_bl.x" } r.Slots.Index
+    let pickP_bl =
+        r.Pickables
+        |> List.pick (function
+            | PickPoint(_, "sketch1", "p_bl", xs, _) -> Some xs
+            | _ -> None)
+    Assert.Equal(p_bl_xSlot, pickP_bl)
+
+[<Fact>]
+let ``PickLoop.entityIds matches detectLoops output`` () =
+    let actions = (Document.defaultDocument()).Actions
+    let r = pipeline actions
+    let sketch =
+        actions
+        |> List.pick (fun a ->
+            match a.Kind with Sketch(_, s) -> Some s | _ -> None)
+    let detectedIds =
+        (SketchLoops.detectLoops sketch.Entities |> List.head).EntityIds
+    let pickLoopIds =
+        r.Pickables
+        |> List.pick (function
+            | PickLoop(_, "sketch1", _, ids) -> Some ids
+            | _ -> None)
+    Assert.Equal<string list>(detectedIds, pickLoopIds)
+
+[<Fact>]
+let ``Pickable list is stable across compiles of the same input`` () =
+    let actions = (Document.defaultDocument()).Actions
+    let r1 = Pipeline.compile actions
+    let r2 = Pipeline.compile actions
+    // Same count + same ordered list of variants + ids
+    Assert.Equal(r1.Pickables.Length, r2.Pickables.Length)
+    let key (p: Pickable) =
+        match p with
+        | PickPoint(id, s, e, _, _) -> sprintf "point|%d|%s|%s" id s e
+        | PickLine(id, s, e, _, _) -> sprintf "line|%d|%s|%s" id s e
+        | PickCircle(id, s, e, _, _) -> sprintf "circle|%d|%s|%s" id s e
+        | PickArc(id, s, e, _, _, _, _) -> sprintf "arc|%d|%s|%s" id s e
+        | PickLoop(id, s, l, _) -> sprintf "loop|%d|%s|%s" id s l
+        | PickDimension(id, s, i, _) -> sprintf "dim|%d|%s|%d" id s i
+        | PickSurface(id, a) -> sprintf "surf|%d|%s" id a
+    let k1 = r1.Pickables |> List.map key
+    let k2 = r2.Pickables |> List.map key
+    Assert.Equal<string list>(k1, k2)

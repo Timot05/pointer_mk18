@@ -95,6 +95,41 @@ module Program =
         recompile ()
         Results.NoContent()
 
+    // ── Viewer state (slot values + display settings only; no topology) ──
+    let viewerStatePayload () =
+        // Per-action display & field-slice settings, for actions where they
+        // apply. Slots ARE in Slots.Values, but sending the original
+        // settings is simpler for the UI right now.
+        let displayByAction =
+            doc.Actions
+            |> List.choose (fun a ->
+                match Map.tryFind a.Id compiled.TypeMap with
+                | Some FieldType.Field ->
+                    let d = a.Display |> Option.defaultValue DisplaySettings.defaults
+                    let fs = a.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
+                    Some (a.Id, {| Display = d; FieldSlice = fs |})
+                | _ -> None)
+            |> Map.ofList
+
+        {| Params = compiled.Slots.Values
+           Display = displayByAction
+           Errors = formatErrors compiled.Errors |}
+
+    let viewerStateResult () =
+        Results.Content(JsonSerializer.Serialize(viewerStatePayload (), jsonOpts), "application/json")
+
+    // ── Fast-path: try to update a single slot without recompiling ────────
+    // Returns true if the slot update succeeded (no topology change needed).
+    let tryFastSlotUpdate (id: string) (key: string) (value: JsonElement) : bool =
+        if value.ValueKind <> JsonValueKind.Number then false
+        else
+            let ref = { ActionId = id; Path = key }
+            if SlotTable.update compiled.Slots ref (value.GetDouble()) then
+                // Also update doc.Actions so the source of truth stays consistent
+                doc <- Document.patchParam id key value doc
+                true
+            else false
+
     let readBody<'T> (ctx: HttpContext) =
         let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
         JsonSerializer.Deserialize<'T>(body.GetRawText(), jsonOpts)
@@ -113,6 +148,33 @@ module Program =
 
         app.MapGet("/api/document", Func<IResult>(fun () -> json ())) |> ignore
 
+        // ── Viewer endpoints ──────────────────────────────────────────
+        // /model: topology (rarely changes — structural mutations only).
+        //         Includes the SlotRef→Slot index so the client can map
+        //         (actionId, key) references to slot numbers.
+        // /state: slot values + display settings (changes every drag).
+        app.MapGet("/api/viewer/model",
+            Func<IResult>(fun () ->
+                let indexList =
+                    compiled.Slots.Index
+                    |> Map.toList
+                    |> List.map (fun (r, s) -> {| ActionId = r.ActionId; Path = r.Path; Slot = s |})
+                let sketches =
+                    doc.Actions
+                    |> List.choose (fun a ->
+                        match a.Kind with
+                        | Sketch(origin, sk) -> Some {| Id = a.Id; Origin = origin; Sketch = sk |}
+                        | _ -> None)
+                let payload =
+                    {| Surfaces = compiled.Surfaces
+                       Sketches = sketches
+                       NumSlots = compiled.Slots.Values.Length
+                       SlotIndex = indexList |}
+                Results.Content(JsonSerializer.Serialize(payload, jsonOpts), "application/json"))) |> ignore
+
+        app.MapGet("/api/viewer/state",
+            Func<IResult>(fun () -> viewerStateResult ())) |> ignore
+
         app.MapPut("/api/document/select/{id}",
             Func<string, IResult>(fun id -> mutate (Document.select id))) |> ignore
 
@@ -120,13 +182,21 @@ module Program =
             Func<string, HttpContext, IResult>(fun id ctx ->
                 mutate (Document.updateAction id (readBody<DocAction> ctx)))) |> ignore
 
-        // Rapid: fire-and-forget during drag (204 No Content)
+        // Rapid: fast path for scalar drags. Try to update a single slot
+        // in place; fall back to full recompile if the change affects topology.
+        // Returns the viewer state payload so the client can refresh its buffer.
         app.MapPatch("/api/document/action/{id}/param/rapid",
             Func<string, HttpContext, IResult>(fun id ctx ->
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
                 let key = body.GetProperty("key").GetString()
                 let value = body.GetProperty("value")
-                mutateSilent (Document.patchParam id key value))) |> ignore
+                if tryFastSlotUpdate id key value then
+                    viewerStateResult ()
+                else
+                    // Topology change (ref, bool, etc.) — full recompile
+                    doc <- Document.patchParam id key value doc
+                    recompile ()
+                    viewerStateResult ())) |> ignore
 
         // Commit: returns full document (used on pointer up)
         app.MapPatch("/api/document/action/{id}/param",

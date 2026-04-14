@@ -2,135 +2,195 @@ namespace Server
 
 // ---------------------------------------------------------------------------
 // Element tree — intermediate representation between actions and field IR.
-// Built from a type-checked action graph. Since typecheck guarantees all
-// references are valid and type-compatible, this build cannot fail.
+//
+// Every Element node carries the ActionId it originated from, so FieldCompile
+// can allocate slot refs for each numeric value. Transforms are NOT baked:
+// ETranslate/ERotate keep their parameters, and Move consumers wrap their
+// child with the frame's transform chain (slots shared with the frame's own
+// actions).
 // ---------------------------------------------------------------------------
 
-/// Scene element — a recursive tree of geometry operations.
+/// A single link in a frame chain — Frame-typed actions are represented as
+/// a list of these, rooted at Origin (the empty chain is identity).
+type FrameStep =
+    | FrameTranslate of actionId: ActionId * x: float * y: float * z: float
+    | FrameRotate of actionId: ActionId * ax: float * ay: float * az: float * angle: float
+
+type FrameChain = FrameStep list   // outermost first (applied last)
+
+/// Scene element — a recursive tree of geometry operations for Field-typed
+/// actions. Each node carries its source ActionId for slot allocation.
 type Element =
     | EEmpty
-    | EFrame of RigidTransform
-    | ESphere of radius: float
-    | ECylinder of radius: float * height: float
-    | EBox of width: float * height: float * depth: float
-    | EHalfPlane of axis: string * offset: float * flip: bool
-    | ETranslate of offset: Vec3 * child: Element
-    | ERotate of axis: Vec3 * angleDeg: float * child: Element
-    | EUnion of a: Element * b: Element * radius: float
-    | ESubtract of a: Element * b: Element * radius: float
-    | EIntersect of a: Element * b: Element * radius: float
-    | EThicken of child: Element * amount: float
-    | EShell of child: Element * thickness: float
+    | ESphere of actionId: ActionId * radius: float
+    | ECylinder of actionId: ActionId * radius: float * height: float
+    | EBox of actionId: ActionId * width: float * height: float * depth: float
+    | EHalfPlane of actionId: ActionId * axis: string * offset: float * flip: bool
+    | ETranslate of actionId: ActionId * x: float * y: float * z: float * child: Element
+    | ERotate of actionId: ActionId * ax: float * ay: float * az: float * angle: float * child: Element
+    | EUnion of actionId: ActionId * a: Element * b: Element * radius: float
+    | ESubtract of actionId: ActionId * a: Element * b: Element * radius: float
+    | EIntersect of actionId: ActionId * a: Element * b: Element * radius: float
+    | EThicken of actionId: ActionId * child: Element * amount: float
+    | EShell of actionId: ActionId * child: Element * thickness: float
+
+type BuildResult =
+    { Elements: Map<ActionId, Element>
+      Frames: Map<ActionId, FrameChain> }
 
 module Element =
 
-    /// Build element trees from a type-checked action graph.
-    /// Precondition: typecheck passed (all refs valid and type-compatible).
-    let build (actions: DocAction list) : Map<ActionId, Element> =
-        let actionMap = actions |> List.map (fun a -> a.Id, a) |> Map.ofList
+    /// Wrap a field child with a frame's transform chain.
+    /// The outermost step in the list is applied last (outermost in the tree).
+    let rec applyFrame (chain: FrameChain) (child: Element) : Element =
+        match chain with
+        | [] -> child
+        | FrameTranslate(id, x, y, z) :: rest ->
+            ETranslate(id, x, y, z, applyFrame rest child)
+        | FrameRotate(id, ax, ay, az, angle) :: rest ->
+            ERotate(id, ax, ay, az, angle, applyFrame rest child)
 
-        let rec compile (id: ActionId) (built: Map<ActionId, Element>) : Element * Map<ActionId, Element> =
-            match Map.tryFind id built with
-            | Some elem -> elem, built
+    /// Build element trees and frame chains from a type-checked action graph.
+    /// Only Field-typed actions get Element entries; Frame-typed actions get
+    /// FrameChain entries instead.
+    let build (actions: DocAction list) (typeMap: Map<ActionId, FieldType>) : BuildResult =
+        let actionMap = actions |> List.map (fun a -> a.Id, a) |> Map.ofList
+        let isField id =
+            match Map.tryFind id typeMap with
+            | Some FieldType.Field -> true
+            | _ -> false
+
+        // Frame chain resolution — for Frame-typed actions only
+        let rec frameChain (id: ActionId) (cache: Map<ActionId, FrameChain>) : FrameChain * Map<ActionId, FrameChain> =
+            match Map.tryFind id cache with
+            | Some c -> c, cache
             | None ->
                 match Map.tryFind id actionMap with
-                | None -> EEmpty, built
+                | None -> [], cache
                 | Some action ->
-                    let elem, built = compileKind action.Kind built
-                    let built = Map.add id elem built
-                    elem, built
+                    let chain, cache =
+                        match action.Kind with
+                        | Origin -> [], cache
+                        | Translate(child, x, y, z) ->
+                            let base', cache =
+                                match child with
+                                | Some cid -> frameChain cid cache
+                                | None -> [], cache
+                            FrameTranslate(action.Id, x, y, z) :: base', cache
+                        | Rotate(child, ax, ay, az, angle) ->
+                            let base', cache =
+                                match child with
+                                | Some cid -> frameChain cid cache
+                                | None -> [], cache
+                            FrameRotate(action.Id, ax, ay, az, angle) :: base', cache
+                        | _ -> [], cache
+                    chain, Map.add id chain cache
 
-        and resolveChild (id: ActionId option) (built: Map<ActionId, Element>) : Element * Map<ActionId, Element> =
+        // Element compilation for Field-typed actions
+        let rec compile (id: ActionId) (state: Map<ActionId, Element> * Map<ActionId, FrameChain>) : Element * (Map<ActionId, Element> * Map<ActionId, FrameChain>) =
+            let (built, frames) = state
+            match Map.tryFind id built with
+            | Some elem -> elem, state
+            | None ->
+                match Map.tryFind id actionMap with
+                | None -> EEmpty, state
+                | Some action ->
+                    let elem, state = compileKind action state
+                    let built', frames' = state
+                    elem, (Map.add id elem built', frames')
+
+        and resolveChild (id: ActionId option) (state: Map<ActionId, Element> * Map<ActionId, FrameChain>) : Element * (Map<ActionId, Element> * Map<ActionId, FrameChain>) =
             match id with
-            | None -> EEmpty, built
-            | Some childId -> compile childId built
+            | None -> EEmpty, state
+            | Some childId -> compile childId state
 
-        and compileKind (kind: ActionKind) (built: Map<ActionId, Element>) : Element * Map<ActionId, Element> =
-            match kind with
+        and resolveFrame (id: ActionId option) (state: Map<ActionId, Element> * Map<ActionId, FrameChain>) : FrameChain * (Map<ActionId, Element> * Map<ActionId, FrameChain>) =
+            let (built, frames) = state
+            match id with
+            | None -> [], state
+            | Some fid ->
+                let chain, frames' = frameChain fid frames
+                chain, (built, frames')
+
+        and compileKind (action: DocAction) (state: Map<ActionId, Element> * Map<ActionId, FrameChain>) : Element * (Map<ActionId, Element> * Map<ActionId, FrameChain>) =
+            let id = action.Id
+            match action.Kind with
             | Origin ->
-                EFrame RigidTransform.Identity, built
+                // Origin produces a frame, not a field element. Its frame chain
+                // is [] (identity). Not a field, so EEmpty.
+                EEmpty, state
 
-            | Sphere r -> ESphere r, built
-            | Cylinder(r, h) -> ECylinder(r, h), built
-            | Box(w, h, d) -> EBox(w, h, d), built
-            | HalfPlane(ax, off, fl) -> EHalfPlane(ax, off, fl), built
-            | Sketch _ -> EEmpty, built  // TODO (Phase 2): sketch → Element
+            | Sphere r -> ESphere(id, r), state
+            | Cylinder(r, h) -> ECylinder(id, r, h), state
+            | Box(w, h, d) -> EBox(id, w, h, d), state
+            | HalfPlane(ax, off, fl) -> EHalfPlane(id, ax, off, fl), state
+            | Sketch _ -> EEmpty, state  // TODO: sketch → field
 
             | Translate(child, x, y, z) ->
-                let childElem, built = resolveChild child built
-                let offset = { X = x; Y = y; Z = z }
-                match childElem with
-                | EFrame t ->
-                    EFrame(RigidTransform.translate offset * t), built
-                | _ ->
-                    ETranslate(offset, childElem), built
+                // If this Translate is part of a frame chain, its field output
+                // is empty. But since we're called for a Field-typed action,
+                // typecheck has already determined the child is a Field.
+                // Wrap the child with this translate.
+                let childElem, state = resolveChild child state
+                ETranslate(id, x, y, z, childElem), state
 
             | Rotate(child, ax, ay, az, angle) ->
-                let childElem, built = resolveChild child built
-                let axis = { X = ax; Y = ay; Z = az }
-                match childElem with
-                | EFrame t ->
-                    EFrame(RigidTransform.fromAxisAngle axis angle * t), built
-                | _ ->
-                    ERotate(axis, angle, childElem), built
+                let childElem, state = resolveChild child state
+                ERotate(id, ax, ay, az, angle, childElem), state
 
             | Move(child, frame) ->
-                let childElem, built = resolveChild child built
-                let frameElem, built = resolveChild frame built
-                match frameElem with
-                | EFrame t -> applyTransform t childElem, built
-                | _ -> childElem, built
+                // Move applies a frame's transform chain to a field child.
+                let childElem, state = resolveChild child state
+                let chain, state = resolveFrame frame state
+                applyFrame chain childElem, state
 
             | Union(a, b, r) ->
-                let ea, built = resolveChild a built
-                let eb, built = resolveChild b built
-                EUnion(ea, eb, r), built
+                let ea, state = resolveChild a state
+                let eb, state = resolveChild b state
+                EUnion(id, ea, eb, r), state
 
             | Subtract(a, b, r) ->
-                let ea, built = resolveChild a built
-                let eb, built = resolveChild b built
-                ESubtract(ea, eb, r), built
+                let ea, state = resolveChild a state
+                let eb, state = resolveChild b state
+                ESubtract(id, ea, eb, r), state
 
             | Intersect(a, b, r) ->
-                let ea, built = resolveChild a built
-                let eb, built = resolveChild b built
-                EIntersect(ea, eb, r), built
+                let ea, state = resolveChild a state
+                let eb, state = resolveChild b state
+                EIntersect(id, ea, eb, r), state
 
             | Thicken(child, amt) ->
-                let childElem, built = resolveChild child built
-                EThicken(childElem, amt), built
+                let childElem, state = resolveChild child state
+                EThicken(id, childElem, amt), state
 
             | Shell(child, t) ->
-                let childElem, built = resolveChild child built
-                EShell(childElem, t), built
+                let childElem, state = resolveChild child state
+                EShell(id, childElem, t), state
 
             | FromSketch(child, _, _, _) ->
-                let _childElem, built = resolveChild child built
-                EEmpty, built // TODO (Phase 2): sketch compilation
+                // Phase 2: compile sketch → field. For now, empty.
+                let _childElem, state = resolveChild child state
+                EEmpty, state
 
             | Mesh(child, _, _) ->
-                let _childElem, built = resolveChild child built
-                EEmpty, built // Mesh doesn't produce a field element
+                // Mesh is a type-converter to Mesh, not Field.
+                let _childElem, state = resolveChild child state
+                EEmpty, state
 
-        and applyTransform (t: RigidTransform) (elem: Element) : Element =
-            if t = RigidTransform.Identity then elem
-            else
-                let rotated =
-                    if t.Rot = Quat.Identity then elem
-                    else
-                        let half = acos (min 1.0 (max -1.0 t.Rot.W))
-                        let s = sin half
-                        if abs s < 1e-12 then elem
-                        else
-                            let axis = { X = t.Rot.X / s; Y = t.Rot.Y / s; Z = t.Rot.Z / s }
-                            let angleDeg = half * 2.0 * 180.0 / System.Math.PI
-                            ERotate(axis, angleDeg, elem)
-                if t.Trans = Vec3.Zero then rotated
-                else ETranslate(t.Trans, rotated)
-
-        let mutable built = Map.empty
+        let mutable state : Map<ActionId, Element> * Map<ActionId, FrameChain> = Map.empty, Map.empty
         for action in actions do
-            if action.Visible then
-                let _, b = compile action.Id built
-                built <- b
-        built
+            // Eagerly build Field-typed visible actions as Elements.
+            if action.Visible && isField action.Id then
+                let _, s = compile action.Id state
+                state <- s
+            // Eagerly resolve Frame-typed actions as frame chains (so Move
+            // lookups always find them, even if the frame action itself
+            // isn't "visible").
+            match Map.tryFind action.Id typeMap with
+            | Some FieldType.Frame ->
+                let (built, frames) = state
+                let _, frames' = frameChain action.Id frames
+                state <- (built, frames')
+            | _ -> ()
+        let (elements, frames) = state
+        { Elements = elements; Frames = frames }

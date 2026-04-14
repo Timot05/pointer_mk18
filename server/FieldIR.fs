@@ -2,24 +2,30 @@ namespace Server
 
 // ---------------------------------------------------------------------------
 // Field IR — GPU-ready signed distance field representation.
-// Transforms are baked into leaf primitives as rigid transforms.
+//
+// Slot-based: every numeric value is a slot index into a SlotTable. Transforms
+// are NOT baked into primitives; they remain in the tree as FTranslate / FRotate
+// nodes. The shader reads slots from a uniform buffer and composes transforms
+// on the GPU.
 // ---------------------------------------------------------------------------
 
 type Primitive =
-    | PrimSphere of radius: float
-    | PrimCylinder of radius: float * height: float
-    | PrimBox of width: float * height: float * depth: float
-    | PrimHalfPlane of axis: string * offset: float * flip: bool
+    | PrimSphere of radius: Slot
+    | PrimCylinder of radius: Slot * height: Slot
+    | PrimBox of width: Slot * height: Slot * depth: Slot
+    | PrimHalfPlane of axis: string * offset: Slot * flip: bool
 
 type BooleanOp = BoolUnion | BoolSubtract | BoolIntersect
 
 type UnaryFieldOp = OpThicken | OpShell
 
-/// GPU-ready field node. Leaf primitives carry their full world→local transform.
+/// GPU-ready field node. Slot indices point into the SlotTable values array.
 type FieldNode =
-    | FPrimitive of prim: Primitive * transform: RigidTransform
-    | FBoolean of op: BooleanOp * radius: float * a: FieldNode * b: FieldNode
-    | FFieldOp of op: UnaryFieldOp * value: float * child: FieldNode
+    | FPrimitive of prim: Primitive
+    | FTranslate of x: Slot * y: Slot * z: Slot * child: FieldNode
+    | FRotate of ax: Slot * ay: Slot * az: Slot * angle: Slot * child: FieldNode
+    | FBoolean of op: BooleanOp * radius: Slot * a: FieldNode * b: FieldNode
+    | FFieldOp of op: UnaryFieldOp * value: Slot * child: FieldNode
 
 type FieldSurface =
     { ActionId: ActionId
@@ -27,66 +33,83 @@ type FieldSurface =
 
 module FieldCompile =
 
-    /// Compile an Element tree into a FieldNode, accumulating rigid transforms.
-    let rec private compileElement (parentTransform: RigidTransform) (elem: Element) : FieldNode option =
+    /// Walks an Element tree, allocating slots as it goes, producing a
+    /// FieldNode. Every numeric value on an Element node becomes a slot
+    /// keyed by (ActionId, path).
+    let rec private compileElement (b: SlotTable.Builder) (elem: Element) : FieldNode option =
+        let slot actionId path value =
+            SlotTable.alloc b { ActionId = actionId; Path = path } value
+
         match elem with
-        | EEmpty | EFrame _ ->
-            None
+        | EEmpty -> None
 
-        | ESphere r ->
-            Some (FPrimitive(PrimSphere r, parentTransform))
+        | ESphere(id, r) ->
+            Some (FPrimitive(PrimSphere(slot id "radius" r)))
 
-        | ECylinder(r, h) ->
-            Some (FPrimitive(PrimCylinder(r, h), parentTransform))
+        | ECylinder(id, r, h) ->
+            Some (FPrimitive(PrimCylinder(slot id "radius" r, slot id "height" h)))
 
-        | EBox(w, h, d) ->
-            Some (FPrimitive(PrimBox(w, h, d), parentTransform))
+        | EBox(id, w, h, d) ->
+            Some (FPrimitive(PrimBox(slot id "width" w, slot id "height" h, slot id "depth" d)))
 
-        | EHalfPlane(ax, off, fl) ->
-            Some (FPrimitive(PrimHalfPlane(ax, off, fl), parentTransform))
+        | EHalfPlane(id, axis, off, flip) ->
+            Some (FPrimitive(PrimHalfPlane(axis, slot id "offset" off, flip)))
 
-        | ETranslate(offset, child) ->
-            let t = parentTransform * RigidTransform.translate offset
-            compileElement t child
+        | ETranslate(id, x, y, z, child) ->
+            match compileElement b child with
+            | None -> None
+            | Some fc ->
+                Some (FTranslate(
+                    slot id "x" x,
+                    slot id "y" y,
+                    slot id "z" z,
+                    fc))
 
-        | ERotate(axis, angleDeg, child) ->
-            let t = parentTransform * RigidTransform.fromAxisAngle axis angleDeg
-            compileElement t child
+        | ERotate(id, ax, ay, az, angle, child) ->
+            match compileElement b child with
+            | None -> None
+            | Some fc ->
+                Some (FRotate(
+                    slot id "ax" ax,
+                    slot id "ay" ay,
+                    slot id "az" az,
+                    slot id "angle" angle,
+                    fc))
 
-        | EUnion(a, b, r) ->
-            match compileElement parentTransform a, compileElement parentTransform b with
-            | Some fa, Some fb -> Some (FBoolean(BoolUnion, r, fa, fb))
+        | EUnion(id, a, b', r) ->
+            match compileElement b a, compileElement b b' with
+            | Some fa, Some fb -> Some (FBoolean(BoolUnion, slot id "radius" r, fa, fb))
             | Some fa, None -> Some fa
             | None, Some fb -> Some fb
             | None, None -> None
 
-        | ESubtract(a, b, r) ->
-            // Subtract: a minus b. Convention in SDF: max(a, -b)
-            match compileElement parentTransform a, compileElement parentTransform b with
-            | Some fa, Some fb -> Some (FBoolean(BoolSubtract, r, fa, fb))
+        | ESubtract(id, a, b', r) ->
+            match compileElement b a, compileElement b b' with
+            | Some fa, Some fb -> Some (FBoolean(BoolSubtract, slot id "radius" r, fa, fb))
             | Some fa, None -> Some fa
             | _ -> None
 
-        | EIntersect(a, b, r) ->
-            match compileElement parentTransform a, compileElement parentTransform b with
-            | Some fa, Some fb -> Some (FBoolean(BoolIntersect, r, fa, fb))
+        | EIntersect(id, a, b', r) ->
+            match compileElement b a, compileElement b b' with
+            | Some fa, Some fb -> Some (FBoolean(BoolIntersect, slot id "radius" r, fa, fb))
             | _ -> None
 
-        | EThicken(child, amt) ->
-            compileElement parentTransform child
-            |> Option.map (fun fc -> FFieldOp(OpThicken, amt, fc))
+        | EThicken(id, child, amt) ->
+            compileElement b child
+            |> Option.map (fun fc -> FFieldOp(OpThicken, slot id "amount" amt, fc))
 
-        | EShell(child, t) ->
-            compileElement parentTransform child
-            |> Option.map (fun fc -> FFieldOp(OpShell, t, fc))
+        | EShell(id, child, t) ->
+            compileElement b child
+            |> Option.map (fun fc -> FFieldOp(OpShell, slot id "thickness" t, fc))
 
-    /// Compile the full action graph into field surfaces.
-    /// Returns a FieldSurface for each visible action that produces a field.
-    let compile (actions: DocAction list) (elements: Map<ActionId, Element>) : FieldSurface list =
+    /// Compile each visible action's element tree into a FieldSurface.
+    /// Slots are allocated into the provided builder. Skipped (None) if the
+    /// element produces no field (e.g. Empty, Mesh, Frame-only chains).
+    let compile (actions: DocAction list) (elements: Map<ActionId, Element>) (b: SlotTable.Builder) : FieldSurface list =
         actions
         |> List.choose (fun action ->
             if not action.Visible then None
             else
                 Map.tryFind action.Id elements
-                |> Option.bind (compileElement RigidTransform.Identity)
+                |> Option.bind (compileElement b)
                 |> Option.map (fun field -> { ActionId = action.Id; Field = field }))

@@ -924,6 +924,7 @@ export class ViewerApp {
         this.solverBindings.get(sketch.id),
         this.solvedSketchParams.get(sketch.id),
         this.drag,
+        (constraintIndex) => this.constraintLabelPosition(sketch.id, constraintIndex),
       );
       return {
         sketchId: sketch.id,
@@ -944,6 +945,12 @@ export class ViewerApp {
 
   private isVisible(actionId: string): boolean {
     return this.state?.visible[actionId] ?? true;
+  }
+
+  private constraintLabelPosition(sketchId: string, constraintIndex: number): Vec2 | null {
+    const hit = this.state?.constraintLabelPositions.find((candidate) =>
+      candidate.sketchId === sketchId && candidate.constraintIndex === constraintIndex);
+    return hit ? [hit.position.x, hit.position.y] : null;
   }
 
   private async buildSolverBindings(): Promise<void> {
@@ -1498,6 +1505,7 @@ function buildSketchBuffers(
   solverBinding?: SketchSolverBinding,
   solvedLocal?: Float32Array,
   drag?: DragState | null,
+  stateLabelPosition?: (constraintIndex: number) => Vec2 | null,
 ): { buffers: RenderBuffers; loops: ResolvedLoopGeometry[] } {
   const entityMap = new Map(viewerSketch.sketch.entities.map((entity) => [entity.id, entity]));
   const pointMap = new Map<string, Vec2>();
@@ -1513,13 +1521,11 @@ function buildSketchBuffers(
   const labels: ConstraintLabel[] = [];
   const resolveValue = (path: string, fallback: number) =>
     resolvedSketchValue(solverBinding, solvedLocal, params, slotLookup, viewerSketch.id, path, fallback);
-  const resolveLabelAnchor = (index: number, fallback: Vec2, hasExplicit: boolean): Vec2 => {
+  const resolveLabelAnchor = (index: number, fallback: Vec2): Vec2 => {
     if (drag?.kind === "label" && drag.sketchId === viewerSketch.id && drag.constraintIndex === index) return drag.target;
-    if (!hasExplicit) return fallback;
-    return [
-      resolveValue(`sketch.constraint.${index}.labelPosition.x`, fallback[0]),
-      resolveValue(`sketch.constraint.${index}.labelPosition.y`, fallback[1]),
-    ];
+    const live = stateLabelPosition?.(index);
+    if (live) return live;
+    return fallback;
   };
 
   for (const entity of viewerSketch.sketch.entities) {
@@ -1628,7 +1634,7 @@ function pushConstraintGeometry(
   pointMap: Map<string, Vec2>,
   entityMap: Map<string, RenderEntity>,
   resolveValue: (path: string, fallback: number) => number,
-  resolveLabelAnchor: (index: number, fallback: Vec2, hasExplicit: boolean) => Vec2,
+  resolveLabelAnchor: (index: number, fallback: Vec2) => Vec2,
   constraint: ActionSketch["constraints"][number],
   constraintIndex: number,
   pickId: number | null,
@@ -1666,7 +1672,7 @@ function pushConstraintGeometry(
       const n = perp(dir);
       const mid = scale2(add2(a, b), 0.5);
       const fallbackAnchor = add2(mid, scale2(n, 1.8));
-      const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor, constraint.labelPosition != null);
+      const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
       const offsetAmount = dot2(sub2(anchor, mid), n);
       const off = scale2(n, Math.abs(offsetAmount) < 0.5 ? 1.8 : offsetAmount);
       const aa = add2(a, off);
@@ -1688,7 +1694,7 @@ function pushConstraintGeometry(
       if (!center || !circle || circle.case !== "RECircle") return;
       const radius = resolveValue(`sketch.entity.${circle.id}.radius`, circle.radius);
       const fallbackAnchor: Vec2 = [center[0], center[1] + radius + 2.4];
-      const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor, constraint.labelPosition != null);
+      const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
       const axis = norm2(sub2(anchor, center));
       const dir = len2(axis) < 1e-6 ? ([0, 1] as Vec2) : axis;
       lines.push(
@@ -1713,7 +1719,7 @@ function pushConstraintGeometry(
       const ra = norm2(sub2(a1, a0));
       const rb = norm2(sub2(b1, b0));
       const fallback = len2(norm2(add2(ra, rb))) < 1e-6 ? [vertex[0] + 2.6, vertex[1] + 2.6] : add2(vertex, scale2(norm2(add2(ra, rb)), 4.4));
-      const anchor = resolveLabelAnchor(constraintIndex, fallback, constraint.labelPosition != null);
+      const anchor = resolveLabelAnchor(constraintIndex, fallback);
       const r = Math.max(2.4, len2(sub2(anchor, vertex)) - 0.8);
       lines.push({ x: vertex[0], y: vertex[1], color }, { x: vertex[0] + ra[0] * r, y: vertex[1] + ra[1] * r, color });
       lines.push({ x: vertex[0], y: vertex[1], color }, { x: vertex[0] + rb[0] * r, y: vertex[1] + rb[1] * r, color });

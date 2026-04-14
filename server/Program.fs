@@ -137,10 +137,38 @@ module Program =
             |> List.map (fun a -> a.Id, a.Visible)
             |> Map.ofList
 
+        let constraintLabelPositions =
+            doc.Actions
+            |> List.choose (fun a ->
+                match a.Kind with
+                | Sketch(_, sk) ->
+                    sk.Constraints
+                    |> List.mapi (fun i c ->
+                        let lp =
+                            match c with
+                            | Distance(_, _, _, lp)
+                            | FrameDistance(_, _, _, _, lp)
+                            | LineDistance(_, _, _, _, _, _, _, lp)
+                            | FrameLineDistance(_, _, _, _, _, _, lp)
+                            | PointLineDistance(_, _, _, _, _, lp)
+                            | FramePointLineDistance(_, _, _, _, lp)
+                            | PointCircleDistance(_, _, _, _, lp)
+                            | LineCircleDistance(_, _, _, _, _, _, lp)
+                            | CircleCircleDistance(_, _, _, _, _, _, lp)
+                            | CircleDiameter(_, _, _, lp)
+                            | Angle(_, _, _, _, _, _, _, _, _, _, lp) -> lp
+                            | _ -> None
+                        lp |> Option.map (fun pos -> {| SketchId = a.Id; ConstraintIndex = i; Position = pos |}))
+                    |> List.choose id
+                    |> Some
+                | _ -> None)
+            |> List.concat
+
         {| Params = compiled.Slots.Values
            Frames = frames
            SketchFrames = sketchFrames
            Visible = visibleByAction
+           ConstraintLabelPositions = constraintLabelPositions
            Display = displayByAction
            Errors = formatErrors compiled.Errors |}
 

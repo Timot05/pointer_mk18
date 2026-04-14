@@ -24,9 +24,9 @@ export type SketchConstraint =
   | { case: "Fixed"; point: string; x: number; y: number }
   | { case: "Horizontal"; a: string; b: string }
   | { case: "Vertical"; a: string; b: string }
-  | { case: "Distance"; a: string; b: string; distance: number; labelPosition?: { x: number; y: number } | null }
-  | { case: "CircleDiameter"; circle: string; center: string; diameter: number; labelPosition?: { x: number; y: number } | null }
-  | { case: "Angle"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; angleDegrees: number; aReverse: boolean; bReverse: boolean; ccwFromAToB: boolean; labelPosition?: { x: number; y: number } | null }
+  | { case: "Distance"; a: string; b: string; distance: number }
+  | { case: "CircleDiameter"; circle: string; center: string; diameter: number }
+  | { case: "Angle"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; angleDegrees: number; aReverse: boolean; bReverse: boolean; ccwFromAToB: boolean }
   | { case: string; [key: string]: unknown };
 
 export interface ActionSketch {
@@ -86,6 +86,7 @@ export interface ViewerState {
   frames: ViewerFrame[];
   sketchFrames: Array<{ id: string; transform: JsonRigidTransform }>;
   visible: Record<string, boolean>;
+  constraintLabelPositions: Array<{ sketchId: string; constraintIndex: number; position: { x: number; y: number } }>;
   display: Record<string, unknown>;
   errors: Array<{ actionId: string; key: string; error: string }>;
 }

@@ -5,7 +5,7 @@ import type { Graph } from "./graph";
 import { solveGraphWithGpu, type SolverPin } from "./gpu-lm-solver";
 import { createGpuSolver, type GpuSolver } from "./gpu-solver";
 import { loadFontMetrics, loadMsdfAtlas, type FontMetrics } from "./msdf-atlas";
-import { add2, add3, cross3, dot3, len2, norm2, norm3, perp, scale2, scale3, sub2, sub3, type Vec2, type Vec3 } from "./math";
+import { add2, add3, cross3, dot2, dot3, len2, norm2, norm3, perp, scale2, scale3, sub2, sub3, type Vec2, type Vec3 } from "./math";
 import { createMsdfLabelPipeline, writeLabelUniform } from "./pipeline-msdf-label";
 
 type PickKind = "point" | "line" | "circle" | "arc" | "loop" | "dimension";
@@ -109,10 +109,12 @@ interface HoverHit {
 interface DragState {
   pointerId: number;
   sketchId: string;
-  pointId: string;
   xPath: string;
   yPath: string;
   target: Vec2;
+  kind: "point" | "label";
+  pointId?: string;
+  constraintIndex?: number;
 }
 
 interface SketchFrame {
@@ -686,9 +688,11 @@ export class ViewerApp {
     this.hovered = hit;
     this.rebuildRenderData();
     this.queueRender();
-    if (!hit || hit.kind !== "point") return;
+    if (!hit || (hit.kind !== "point" && hit.kind !== "dimension")) return;
 
-    const target = this.resolveDragPoint(hit);
+    const target = hit.kind === "point"
+      ? this.resolveDragPoint(hit)
+      : this.resolveDragDimension(hit);
     if (!target) return;
     const local = pointerToSketchLocal(this.pointer, this.canvas, this.camera, target.frame);
     if (!local) return;
@@ -697,9 +701,11 @@ export class ViewerApp {
     this.drag = {
       pointerId: event.pointerId,
       sketchId: target.sketchId,
+      kind: target.kind,
       pointId: target.pointId,
-      xPath: `sketch.entity.${target.pointId}.x`,
-      yPath: `sketch.entity.${target.pointId}.y`,
+      constraintIndex: target.constraintIndex,
+      xPath: target.xPath,
+      yPath: target.yPath,
       target: local,
     };
     const payload = await postViewerPick(hit.pickId);
@@ -722,6 +728,12 @@ export class ViewerApp {
     const drag = this.drag;
     this.drag = null;
     if (!drag) return;
+    if (drag.kind === "label") {
+      await patchActionParam(drag.sketchId, drag.xPath, drag.target[0]);
+      await patchActionParam(drag.sketchId, drag.yPath, drag.target[1]);
+      await this.reloadState();
+      return;
+    }
     const solved = this.solvedSketchParams.get(drag.sketchId);
     const binding = this.solverBindings.get(drag.sketchId);
     if (!solved || !binding) {
@@ -752,7 +764,30 @@ export class ViewerApp {
     if (!pickable?.entityId || !pickable.sketchId) return null;
     const sketch = this.renderSketches.find((candidate) => candidate.sketchId === pickable.sketchId);
     if (!sketch) return null;
-    return { sketchId: pickable.sketchId, pointId: pickable.entityId, frame: sketch.frame };
+    return {
+      kind: "point",
+      sketchId: pickable.sketchId,
+      pointId: pickable.entityId,
+      xPath: `sketch.entity.${pickable.entityId}.x`,
+      yPath: `sketch.entity.${pickable.entityId}.y`,
+      frame: sketch.frame,
+    };
+  }
+
+  private resolveDragDimension(hit: HoverHit): { kind: "label"; sketchId: string; constraintIndex: number; xPath: string; yPath: string; frame: SketchFrame } | null {
+    if (!this.model) return null;
+    const pickable = this.model.pickables.find((candidate) => candidate.pickId === hit.pickId && candidate.case === "PickDimension");
+    if (pickable?.constraintIndex == null || !pickable.sketchId) return null;
+    const sketch = this.renderSketches.find((candidate) => candidate.sketchId === pickable.sketchId);
+    if (!sketch) return null;
+    return {
+      kind: "label",
+      sketchId: pickable.sketchId,
+      constraintIndex: pickable.constraintIndex,
+      xPath: `sketch.constraint.${pickable.constraintIndex}.labelPosition.x`,
+      yPath: `sketch.constraint.${pickable.constraintIndex}.labelPosition.y`,
+      frame: sketch.frame,
+    };
   }
 
   private fitCamera(): void {
@@ -794,6 +829,7 @@ export class ViewerApp {
         this.fontMetrics,
         this.solverBindings.get(sketch.id),
         this.solvedSketchParams.get(sketch.id),
+        this.drag,
       );
       return {
         sketchId: sketch.id,
@@ -1308,6 +1344,7 @@ function buildSketchBuffers(
   fontMetrics: FontMetrics | null,
   solverBinding?: SketchSolverBinding,
   solvedLocal?: Float32Array,
+  drag?: DragState | null,
 ): { buffers: RenderBuffers; loops: ResolvedLoopGeometry[] } {
   const entityMap = new Map(viewerSketch.sketch.entities.map((entity) => [entity.id, entity]));
   const pointMap = new Map<string, Vec2>();
@@ -1323,6 +1360,14 @@ function buildSketchBuffers(
   const labels: ConstraintLabel[] = [];
   const resolveValue = (path: string, fallback: number) =>
     resolvedSketchValue(solverBinding, solvedLocal, params, slotLookup, viewerSketch.id, path, fallback);
+  const resolveLabelAnchor = (index: number, fallback: Vec2, hasExplicit: boolean): Vec2 => {
+    if (drag?.kind === "label" && drag.sketchId === viewerSketch.id && drag.constraintIndex === index) return drag.target;
+    if (!hasExplicit) return fallback;
+    return [
+      resolveValue(`sketch.constraint.${index}.labelPosition.x`, fallback[0]),
+      resolveValue(`sketch.constraint.${index}.labelPosition.y`, fallback[1]),
+    ];
+  };
 
   for (const entity of viewerSketch.sketch.entities) {
     if (entity.case === "REPoint") {
@@ -1400,6 +1445,7 @@ function buildSketchBuffers(
       pointMap,
       entityMap,
       resolveValue,
+      resolveLabelAnchor,
       constraint,
       index,
       pickMap.get(`dimension:${index}`) ?? null,
@@ -1429,12 +1475,13 @@ function pushConstraintGeometry(
   pointMap: Map<string, Vec2>,
   entityMap: Map<string, RenderEntity>,
   resolveValue: (path: string, fallback: number) => number,
+  resolveLabelAnchor: (index: number, fallback: Vec2, hasExplicit: boolean) => Vec2,
   constraint: ActionSketch["constraints"][number],
-  _constraintIndex: number,
+  constraintIndex: number,
   pickId: number | null,
   hovered: HoverHit | null,
 ): void {
-  const color = hovered?.kind === "line" ? DIM_HOVER : DIM_COLOR;
+  const color = hovered?.kind === "dimension" ? DIM_HOVER : DIM_COLOR;
   switch (constraint.case) {
     case "Fixed": {
       const p = pointMap.get(constraint.point);
@@ -1464,7 +1511,11 @@ function pushConstraintGeometry(
       if (!a || !b) return;
       const dir = norm2(sub2(b, a));
       const n = perp(dir);
-      const off = scale2(n, 1.8);
+      const mid = scale2(add2(a, b), 0.5);
+      const fallbackAnchor = add2(mid, scale2(n, 1.8));
+      const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor, constraint.labelPosition != null);
+      const offsetAmount = dot2(sub2(anchor, mid), n);
+      const off = scale2(n, Math.abs(offsetAmount) < 0.5 ? 1.8 : offsetAmount);
       const aa = add2(a, off);
       const bb = add2(b, off);
       lines.push({ x: a[0], y: a[1], color }, { x: aa[0], y: aa[1], color });
@@ -1472,7 +1523,7 @@ function pushConstraintGeometry(
       lines.push({ x: aa[0], y: aa[1], color }, { x: bb[0], y: bb[1], color });
       labels.push({
         text: formatNumber(constraint.distance),
-        anchor: constraint.labelPosition ? [constraint.labelPosition.x, constraint.labelPosition.y] : scale2(add2(aa, bb), 0.5),
+        anchor,
         pickId,
         hovered: hovered?.kind === "dimension",
       });
@@ -1483,10 +1534,17 @@ function pushConstraintGeometry(
       const circle = entityMap.get(constraint.circle);
       if (!center || !circle || circle.case !== "RECircle") return;
       const radius = resolveValue(`sketch.entity.${circle.id}.radius`, circle.radius);
-      lines.push({ x: center[0] - radius, y: center[1], color }, { x: center[0] + radius, y: center[1], color });
+      const fallbackAnchor: Vec2 = [center[0], center[1] + radius + 2.4];
+      const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor, constraint.labelPosition != null);
+      const axis = norm2(sub2(anchor, center));
+      const dir = len2(axis) < 1e-6 ? ([0, 1] as Vec2) : axis;
+      lines.push(
+        { x: center[0] - dir[0] * radius, y: center[1] - dir[1] * radius, color },
+        { x: center[0] + dir[0] * radius, y: center[1] + dir[1] * radius, color },
+      );
       labels.push({
         text: `⌀ ${formatNumber(constraint.diameter)}`,
-        anchor: constraint.labelPosition ? [constraint.labelPosition.x, constraint.labelPosition.y] : [center[0], center[1] + radius + 2.4],
+        anchor,
         pickId,
         hovered: hovered?.kind === "dimension",
       });
@@ -1501,14 +1559,14 @@ function pushConstraintGeometry(
       const vertex = a0;
       const ra = norm2(sub2(a1, a0));
       const rb = norm2(sub2(b1, b0));
-      const r = 3.2;
+      const fallback = len2(norm2(add2(ra, rb))) < 1e-6 ? [vertex[0] + 2.6, vertex[1] + 2.6] : add2(vertex, scale2(norm2(add2(ra, rb)), 4.4));
+      const anchor = resolveLabelAnchor(constraintIndex, fallback, constraint.labelPosition != null);
+      const r = Math.max(2.4, len2(sub2(anchor, vertex)) - 0.8);
       lines.push({ x: vertex[0], y: vertex[1], color }, { x: vertex[0] + ra[0] * r, y: vertex[1] + ra[1] * r, color });
       lines.push({ x: vertex[0], y: vertex[1], color }, { x: vertex[0] + rb[0] * r, y: vertex[1] + rb[1] * r, color });
-      const bisector = norm2(add2(ra, rb));
-      const fallback = len2(bisector) < 1e-6 ? [vertex[0] + 2.6, vertex[1] + 2.6] : add2(vertex, scale2(bisector, 4.4));
       labels.push({
         text: `${formatNumber(constraint.angleDegrees)}°`,
-        anchor: constraint.labelPosition ? [constraint.labelPosition.x, constraint.labelPosition.y] : fallback,
+        anchor,
         pickId,
         hovered: hovered?.kind === "dimension",
       });

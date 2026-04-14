@@ -13,6 +13,10 @@ export function scale2(v: Vec2, s: number): Vec2 {
   return [v[0] * s, v[1] * s];
 }
 
+export function dot2(a: Vec2, b: Vec2): number {
+  return a[0] * b[0] + a[1] * b[1];
+}
+
 export function len2(v: Vec2): number {
   return Math.hypot(v[0], v[1]);
 }

@@ -63,12 +63,15 @@ interface RenderBuffers {
   triData: Float32Array;
   lineData: Float32Array;
   pointData: Float32Array;
+  highlightLineData: Float32Array;
+  highlightPointData: Float32Array;
   pickPoints: Float32Array;
   pickLines: Float32Array;
   pickCircles: Float32Array;
   pickLoops: Float32Array;
   pickLabels: Float32Array;
   labelData: Float32Array;
+  highlightLabelData: Float32Array;
 }
 
 interface RenderSketch {
@@ -873,6 +876,7 @@ export class ViewerApp {
       return;
     }
     this.state = await patchViewerSketchParams(drag.sketchId, params);
+    await this.solveSketches();
     this.rebuildRenderData();
     this.queueRender();
     this.startOptions.onDocumentDirty?.();
@@ -1174,6 +1178,50 @@ export class ViewerApp {
         pass.setBindGroup(1, labelBindGroup);
         pass.setVertexBuffer(0, labelBuffer);
         pass.draw(sketch.buffers.labelData.length / 10);
+      }
+
+      if (sketch.buffers.highlightLineData.length > 0) {
+        const lineBuffer = device.createBuffer({
+          size: sketch.buffers.highlightLineData.byteLength,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(lineBuffer, 0, sketch.buffers.highlightLineData);
+        pass.setPipeline(linePipeline);
+        pass.setBindGroup(1, frameBindGroup);
+        pass.setVertexBuffer(0, lineBuffer);
+        pass.draw(sketch.buffers.highlightLineData.length / 6);
+      }
+
+      if (sketch.buffers.highlightPointData.length > 0) {
+        const pointBuffer = device.createBuffer({
+          size: sketch.buffers.highlightPointData.byteLength,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(pointBuffer, 0, sketch.buffers.highlightPointData);
+        pass.setPipeline(pointPipeline);
+        pass.setBindGroup(1, frameBindGroup);
+        pass.setBindGroup(2, viewportBindGroup);
+        pass.setVertexBuffer(0, pointQuadBuffer);
+        pass.setVertexBuffer(1, pointBuffer);
+        pass.draw(6, sketch.buffers.highlightPointData.length / 7);
+      }
+
+      if (labelPipeline && labelBindGroup && labelUniformBuffer && sketch.buffers.highlightLabelData.length > 0) {
+        const labelBuffer = device.createBuffer({
+          size: sketch.buffers.highlightLabelData.byteLength,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(labelBuffer, 0, sketch.buffers.highlightLabelData);
+        writeLabelUniform(
+          device,
+          labelUniformBuffer,
+          [Math.max(1, this.canvas.clientWidth), Math.max(1, this.canvas.clientHeight)],
+          sketch.frame,
+        );
+        pass.setPipeline(labelPipeline);
+        pass.setBindGroup(1, labelBindGroup);
+        pass.setVertexBuffer(0, labelBuffer);
+        pass.draw(sketch.buffers.highlightLabelData.length / 10);
       }
     }
 
@@ -1578,13 +1626,16 @@ function buildSketchBuffers(
   const pointMap = new Map<string, Vec2>();
   const triVertices: LineVertex[] = [];
   const lineVertices: LineVertex[] = [];
+  const highlightLineVertices: LineVertex[] = [];
   const pointInstances: PointInstance[] = [];
+  const highlightPointInstances: PointInstance[] = [];
   const pickPoints: PickPoint[] = [];
   const pickSegments: PickSegment[] = [];
   const pickCircles: PickCircle[] = [];
   const pickLoopTriangles: PickLoopTriangle[] = [];
   const pickMap = buildPickIndex(pickables, viewerSketch.id);
   const labels: ConstraintLabel[] = [];
+  const highlightLabels: ConstraintLabel[] = [];
   const isHovered = (kind: PickKind, id: string | number): boolean =>
     selectionMatches(hoveredTarget, viewerSketch.id, kind, id);
   const isSelected = (kind: PickKind, id: string | number): boolean =>
@@ -1624,8 +1675,10 @@ function buildSketchBuffers(
       const p = pointMap.get(entity.id);
       if (!p) continue;
       const activePoint = isHovered("point", entity.id) || isSelected("point", entity.id);
-      const color = activePoint ? ACCENT : SKETCH_POINT;
-      pointInstances.push({ x: p[0], y: p[1], radiusPx: activePoint ? 6.5 : 5.0, color });
+      pointInstances.push({ x: p[0], y: p[1], radiusPx: 5.0, color: SKETCH_POINT });
+      if (activePoint) {
+        highlightPointInstances.push({ x: p[0], y: p[1], radiusPx: 7.5, color: ACCENT });
+      }
       const pickId = pickMap.get(`point:${entity.id}`);
       if (pickId != null) pickPoints.push({ x: p[0], y: p[1], radiusPx: 10, pickId });
       continue;
@@ -1637,8 +1690,10 @@ function buildSketchBuffers(
       if (!a || !b) continue;
       const pickId = pickMap.get(`line:${entity.id}`);
       const activeLine = isHovered("line", entity.id) || isSelected("line", entity.id);
-      const color = activeLine ? ACCENT : SKETCH_LINE;
-      lineVertices.push({ x: a[0], y: a[1], color }, { x: b[0], y: b[1], color });
+      lineVertices.push({ x: a[0], y: a[1], color: SKETCH_LINE }, { x: b[0], y: b[1], color: SKETCH_LINE });
+      if (activeLine) {
+        highlightLineVertices.push({ x: a[0], y: a[1], color: ACCENT }, { x: b[0], y: b[1], color: ACCENT });
+      }
       if (pickId != null) pickSegments.push({ a, b, strokePx: 8, pickId, kind: 2 });
       continue;
     }
@@ -1649,8 +1704,8 @@ function buildSketchBuffers(
       const radius = resolveValue(`sketch.entity.${entity.id}.radius`, entity.radius);
       const pickId = pickMap.get(`circle:${entity.id}`);
       const activeCircle = isHovered("circle", entity.id) || isSelected("circle", entity.id);
-      const color = activeCircle ? ACCENT : SKETCH_LINE;
-      pushCircle(lineVertices, c, radius, color);
+      pushCircle(lineVertices, c, radius, SKETCH_LINE);
+      if (activeCircle) pushCircle(highlightLineVertices, c, radius, ACCENT);
       if (pickId != null) pickCircles.push({ center: c, radius, strokePx: 8, pickId });
       continue;
     }
@@ -1662,15 +1717,17 @@ function buildSketchBuffers(
       if (!s || !e || !c) continue;
       const pickId = pickMap.get(`arc:${entity.id}`);
       const activeArc = isHovered("arc", entity.id) || isSelected("arc", entity.id);
-      const color = activeArc ? ACCENT : SKETCH_LINE;
-      pushArc(lineVertices, pickSegments, s, e, c, entity.data.clockwise, color, pickId);
+      pushArc(lineVertices, pickSegments, s, e, c, entity.data.clockwise, SKETCH_LINE, pickId);
+      if (activeArc) pushArc(highlightLineVertices, undefined, s, e, c, entity.data.clockwise, ACCENT, null);
     }
   }
 
   viewerSketch.sketch.constraints.forEach((constraint, index) => {
     pushConstraintGeometry(
       lineVertices,
+      highlightLineVertices,
       labels,
+      highlightLabels,
       pointMap,
       entityMap,
       resolveValue,
@@ -1689,12 +1746,15 @@ function buildSketchBuffers(
       triData: flattenLines(triVertices),
       lineData: flattenLines(lineVertices),
       pointData: flattenPoints(pointInstances),
+      highlightLineData: flattenLines(highlightLineVertices),
+      highlightPointData: flattenPoints(highlightPointInstances),
       pickPoints: flattenPickPoints(pickPoints),
       pickLines: flattenPickSegments(pickSegments),
       pickCircles: flattenPickCircles(pickCircles),
       pickLoops: flattenPickLoopTriangles(pickLoopTriangles),
       pickLabels: fontMetrics ? flattenPickLabelRects(buildLabelPickRects(labels, fontMetrics)) : new Float32Array(),
       labelData: fontMetrics ? buildLabelVertices(labels, fontMetrics) : new Float32Array(),
+      highlightLabelData: fontMetrics ? buildLabelVertices(highlightLabels, fontMetrics) : new Float32Array(),
     },
     loops: resolvedLoops,
   };
@@ -1702,7 +1762,9 @@ function buildSketchBuffers(
 
 function pushConstraintGeometry(
   lines: LineVertex[],
+  highlightLines: LineVertex[],
   labels: ConstraintLabel[],
+  highlightLabels: ConstraintLabel[],
   pointMap: Map<string, Vec2>,
   entityMap: Map<string, RenderEntity>,
   resolveValue: (path: string, fallback: number) => number,
@@ -1717,7 +1779,6 @@ function pushConstraintGeometry(
   const activeDimension =
     selectionMatches(hoveredTarget, sketchId, "dimension", constraintIndex) ||
     selectionMatchesAny(selectedTargets, sketchId, "dimension", constraintIndex);
-  const color = activeDimension ? DIM_HOVER : DIM_COLOR;
   switch (constraint.case) {
     case "Fixed": {
       const p = pointMap.get(constraint.point);
@@ -1735,9 +1796,15 @@ function pushConstraintGeometry(
       if (!a || !b) return;
       const mid = scale2(add2(a, b), 0.5);
       if (constraint.case === "Horizontal") {
-        lines.push({ x: mid[0] - 0.8, y: mid[1], color }, { x: mid[0] + 0.8, y: mid[1], color });
+        lines.push({ x: mid[0] - 0.8, y: mid[1], color: DIM_COLOR }, { x: mid[0] + 0.8, y: mid[1], color: DIM_COLOR });
+        if (activeDimension) {
+          highlightLines.push({ x: mid[0] - 0.8, y: mid[1], color: DIM_HOVER }, { x: mid[0] + 0.8, y: mid[1], color: DIM_HOVER });
+        }
       } else {
-        lines.push({ x: mid[0], y: mid[1] - 0.8, color }, { x: mid[0], y: mid[1] + 0.8, color });
+        lines.push({ x: mid[0], y: mid[1] - 0.8, color: DIM_COLOR }, { x: mid[0], y: mid[1] + 0.8, color: DIM_COLOR });
+        if (activeDimension) {
+          highlightLines.push({ x: mid[0], y: mid[1] - 0.8, color: DIM_HOVER }, { x: mid[0], y: mid[1] + 0.8, color: DIM_HOVER });
+        }
       }
       return;
     }
@@ -1754,15 +1821,21 @@ function pushConstraintGeometry(
       const off = scale2(n, Math.abs(offsetAmount) < 0.5 ? 1.8 : offsetAmount);
       const aa = add2(a, off);
       const bb = add2(b, off);
-      lines.push({ x: a[0], y: a[1], color }, { x: aa[0], y: aa[1], color });
-      lines.push({ x: b[0], y: b[1], color }, { x: bb[0], y: bb[1], color });
-      lines.push({ x: aa[0], y: aa[1], color }, { x: bb[0], y: bb[1], color });
+      lines.push({ x: a[0], y: a[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
+      lines.push({ x: b[0], y: b[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
+      lines.push({ x: aa[0], y: aa[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
+      if (activeDimension) {
+        highlightLines.push({ x: a[0], y: a[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
+        highlightLines.push({ x: b[0], y: b[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
+        highlightLines.push({ x: aa[0], y: aa[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
+      }
       labels.push({
         text: formatNumber(constraint.distance),
         anchor,
         pickId,
-        hovered: activeDimension,
+        hovered: false,
       });
+      if (activeDimension) highlightLabels.push({ text: formatNumber(constraint.distance), anchor, pickId, hovered: true });
       return;
     }
     case "CircleDiameter": {
@@ -1775,15 +1848,22 @@ function pushConstraintGeometry(
       const axis = norm2(sub2(anchor, center));
       const dir = len2(axis) < 1e-6 ? ([0, 1] as Vec2) : axis;
       lines.push(
-        { x: center[0] - dir[0] * radius, y: center[1] - dir[1] * radius, color },
-        { x: center[0] + dir[0] * radius, y: center[1] + dir[1] * radius, color },
+        { x: center[0] - dir[0] * radius, y: center[1] - dir[1] * radius, color: DIM_COLOR },
+        { x: center[0] + dir[0] * radius, y: center[1] + dir[1] * radius, color: DIM_COLOR },
       );
+      if (activeDimension) {
+        highlightLines.push(
+          { x: center[0] - dir[0] * radius, y: center[1] - dir[1] * radius, color: DIM_HOVER },
+          { x: center[0] + dir[0] * radius, y: center[1] + dir[1] * radius, color: DIM_HOVER },
+        );
+      }
       labels.push({
         text: `⌀ ${formatNumber(constraint.diameter)}`,
         anchor,
         pickId,
-        hovered: activeDimension,
+        hovered: false,
       });
+      if (activeDimension) highlightLabels.push({ text: `⌀ ${formatNumber(constraint.diameter)}`, anchor, pickId, hovered: true });
       return;
     }
     case "Angle": {
@@ -1798,14 +1878,19 @@ function pushConstraintGeometry(
       const fallback = len2(norm2(add2(ra, rb))) < 1e-6 ? [vertex[0] + 2.6, vertex[1] + 2.6] : add2(vertex, scale2(norm2(add2(ra, rb)), 4.4));
       const anchor = resolveLabelAnchor(constraintIndex, fallback);
       const r = Math.max(2.4, len2(sub2(anchor, vertex)) - 0.8);
-      lines.push({ x: vertex[0], y: vertex[1], color }, { x: vertex[0] + ra[0] * r, y: vertex[1] + ra[1] * r, color });
-      lines.push({ x: vertex[0], y: vertex[1], color }, { x: vertex[0] + rb[0] * r, y: vertex[1] + rb[1] * r, color });
+      lines.push({ x: vertex[0], y: vertex[1], color: DIM_COLOR }, { x: vertex[0] + ra[0] * r, y: vertex[1] + ra[1] * r, color: DIM_COLOR });
+      lines.push({ x: vertex[0], y: vertex[1], color: DIM_COLOR }, { x: vertex[0] + rb[0] * r, y: vertex[1] + rb[1] * r, color: DIM_COLOR });
+      if (activeDimension) {
+        highlightLines.push({ x: vertex[0], y: vertex[1], color: DIM_HOVER }, { x: vertex[0] + ra[0] * r, y: vertex[1] + ra[1] * r, color: DIM_HOVER });
+        highlightLines.push({ x: vertex[0], y: vertex[1], color: DIM_HOVER }, { x: vertex[0] + rb[0] * r, y: vertex[1] + rb[1] * r, color: DIM_HOVER });
+      }
       labels.push({
         text: `${formatNumber(constraint.angleDegrees)}°`,
         anchor,
         pickId,
-        hovered: activeDimension,
+        hovered: false,
       });
+      if (activeDimension) highlightLabels.push({ text: `${formatNumber(constraint.angleDegrees)}°`, anchor, pickId, hovered: true });
       return;
     }
     default:

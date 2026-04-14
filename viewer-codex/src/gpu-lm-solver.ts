@@ -11,6 +11,13 @@ export interface SolverConfig {
   lambdaDown: number;
 }
 
+export interface SolverPin {
+  localSlot: number;
+  varIndex: number;
+  target: number;
+  weight: number;
+}
+
 export const defaultSolverConfig: SolverConfig = {
   maxIterations: 24,
   residualTol: 1e-5,
@@ -79,46 +86,70 @@ export async function solveGraphWithGpu(
   graph: Graph,
   solver: GpuSolver,
   initialParams: Float32Array,
+  pins: SolverPin[] = [],
   config: SolverConfig = defaultSolverConfig,
 ): Promise<Float32Array> {
   const nVar = graph.varSlots.length;
   const nRes = graph.outputs.length;
-  if (nVar === 0 || nRes === 0) return new Float32Array(initialParams);
+  const nExtra = pins.length;
+  const nResTotal = nRes + nExtra;
+  if (nVar === 0 || nResTotal === 0) return new Float32Array(initialParams);
 
   const params = new Float32Array(initialParams);
   const x = new Float64Array(nVar);
   for (let i = 0; i < nVar; i++) x[i] = params[graph.varSlots[i]];
 
-  const r = new Float64Array(nRes);
-  const rNew = new Float64Array(nRes);
+  const r = new Float64Array(nResTotal);
+  const rNew = new Float64Array(nResTotal);
   const A = new Float64Array(nVar * nVar);
   const jtr = new Float64Array(nVar);
   const negJtr = new Float64Array(nVar);
   const delta = new Float64Array(nVar);
   let lambda = config.lambdaInit;
 
+  const fillPins = (dstR: Float64Array, offset: number, sourceParams: Float32Array) => {
+    for (let i = 0; i < pins.length; i++) {
+      const pin = pins[i];
+      dstR[offset + i] = (sourceParams[pin.localSlot] - pin.target) * pin.weight;
+    }
+  };
+
+  const buildJacobian = (rawJac: Float32Array) => {
+    const J = new Float64Array(nResTotal * nVar);
+    for (let row = 0; row < nRes; row++) {
+      for (let col = 0; col < nVar; col++) {
+        J[row * nVar + col] = rawJac[row * nVar + col];
+      }
+    }
+    for (let i = 0; i < pins.length; i++) {
+      const pin = pins[i];
+      J[(nRes + i) * nVar + pin.varIndex] = pin.weight;
+    }
+    return J;
+  };
+
   for (let iter = 0; iter < config.maxIterations; iter++) {
     for (let i = 0; i < nVar; i++) params[graph.varSlots[i]] = x[i];
 
     const { values, jac } = await solver.evaluate(params, 1);
     for (let i = 0; i < nRes; i++) r[i] = values[graph.outputs[i]];
+    fillPins(r, nRes, params);
     const rNorm = norm(r);
     if (rNorm < config.residualTol) return params;
 
-    const J = new Float64Array(jac.length);
-    for (let i = 0; i < jac.length; i++) J[i] = jac[i];
+    const J = buildJacobian(jac);
 
     let gNorm2 = 0;
     for (let i = 0; i < nVar; i++) {
       let s = 0;
-      for (let k = 0; k < nRes; k++) s += J[k * nVar + i] * r[k];
+      for (let k = 0; k < nResTotal; k++) s += J[k * nVar + i] * r[k];
       gNorm2 += s * s;
     }
     if (Math.sqrt(gNorm2) < config.gradientTol) return params;
 
     const cost = r.reduce((s, v) => s + v * v, 0);
     while (true) {
-      normalEquations(J, r, lambda, nRes, nVar, A, jtr);
+      normalEquations(J, r, lambda, nResTotal, nVar, A, jtr);
       for (let i = 0; i < nVar; i++) negJtr[i] = -jtr[i];
       const aCopy = new Float64Array(A);
       const rhs = new Float64Array(negJtr);
@@ -133,6 +164,7 @@ export async function solveGraphWithGpu(
       for (let i = 0; i < nVar; i++) trial[graph.varSlots[i]] = x[i] + delta[i];
       const { values: valuesNew } = await solver.evaluate(trial, 1);
       for (let i = 0; i < nRes; i++) rNew[i] = valuesNew[graph.outputs[i]];
+      fillPins(rNew, nRes, trial);
       const costNew = rNew.reduce((s, v) => s + v * v, 0);
 
       if (costNew < cost) {

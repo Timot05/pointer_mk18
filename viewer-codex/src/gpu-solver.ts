@@ -225,42 +225,57 @@ export async function createGpuSolver(g: Graph, maxBatch = 1): Promise<GpuSolver
     ],
   });
 
+  let pending: Promise<unknown> = Promise.resolve();
+  let destroyed = false;
+
   return {
     graph: g,
     async evaluate(paramsBatched: Float32Array, batch: number) {
-      device.queue.writeBuffer(paramsBuf, 0, paramsBatched);
-      const enc = device.createCommandEncoder();
-      const pass0 = enc.beginComputePass();
-      pass0.setPipeline(fwdPipeline);
-      pass0.setBindGroup(0, bindGroup);
-      pass0.dispatchWorkgroups(batch, 1, 1);
-      pass0.end();
-      const pass1 = enc.beginComputePass();
-      pass1.setPipeline(revPipeline);
-      pass1.setBindGroup(0, bindGroup);
-      pass1.dispatchWorkgroups(batch, Math.max(nRes, 1), 1);
-      pass1.end();
-      const vBytes = batch * nNodes * 4;
-      const jBytes = batch * nRes * nVars * 4;
-      if (vBytes > 0) enc.copyBufferToBuffer(valuesBuf, 0, valuesStaging, 0, vBytes);
-      if (jBytes > 0) enc.copyBufferToBuffer(jacBuf, 0, jacStaging, 0, jBytes);
-      device.queue.submit([enc.finish()]);
+      const run = pending.then(async () => {
+        if (destroyed) throw new Error("GPU solver destroyed");
+        device.queue.writeBuffer(paramsBuf, 0, paramsBatched);
+        const enc = device.createCommandEncoder();
+        const pass0 = enc.beginComputePass();
+        pass0.setPipeline(fwdPipeline);
+        pass0.setBindGroup(0, bindGroup);
+        pass0.dispatchWorkgroups(batch, 1, 1);
+        pass0.end();
+        const pass1 = enc.beginComputePass();
+        pass1.setPipeline(revPipeline);
+        pass1.setBindGroup(0, bindGroup);
+        pass1.dispatchWorkgroups(batch, Math.max(nRes, 1), 1);
+        pass1.end();
+        const vBytes = batch * nNodes * 4;
+        const jBytes = batch * nRes * nVars * 4;
+        if (vBytes > 0) enc.copyBufferToBuffer(valuesBuf, 0, valuesStaging, 0, vBytes);
+        if (jBytes > 0) enc.copyBufferToBuffer(jacBuf, 0, jacStaging, 0, jBytes);
+        device.queue.submit([enc.finish()]);
 
-      const values = new Float32Array(batch * nNodes);
-      const jac = new Float32Array(batch * nRes * nVars);
-      if (vBytes > 0) {
-        await valuesStaging.mapAsync(GPUMapMode.READ, 0, vBytes);
-        values.set(new Float32Array(valuesStaging.getMappedRange(0, vBytes).slice(0)));
-        valuesStaging.unmap();
-      }
-      if (jBytes > 0) {
-        await jacStaging.mapAsync(GPUMapMode.READ, 0, jBytes);
-        jac.set(new Float32Array(jacStaging.getMappedRange(0, jBytes).slice(0)));
-        jacStaging.unmap();
-      }
-      return { values, jac };
+        const values = new Float32Array(batch * nNodes);
+        const jac = new Float32Array(batch * nRes * nVars);
+        if (vBytes > 0) {
+          await valuesStaging.mapAsync(GPUMapMode.READ, 0, vBytes);
+          values.set(new Float32Array(valuesStaging.getMappedRange(0, vBytes).slice(0)));
+          valuesStaging.unmap();
+        }
+        if (jBytes > 0) {
+          await jacStaging.mapAsync(GPUMapMode.READ, 0, jBytes);
+          jac.set(new Float32Array(jacStaging.getMappedRange(0, jBytes).slice(0)));
+          jacStaging.unmap();
+        }
+        return { values, jac };
+      });
+      pending = run.catch(() => undefined);
+      return run;
     },
     destroy() {
+      destroyed = true;
+      try {
+        valuesStaging.unmap();
+      } catch {}
+      try {
+        jacStaging.unmap();
+      } catch {}
       device.destroy();
     },
   };

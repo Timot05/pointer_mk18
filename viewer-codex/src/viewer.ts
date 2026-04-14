@@ -1,14 +1,14 @@
-import { getViewerModel, getViewerState, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
-import { solveGraphWithGpu } from "./gpu-lm-solver";
+import { solveGraphWithGpu, type SolverPin } from "./gpu-lm-solver";
 import { createGpuSolver, type GpuSolver } from "./gpu-solver";
 import { loadFontMetrics, loadMsdfAtlas, type FontMetrics } from "./msdf-atlas";
-import { add2, add3, len2, norm2, perp, scale2, scale3, sub2, type Vec2, type Vec3 } from "./math";
+import { add2, add3, cross3, dot3, len2, norm2, norm3, perp, scale2, scale3, sub2, sub3, type Vec2, type Vec3 } from "./math";
 import { createMsdfLabelPipeline, writeLabelUniform } from "./pipeline-msdf-label";
 
-type PickKind = "point" | "line" | "circle" | "arc" | "loop";
+type PickKind = "point" | "line" | "circle" | "arc" | "loop" | "dimension";
 
 interface LineVertex {
   x: number;
@@ -52,6 +52,13 @@ interface PickLoopTriangle {
   pickId: number;
 }
 
+interface PickLabelRect {
+  anchor: Vec2;
+  minPx: Vec2;
+  maxPx: Vec2;
+  pickId: number;
+}
+
 interface RenderBuffers {
   triData: Float32Array;
   lineData: Float32Array;
@@ -60,6 +67,7 @@ interface RenderBuffers {
   pickLines: Float32Array;
   pickCircles: Float32Array;
   pickLoops: Float32Array;
+  pickLabels: Float32Array;
   labelData: Float32Array;
 }
 
@@ -73,6 +81,7 @@ interface RenderSketch {
 interface ConstraintLabel {
   text: string;
   anchor: Vec2;
+  pickId: number | null;
   hovered: boolean;
 }
 
@@ -81,6 +90,7 @@ interface SketchSolverBinding {
   solver: GpuSolver;
   localByPath: Map<string, number>;
   localToGlobal: number[];
+  varIndexByLocal: Map<number, number>;
 }
 
 interface ResolvedLoopGeometry {
@@ -94,6 +104,15 @@ interface HoverHit {
   kind: PickKind;
   score: number;
   sketchId: string;
+}
+
+interface DragState {
+  pointerId: number;
+  sketchId: string;
+  pointId: string;
+  xPath: string;
+  yPath: string;
+  target: Vec2;
 }
 
 interface SketchFrame {
@@ -125,7 +144,6 @@ interface GpuContext {
   pickBindGroupLayout: GPUBindGroupLayout;
   pickStateBuffer: GPUBuffer;
   pickResultBuffer: GPUBuffer;
-  pickReadBuffer: GPUBuffer;
 }
 
 const NO_HIT_ID = 0xffffffff;
@@ -320,7 +338,8 @@ struct PickSample {
 @group(0) @binding(4) var<storage, read> lines: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read> circles: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read> loops: array<vec4<f32>>;
-@group(0) @binding(7) var<storage, read_write> samples: array<PickSample, ${PICK_SAMPLES}>;
+@group(0) @binding(7) var<storage, read> labels: array<vec4<f32>>;
+@group(0) @binding(8) var<storage, read_write> samples: array<PickSample, ${PICK_SAMPLES}>;
 
 fn make_ray(pixel: vec2<f32>) -> vec3<f32> {
   let uv = pixel / max(pick.viewport, vec2<f32>(1.0, 1.0));
@@ -363,6 +382,16 @@ fn point_in_triangle(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> 
   let u = (dot11 * dot02 - dot01 * dot12) * inv;
   let v = (dot00 * dot12 - dot01 * dot02) * inv;
   return u >= 0.0 && v >= 0.0 && (u + v) <= 1.0;
+}
+
+fn label_minmax(rect0: vec4<f32>, rect1: vec4<f32>, wpp: f32) -> mat2x2<f32> {
+  let proj_fx = frame.x_axis.xyz - dot(frame.x_axis.xyz, cam.forward) * cam.forward;
+  let proj_fy = frame.y_axis.xyz - dot(frame.y_axis.xyz, cam.forward) * cam.forward;
+  let x_sign = select(-1.0, 1.0, dot(proj_fx, cam.right) > 0.0);
+  let y_sign = select(-1.0, 1.0, dot(proj_fy, cam.up) > 0.0);
+  let p0 = rect0.xy + vec2<f32>(rect0.z * x_sign, -rect0.w * y_sign) * wpp;
+  let p1 = rect0.xy + vec2<f32>(rect1.x * x_sign, -rect1.y * y_sign) * wpp;
+  return mat2x2<f32>(min(p0, p1), max(p0, p1));
 }
 
 @compute @workgroup_size(${PICK_SAMPLES})
@@ -431,6 +460,24 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
         }
       }
     }
+
+    let labelCount = arrayLength(&labels) / 2u;
+    for (var i: u32 = 0u; i < labelCount; i = i + 1u) {
+      let rect0 = labels[i * 2u];
+      let rect1 = labels[i * 2u + 1u];
+      let mm = label_minmax(rect0, rect1, wpp);
+      let minp = mm[0];
+      let maxp = mm[1];
+      if (all(p >= minp) && all(p <= maxp)) {
+        let center = (minp + maxp) * 0.5;
+        let score = 20.0 + length(p - center) / max(wpp, 1e-6);
+        if (score < bestScore) {
+          bestScore = score;
+          bestId = u32(rect1.z + 0.5);
+          bestKind = 6u;
+        }
+      }
+    }
   }
 
   samples[index].id = bestId;
@@ -461,7 +508,10 @@ export class ViewerApp {
   private modelTimer: number | null = null;
   private renderQueued = false;
   private isPicking = false;
+  private solveInFlight: Promise<void> | null = null;
+  private solveQueued = false;
   private pointer = { x: 0, y: 0 };
+  private drag: DragState | null = null;
   private interaction:
     | { kind: "orbit" | "pan"; x: number; y: number; pointerId: number }
     | null = null;
@@ -550,6 +600,7 @@ export class ViewerApp {
   }
 
   private async reloadModel(resetCamera: boolean): Promise<void> {
+    if (this.drag) return;
     this.destroySolverBindings();
     this.model = await getViewerModel();
     this.slotLookup = new Map(this.model.slotIndex.map((entry) => [`${entry.actionId}:${entry.path}`, entry.slot]));
@@ -560,6 +611,7 @@ export class ViewerApp {
   }
 
   private async reloadState(): Promise<void> {
+    if (this.drag) return;
     this.state = await getViewerState();
     this.errorEl.textContent = this.state.errors.length > 0
       ? `errors: ${this.state.errors[0].actionId}.${this.state.errors[0].key} ${this.state.errors[0].error}`
@@ -580,10 +632,16 @@ export class ViewerApp {
         event.preventDefault();
         this.interaction = { kind: "pan", x: event.clientX, y: event.clientY, pointerId: event.pointerId };
         this.canvas.setPointerCapture(event.pointerId);
+      } else if (event.button === 0) {
+        void this.beginPrimaryPointer(event);
       }
     });
     this.canvas.addEventListener("pointermove", (event) => {
       this.pointer = this.eventPos(event);
+      if (this.drag?.pointerId === event.pointerId) {
+        void this.updateDragFrame();
+        return;
+      }
       if (this.interaction) {
         const dx = event.clientX - this.interaction.x;
         const dy = event.clientY - this.interaction.y;
@@ -597,6 +655,11 @@ export class ViewerApp {
       void this.pickAtPointer(false);
     });
     this.canvas.addEventListener("pointerup", (event) => {
+      if (this.drag?.pointerId === event.pointerId) {
+        this.canvas.releasePointerCapture(event.pointerId);
+        void this.finishDrag();
+        return;
+      }
       if (this.interaction?.pointerId === event.pointerId) {
         this.canvas.releasePointerCapture(event.pointerId);
         this.interaction = null;
@@ -616,6 +679,80 @@ export class ViewerApp {
   private eventPos(event: PointerEvent): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  private async beginPrimaryPointer(event: PointerEvent): Promise<void> {
+    const hit = await this.pickAcrossSketches();
+    this.hovered = hit;
+    this.rebuildRenderData();
+    this.queueRender();
+    if (!hit || hit.kind !== "point") return;
+
+    const target = this.resolveDragPoint(hit);
+    if (!target) return;
+    const local = pointerToSketchLocal(this.pointer, this.canvas, this.camera, target.frame);
+    if (!local) return;
+
+    this.canvas.setPointerCapture(event.pointerId);
+    this.drag = {
+      pointerId: event.pointerId,
+      sketchId: target.sketchId,
+      pointId: target.pointId,
+      xPath: `sketch.entity.${target.pointId}.x`,
+      yPath: `sketch.entity.${target.pointId}.y`,
+      target: local,
+    };
+    const payload = await postViewerPick(hit.pickId);
+    this.selectedActionId = payload.selectedId;
+    await this.solveSketches();
+    this.rebuildRenderData();
+    this.queueRender();
+  }
+
+  private updateDragTarget(): void {
+    if (!this.drag) return;
+    const sketch = this.renderSketches.find((candidate) => candidate.sketchId === this.drag!.sketchId);
+    if (!sketch) return;
+    const local = pointerToSketchLocal(this.pointer, this.canvas, this.camera, sketch.frame);
+    if (!local) return;
+    this.drag.target = local;
+  }
+
+  private async finishDrag(): Promise<void> {
+    const drag = this.drag;
+    this.drag = null;
+    if (!drag) return;
+    const solved = this.solvedSketchParams.get(drag.sketchId);
+    const binding = this.solverBindings.get(drag.sketchId);
+    if (!solved || !binding) {
+      await this.reloadState();
+      return;
+    }
+    const xSlot = binding.localByPath.get(drag.xPath);
+    const ySlot = binding.localByPath.get(drag.yPath);
+    if (xSlot == null || ySlot == null) {
+      await this.reloadState();
+      return;
+    }
+    await patchActionParam(drag.sketchId, drag.xPath, solved[xSlot]);
+    await patchActionParam(drag.sketchId, drag.yPath, solved[ySlot]);
+    await this.reloadState();
+  }
+
+  private async updateDragFrame(): Promise<void> {
+    this.updateDragTarget();
+    await this.solveSketches();
+    this.rebuildRenderData();
+    this.queueRender();
+  }
+
+  private resolveDragPoint(hit: HoverHit): { sketchId: string; pointId: string; frame: SketchFrame } | null {
+    if (!this.model) return null;
+    const pickable = this.model.pickables.find((candidate) => candidate.pickId === hit.pickId && candidate.case === "PickPoint");
+    if (!pickable?.entityId || !pickable.sketchId) return null;
+    const sketch = this.renderSketches.find((candidate) => candidate.sketchId === pickable.sketchId);
+    if (!sketch) return null;
+    return { sketchId: pickable.sketchId, pointId: pickable.entityId, frame: sketch.frame };
   }
 
   private fitCamera(): void {
@@ -679,17 +816,36 @@ export class ViewerApp {
   }
 
   private async solveSketches(): Promise<void> {
+    if (this.solveInFlight) {
+      this.solveQueued = true;
+      await this.solveInFlight;
+      return;
+    }
+    this.solveInFlight = this.runSolveSketches();
+    try {
+      await this.solveInFlight;
+    } finally {
+      this.solveInFlight = null;
+      if (this.solveQueued) {
+        this.solveQueued = false;
+        await this.solveSketches();
+      }
+    }
+  }
+
+  private async runSolveSketches(): Promise<void> {
     if (!this.model || !this.state) return;
     const solved = new Map<string, Float32Array>();
     await Promise.all(this.model.sketches.map(async (sketch) => {
       const binding = this.solverBindings.get(sketch.id);
       if (!binding || binding.localToGlobal.length === 0) return;
-      const localParams = new Float32Array(binding.graph.params);
+      const localParams = new Float32Array(this.solvedSketchParams.get(sketch.id) ?? binding.graph.params);
       for (let i = 0; i < binding.localToGlobal.length; i++) {
         const globalSlot = binding.localToGlobal[i];
         localParams[i] = this.state!.params[globalSlot] ?? localParams[i];
       }
-      const result = await solveGraphWithGpu(binding.graph, binding.solver, localParams);
+      const pins = this.drag?.sketchId === sketch.id ? buildDragPins(this.drag, binding) : [];
+      const result = await solveGraphWithGpu(binding.graph, binding.solver, localParams, pins);
       solved.set(sketch.id, result);
     }));
     this.solvedSketchParams = solved;
@@ -859,7 +1015,7 @@ export class ViewerApp {
 
   private async runPickPass(sketch: RenderSketch): Promise<HoverHit | null> {
     if (!this.gpu) return null;
-    const { device, cameraBuffer, frameBuffer, pickPipeline, pickBindGroupLayout, pickStateBuffer, pickResultBuffer, pickReadBuffer } = this.gpu;
+    const { device, cameraBuffer, frameBuffer, pickPipeline, pickBindGroupLayout, pickStateBuffer, pickResultBuffer } = this.gpu;
 
     const frameData = new Float32Array(12);
     frameData.set(sketch.frame.position, 0);
@@ -898,6 +1054,12 @@ export class ViewerApp {
     });
     device.queue.writeBuffer(loopBuffer, 0, sketch.buffers.pickLoops);
 
+    const labelBuffer = device.createBuffer({
+      size: Math.max(16, sketch.buffers.pickLabels.byteLength),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(labelBuffer, 0, sketch.buffers.pickLabels);
+
     const bindGroup = device.createBindGroup({
       layout: pickBindGroupLayout,
       entries: [
@@ -908,7 +1070,8 @@ export class ViewerApp {
         { binding: 4, resource: { buffer: lineBuffer } },
         { binding: 5, resource: { buffer: circleBuffer } },
         { binding: 6, resource: { buffer: loopBuffer } },
-        { binding: 7, resource: { buffer: pickResultBuffer } },
+        { binding: 7, resource: { buffer: labelBuffer } },
+        { binding: 8, resource: { buffer: pickResultBuffer } },
       ],
     });
 
@@ -918,12 +1081,17 @@ export class ViewerApp {
     pass.setBindGroup(0, bindGroup);
     pass.dispatchWorkgroups(1);
     pass.end();
+    const pickReadBuffer = device.createBuffer({
+      size: PICK_SAMPLES * 16,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
     encoder.copyBufferToBuffer(pickResultBuffer, 0, pickReadBuffer, 0, PICK_SAMPLES * 16);
     device.queue.submit([encoder.finish()]);
 
     await pickReadBuffer.mapAsync(GPUMapMode.READ);
     const copy = pickReadBuffer.getMappedRange().slice(0);
     pickReadBuffer.unmap();
+    pickReadBuffer.destroy();
     const view = new DataView(copy);
 
     let best: HoverHit | null = null;
@@ -1093,7 +1261,8 @@ export class ViewerApp {
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
     const pickPipeline = device.createComputePipeline({
@@ -1102,8 +1271,6 @@ export class ViewerApp {
     });
     const pickStateBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const pickResultBuffer = device.createBuffer({ size: PICK_SAMPLES * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-    const pickReadBuffer = device.createBuffer({ size: PICK_SAMPLES * 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-
     return {
       device,
       context,
@@ -1126,7 +1293,6 @@ export class ViewerApp {
       pickBindGroupLayout,
       pickStateBuffer,
       pickResultBuffer,
-      pickReadBuffer,
     };
   }
 
@@ -1154,7 +1320,6 @@ function buildSketchBuffers(
   const pickLoopTriangles: PickLoopTriangle[] = [];
   const pickMap = buildPickIndex(pickables, viewerSketch.id);
   const sketchHovered = hovered?.sketchId === viewerSketch.id ? hovered : null;
-  const sketchSelected = selectedActionId === viewerSketch.id;
   const labels: ConstraintLabel[] = [];
   const resolveValue = (path: string, fallback: number) =>
     resolvedSketchValue(solverBinding, solvedLocal, params, slotLookup, viewerSketch.id, path, fallback);
@@ -1174,7 +1339,7 @@ function buildSketchBuffers(
   for (const loop of resolvedLoops) {
     loop.pickId = pickMap.get(`loop:${loop.id}`) ?? null;
     const hoveredLoop = sketchHovered?.pickId === loop.pickId;
-    pushLoopFill(triVertices, pickLoopTriangles, loop.boundary, hoveredLoop || sketchSelected ? ACCENT_SOFT : LOOP_FILL, loop.pickId);
+    pushLoopFill(triVertices, pickLoopTriangles, loop.boundary, hoveredLoop ? ACCENT_SOFT : LOOP_FILL, loop.pickId);
   }
 
   const [minPoint, maxPoint] = computeBounds(viewerSketch.sketch, pointMap, resolveValue);
@@ -1185,7 +1350,7 @@ function buildSketchBuffers(
       const p = pointMap.get(entity.id);
       if (!p) continue;
       const hoveredPoint = sketchHovered?.pickId === pickMap.get(`point:${entity.id}`);
-      const color = hoveredPoint || sketchSelected ? ACCENT : SKETCH_POINT;
+      const color = hoveredPoint ? ACCENT : SKETCH_POINT;
       pointInstances.push({ x: p[0], y: p[1], radiusPx: hoveredPoint ? 6.5 : 5.0, color });
       const pickId = pickMap.get(`point:${entity.id}`);
       if (pickId != null) pickPoints.push({ x: p[0], y: p[1], radiusPx: 10, pickId });
@@ -1198,7 +1363,7 @@ function buildSketchBuffers(
       if (!a || !b) continue;
       const pickId = pickMap.get(`line:${entity.id}`);
       const hoveredLine = sketchHovered?.pickId === pickId;
-      const color = hoveredLine || sketchSelected ? ACCENT : SKETCH_LINE;
+      const color = hoveredLine ? ACCENT : SKETCH_LINE;
       lineVertices.push({ x: a[0], y: a[1], color }, { x: b[0], y: b[1], color });
       if (pickId != null) pickSegments.push({ a, b, strokePx: 8, pickId, kind: 2 });
       continue;
@@ -1210,7 +1375,7 @@ function buildSketchBuffers(
       const radius = resolveValue(`sketch.entity.${entity.id}.radius`, entity.radius);
       const pickId = pickMap.get(`circle:${entity.id}`);
       const hoveredCircle = sketchHovered?.pickId === pickId;
-      const color = hoveredCircle || sketchSelected ? ACCENT : SKETCH_LINE;
+      const color = hoveredCircle ? ACCENT : SKETCH_LINE;
       pushCircle(lineVertices, c, radius, color);
       if (pickId != null) pickCircles.push({ center: c, radius, strokePx: 8, pickId });
       continue;
@@ -1223,14 +1388,24 @@ function buildSketchBuffers(
       if (!s || !e || !c) continue;
       const pickId = pickMap.get(`arc:${entity.id}`);
       const hoveredArc = sketchHovered?.pickId === pickId;
-      const color = hoveredArc || sketchSelected ? ACCENT : SKETCH_LINE;
+      const color = hoveredArc ? ACCENT : SKETCH_LINE;
       pushArc(lineVertices, pickSegments, s, e, c, entity.data.clockwise, color, pickId);
     }
   }
 
-  for (const constraint of viewerSketch.sketch.constraints) {
-    pushConstraintGeometry(lineVertices, labels, pointMap, entityMap, resolveValue, constraint, sketchHovered);
-  }
+  viewerSketch.sketch.constraints.forEach((constraint, index) => {
+    pushConstraintGeometry(
+      lineVertices,
+      labels,
+      pointMap,
+      entityMap,
+      resolveValue,
+      constraint,
+      index,
+      pickMap.get(`dimension:${index}`) ?? null,
+      sketchHovered,
+    );
+  });
 
   return {
     buffers: {
@@ -1241,6 +1416,7 @@ function buildSketchBuffers(
       pickLines: flattenPickSegments(pickSegments),
       pickCircles: flattenPickCircles(pickCircles),
       pickLoops: flattenPickLoopTriangles(pickLoopTriangles),
+      pickLabels: fontMetrics ? flattenPickLabelRects(buildLabelPickRects(labels, fontMetrics)) : new Float32Array(),
       labelData: fontMetrics ? buildLabelVertices(labels, fontMetrics) : new Float32Array(),
     },
     loops: resolvedLoops,
@@ -1254,6 +1430,8 @@ function pushConstraintGeometry(
   entityMap: Map<string, RenderEntity>,
   resolveValue: (path: string, fallback: number) => number,
   constraint: ActionSketch["constraints"][number],
+  _constraintIndex: number,
+  pickId: number | null,
   hovered: HoverHit | null,
 ): void {
   const color = hovered?.kind === "line" ? DIM_HOVER : DIM_COLOR;
@@ -1295,7 +1473,8 @@ function pushConstraintGeometry(
       labels.push({
         text: formatNumber(constraint.distance),
         anchor: constraint.labelPosition ? [constraint.labelPosition.x, constraint.labelPosition.y] : scale2(add2(aa, bb), 0.5),
-        hovered: hovered?.kind === "line",
+        pickId,
+        hovered: hovered?.kind === "dimension",
       });
       return;
     }
@@ -1308,7 +1487,8 @@ function pushConstraintGeometry(
       labels.push({
         text: `⌀ ${formatNumber(constraint.diameter)}`,
         anchor: constraint.labelPosition ? [constraint.labelPosition.x, constraint.labelPosition.y] : [center[0], center[1] + radius + 2.4],
-        hovered: hovered?.kind === "line",
+        pickId,
+        hovered: hovered?.kind === "dimension",
       });
       return;
     }
@@ -1329,7 +1509,8 @@ function pushConstraintGeometry(
       labels.push({
         text: `${formatNumber(constraint.angleDegrees)}°`,
         anchor: constraint.labelPosition ? [constraint.labelPosition.x, constraint.labelPosition.y] : fallback,
-        hovered: hovered?.kind === "line",
+        pickId,
+        hovered: hovered?.kind === "dimension",
       });
       return;
     }
@@ -1683,12 +1864,47 @@ function flattenPickLoopTriangles(triangles: PickLoopTriangle[]): Float32Array {
   return data;
 }
 
+function buildLabelPickRects(labels: ConstraintLabel[], font: FontMetrics): PickLabelRect[] {
+  const rects: PickLabelRect[] = [];
+  for (const label of labels) {
+    if (label.pickId == null) continue;
+    const bounds = measureTextBounds(label.text, font);
+    rects.push({
+      anchor: label.anchor,
+      minPx: [bounds.minX - 4, bounds.minY - 3],
+      maxPx: [bounds.maxX + 4, bounds.maxY + 3],
+      pickId: label.pickId,
+    });
+  }
+  return rects;
+}
+
+function flattenPickLabelRects(rects: PickLabelRect[]): Float32Array {
+  const data = new Float32Array(rects.length * 8);
+  let o = 0;
+  for (const rect of rects) {
+    data[o++] = rect.anchor[0];
+    data[o++] = rect.anchor[1];
+    data[o++] = rect.minPx[0];
+    data[o++] = rect.minPx[1];
+    data[o++] = rect.maxPx[0];
+    data[o++] = rect.maxPx[1];
+    data[o++] = rect.pickId;
+    data[o++] = 0;
+  }
+  return data;
+}
+
 function buildPickIndex(pickables: Pickable[], sketchId: string): Map<string, number> {
   const map = new Map<string, number>();
   for (const pickable of pickables) {
     if ((pickable as { sketchId?: string }).sketchId !== sketchId) continue;
     if (pickable.case === "PickLoop" && typeof pickable.loopId === "string") {
       map.set(`loop:${pickable.loopId}`, pickable.pickId);
+      continue;
+    }
+    if (pickable.case === "PickDimension" && typeof pickable.constraintIndex === "number") {
+      map.set(`dimension:${pickable.constraintIndex}`, pickable.pickId);
       continue;
     }
     if ("entityId" in pickable && typeof pickable.entityId === "string") {
@@ -1760,12 +1976,31 @@ async function createSketchSolverBinding(
   }
 
   const solver = await createGpuSolver(sketch.graph, 1);
+  const varIndexByLocal = new Map<number, number>();
+  for (let i = 0; i < sketch.graph.varSlots.length; i++) {
+    varIndexByLocal.set(sketch.graph.varSlots[i], i);
+  }
   return {
     graph: sketch.graph,
     solver,
     localByPath,
     localToGlobal,
+    varIndexByLocal,
   };
+}
+
+function buildDragPins(drag: DragState, binding: SketchSolverBinding): SolverPin[] {
+  const xLocal = binding.localByPath.get(drag.xPath);
+  const yLocal = binding.localByPath.get(drag.yPath);
+  if (xLocal == null || yLocal == null) return [];
+  const xVar = binding.varIndexByLocal.get(xLocal);
+  const yVar = binding.varIndexByLocal.get(yLocal);
+  if (xVar == null || yVar == null) return [];
+  const weight = 20;
+  return [
+    { localSlot: xLocal, varIndex: xVar, target: drag.target[0], weight },
+    { localSlot: yLocal, varIndex: yVar, target: drag.target[1], weight },
+  ];
 }
 
 function toSketchFrame(t: JsonRigidTransform): SketchFrame {
@@ -1782,6 +2017,30 @@ function toSketchFrame(t: JsonRigidTransform): SketchFrame {
 
 function liftPoint(frame: SketchFrame, p: Vec2): Vec3 {
   return add3(frame.position, add3(scale3(frame.xAxis, p[0]), scale3(frame.yAxis, p[1])));
+}
+
+function pointerToSketchLocal(
+  pointer: { x: number; y: number },
+  canvas: HTMLCanvasElement,
+  camera: CameraState,
+  frame: SketchFrame,
+): Vec2 | null {
+  const width = Math.max(canvas.clientWidth, 1);
+  const height = Math.max(canvas.clientHeight, 1);
+  const aspect = width / height;
+  const ndcX = (pointer.x / width) * 2 - 1;
+  const ndcY = 1 - (pointer.y / height) * 2;
+  const { eye, forward, right, up } = viewBasis(camera);
+  const tan = Math.tan(HALF_FOV);
+  const dir = norm3(add3(forward, add3(scale3(right, ndcX * aspect * tan), scale3(up, ndcY * tan))));
+  const normal = cross3(frame.xAxis, frame.yAxis);
+  const denom = dot3(normal, dir);
+  if (Math.abs(denom) < 1e-6) return null;
+  const t = dot3(normal, sub3(frame.position, eye)) / denom;
+  if (t <= 0) return null;
+  const hit = add3(eye, scale3(dir, t));
+  const local = sub3(hit, frame.position);
+  return [dot3(local, frame.xAxis), dot3(local, frame.yAxis)];
 }
 
 function rotateByQuat(q: JsonRigidTransform["rot"], v: Vec3): Vec3 {
@@ -1803,6 +2062,7 @@ function pickKind(kind: number): PickKind | null {
     case 3: return "circle";
     case 4: return "arc";
     case 5: return "loop";
+    case 6: return "dimension";
     default: return null;
   }
 }
@@ -1818,6 +2078,43 @@ function buildLabelVertices(labels: ConstraintLabel[], font: FontMetrics): Float
     pushText(verts, label.text, label.anchor, label.hovered ? DIM_HOVER : DIM_COLOR, font);
   }
   return new Float32Array(verts);
+}
+
+function measureTextBounds(text: string, font: FontMetrics): { minX: number; minY: number; maxX: number; maxY: number } {
+  const pxScale = 12 / font.lineHeight;
+  let width = 0;
+  let prevCode = -1;
+  for (const ch of text) {
+    const glyph = font.chars.get(ch);
+    if (!glyph) continue;
+    if (prevCode >= 0) width += font.kernings.get(`${prevCode}:${glyph.id}`) ?? 0;
+    width += glyph.xadvance;
+    prevCode = glyph.id;
+  }
+
+  let penX = -width * 0.5;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  prevCode = -1;
+  for (const ch of text) {
+    const glyph = font.chars.get(ch);
+    if (!glyph) continue;
+    if (prevCode >= 0) penX += font.kernings.get(`${prevCode}:${glyph.id}`) ?? 0;
+    const x0 = (penX + glyph.xoffset) * pxScale;
+    const x1 = x0 + glyph.width * pxScale;
+    const y0 = (glyph.yoffset - font.base) * pxScale;
+    const y1 = y0 + glyph.height * pxScale;
+    minX = Math.min(minX, x0);
+    minY = Math.min(minY, y0);
+    maxX = Math.max(maxX, x1);
+    maxY = Math.max(maxY, y1);
+    penX += glyph.xadvance;
+    prevCode = glyph.id;
+  }
+  if (!Number.isFinite(minX)) return { minX: 0, minY: -6, maxX: 0, maxY: 6 };
+  return { minX, minY, maxX, maxY };
 }
 
 function pushText(out: number[], text: string, anchor: Vec2, color: readonly number[], font: FontMetrics): void {

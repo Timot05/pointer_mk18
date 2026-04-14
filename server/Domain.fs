@@ -149,6 +149,31 @@ module Document =
         let s = value.GetString()
         if System.String.IsNullOrEmpty(s) then None else Some s
 
+    let private patchSketchEntityParam (key: string) (value: System.Text.Json.JsonElement) (sketch: ActionSketch) =
+        let parts = key.Split('.')
+        if parts.Length <> 4 || parts.[0] <> "sketch" || parts.[1] <> "entity" then sketch
+        else
+            let entityId = parts.[2]
+            let field = parts.[3]
+            let entities =
+                sketch.Entities
+                |> List.map (fun entity ->
+                    match entity with
+                    | REPoint(id, x, y) when id = entityId ->
+                        REPoint(
+                            id,
+                            (if field = "x" then value.GetDouble() else x),
+                            (if field = "y" then value.GetDouble() else y))
+                    | RECircle(id, center, radius) when id = entityId && field = "radius" ->
+                        RECircle(id, center, value.GetDouble())
+                    | REArc(id, startId, endId, ArcThreePoint through) when id = entityId ->
+                        let through' =
+                            ({ X = if field = "throughX" then value.GetDouble() else through.X
+                               Y = if field = "throughY" then value.GetDouble() else through.Y } : FreePoint)
+                        REArc(id, startId, endId, ArcThreePoint through')
+                    | _ -> entity)
+            { sketch with Entities = entities }
+
     let patchParam (id: string) (key: string) (value: System.Text.Json.JsonElement) (doc: Document) : Document =
         { doc with
             Actions =
@@ -209,7 +234,7 @@ module Document =
                             | Sketch(origin, s) ->
                                 Sketch(
                                     (if key = "origin" then optStr value else origin),
-                                    s)
+                                    (if key.StartsWith("sketch.entity.") then patchSketchEntityParam key value s else s))
                             | FromSketch(c, closed, flip, sel) ->
                                 FromSketch(
                                     (if key = "child" then optStr value else c),

@@ -117,3 +117,10 @@ export function postViewerPick(pickId: number): Promise<DocumentPayload> {
     body: JSON.stringify({ pickId }),
   });
 }
+
+export function patchActionParam(id: string, key: string, value: number | string | boolean): Promise<DocumentPayload> {
+  return request(`/document/action/${id}/param`, {
+    method: "PATCH",
+    body: JSON.stringify({ key, value }),
+  });
+}

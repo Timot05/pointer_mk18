@@ -605,18 +605,8 @@ export class ViewerApp {
     this.errorEl.className = "status-row is-error";
     const shell = document.createElement("div");
     shell.className = "viewer-shell";
-    shell.innerHTML = `
-      <div class="viewer-bar">
-        <div class="viewer-title">
-          <strong>viewer codex</strong>
-          <span>mk17-inspired sketch viewport for mk18</span>
-        </div>
-        <div class="viewer-meta mono"></div>
-      </div>
-      <div class="viewer-main"></div>
-    `;
+    shell.innerHTML = `<div class="viewer-main"></div>`;
     this.metaEl.className = "viewer-meta mono";
-    shell.querySelector(".viewer-meta")?.replaceWith(this.metaEl);
 
     const main = shell.querySelector(".viewer-main");
     if (!main) throw new Error("Missing viewer main");

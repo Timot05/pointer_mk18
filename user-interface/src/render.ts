@@ -120,6 +120,11 @@ export interface RenderCallbacks {
   getSketchEditMode: () => boolean;
 }
 
+export interface RenderOptions {
+  embedded?: boolean;
+  centerContent?: HTMLElement | null;
+}
+
 // ── Action templates for the "+" dropdown ─────────────────────────────
 
 const actionTemplates: { label: string; kindCase: string }[] = [
@@ -140,15 +145,15 @@ const actionTemplates: { label: string; kindCase: string }[] = [
   { label: "Mesh", kindCase: "Mesh" },
 ];
 
-export function render(doc: Document, cb: RenderCallbacks): void {
-  const app = document.getElementById("app")!;
-  app.innerHTML = "";
+export function render(root: HTMLElement, doc: Document, cb: RenderCallbacks, options: RenderOptions = {}): void {
+  root.innerHTML = "";
+  root.className = options.embedded ? "ui-root is-embedded" : "ui-root";
 
   // ── Top bar
   const topbar = el("div", "topbar");
   topbar.appendChild(el("span", "topbar-logo", "pointer mk18"));
   topbar.appendChild(el("span", "topbar-spacer"));
-  app.appendChild(topbar);
+  root.appendChild(topbar);
 
   // ── Layout
   const layout = el("div", "layout");
@@ -285,8 +290,13 @@ export function render(doc: Document, cb: RenderCallbacks): void {
 
   // Center — viewport placeholder
   const center = el("div", "panel panel-center");
-  const vp = el("div", "viewport-placeholder", "WebGPU viewport");
-  center.appendChild(vp);
+  if (options.centerContent) {
+    options.centerContent.classList.add("panel-center-host");
+    center.appendChild(options.centerContent);
+  } else {
+    const vp = el("div", "viewport-placeholder", "WebGPU viewport");
+    center.appendChild(vp);
+  }
   layout.appendChild(center);
 
   // Right panel — params
@@ -297,7 +307,7 @@ export function render(doc: Document, cb: RenderCallbacks): void {
   right.appendChild(renderParamsPanel(doc, cb));
   layout.appendChild(right);
 
-  app.appendChild(layout);
+  root.appendChild(layout);
 }
 
 function renderActionRow(
@@ -724,4 +734,3 @@ function controlCheck(
   row.appendChild(el("label", "", label));
   return row;
 }
-

@@ -1,5 +1,5 @@
 {
-  "name": "pointer-mk18-client",
+  "name": "pointer-mk18-app",
   "private": true,
   "scripts": {
     "dev": "vite",
@@ -9,8 +9,5 @@
   "devDependencies": {
     "typescript": "^6.0.2",
     "vite": "^8.0.8"
-  },
-  "dependencies": {
-    "@carbon/icons": "^11.78.0"
   }
 }

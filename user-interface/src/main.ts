@@ -2,6 +2,11 @@ import { getDocument, selectAction, patchActionParam, patchActionParamRapid, tog
 import { render, type RenderCallbacks } from "./render";
 import * as palette from "./command-palette";
 
+export interface UserInterfaceMountOptions {
+  embedded?: boolean;
+  centerContent?: HTMLElement | null;
+}
+
 function defaultKind(kindCase: string): ActionKind | null {
   switch (kindCase) {
     case "Sphere": return { case: "Sphere", radius: 8 };
@@ -25,16 +30,18 @@ function defaultKind(kindCase: string): ActionKind | null {
 
 let doc: Document | null = null;
 let sketchEditMode = false;
+let mountRoot: HTMLElement | null = null;
+let mountOptions: UserInterfaceMountOptions = {};
 
 function refresh(newDoc: Document) {
   doc = newDoc;
   const sel = doc.actions.find((a) => a.id === doc!.selectedId);
   if (!sel || sel.kind.case !== "Sketch") sketchEditMode = false;
-  render(doc, callbacks);
+  if (mountRoot) render(mountRoot, doc, callbacks, mountOptions);
 }
 
 function rerender() {
-  if (doc) render(doc, callbacks);
+  if (doc && mountRoot) render(mountRoot, doc, callbacks, mountOptions);
 }
 
 function openPalette() {
@@ -156,7 +163,8 @@ document.addEventListener("keydown", async (e) => {
   }
 });
 
-// Boot
-(async () => {
+export async function mountUserInterface(root: HTMLElement, options: UserInterfaceMountOptions = {}): Promise<void> {
+  mountRoot = root;
+  mountOptions = options;
   refresh(await getDocument());
-})();
+}

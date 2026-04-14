@@ -43,10 +43,22 @@ body {
 
 /* ── App shell ─────────────────────────────────────────────────────── */
 
-#app {
+.ui-root {
   height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+.ui-root.is-embedded {
+  height: 100%;
+}
+
+.ui-root.is-embedded .topbar {
+  display: none;
+}
+
+.ui-root.is-embedded .layout {
+  grid-template-columns: 260px 1fr;
 }
 
 /* ── Top bar ───────────────────────────────────────────────────────── */
@@ -137,6 +149,12 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.panel-center-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
 }
 
 .viewport-placeholder {

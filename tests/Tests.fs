@@ -295,11 +295,12 @@ let ``Default document typechecks successfully`` () =
     let typed =
         (Document.defaultDocument()).Actions
         |> TypeCheck.typecheck |> ok
-    Assert.Equal(4, typed.Length)
+    Assert.Equal(5, typed.Length)
     Assert.Equal(FieldType.Frame, outputOf "origin" typed)
     Assert.Equal(FieldType.Field, outputOf "cyl1" typed)
     Assert.Equal(FieldType.Field, outputOf "sph1" typed)
     Assert.Equal(FieldType.Field, outputOf "sub1" typed)
+    Assert.Equal(FieldType.Sketch, outputOf "sketch1" typed)
 
 [<Fact>]
 let ``Chained transforms preserve type`` () =

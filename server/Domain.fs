@@ -259,4 +259,29 @@ module Document =
                 Kind = Subtract(a = Some "cyl1", b = Some "sph1", radius = 0.0)
                 Visible = true
                 Display = None
+                FieldSlice = None }
+              { Id = "sketch1"
+                Name = Some "square"
+                Kind = Sketch(
+                    origin = Some "origin",
+                    sketch =
+                        { Entities =
+                            [ REPoint("p_bl",  0.0,  0.0)
+                              REPoint("p_br", 10.0,  0.0)
+                              REPoint("p_tr", 10.0, 10.0)
+                              REPoint("p_tl",  0.0, 10.0)
+                              RELine("l_bottom", "p_bl", "p_br")
+                              RELine("l_right",  "p_br", "p_tr")
+                              RELine("l_top",    "p_tr", "p_tl")
+                              RELine("l_left",   "p_tl", "p_bl") ]
+                          Constraints =
+                            [ Fixed("p_bl", 0.0, 0.0)
+                              Horizontal("p_bl", "p_br")
+                              Horizontal("p_tl", "p_tr")
+                              Vertical("p_bl", "p_tl")
+                              Vertical("p_br", "p_tr")
+                              Distance("p_bl", "p_br", 10.0, None)
+                              Distance("p_bl", "p_tl", 10.0, None) ] })
+                Visible = true
+                Display = None
                 FieldSlice = None } ] }

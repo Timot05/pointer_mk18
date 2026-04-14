@@ -123,6 +123,24 @@ async function request(url: string, opts?: RequestInit): Promise<Document> {
   return res.json();
 }
 
+export interface DocumentMutation {
+  document: Document;
+  viewerInvalidation: "state" | "model";
+}
+
+async function requestDocumentMutation(url: string, opts?: RequestInit): Promise<DocumentMutation> {
+  const res = await fetch(BASE + url, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  if (!res.ok) throw new Error(`${opts?.method ?? "GET"} ${url}: ${res.status}`);
+  const viewerInvalidation = (res.headers.get("X-Viewer-Invalidation") === "model" ? "model" : "state");
+  return {
+    document: await res.json(),
+    viewerInvalidation,
+  };
+}
+
 export async function getDocument(): Promise<Document> {
   return request("/document");
 }
@@ -131,20 +149,21 @@ export async function selectAction(id: string): Promise<Document> {
   return request(`/document/select/${id}`, { method: "PUT" });
 }
 
-export async function patchActionParam(id: string, key: string, value: number | string | boolean): Promise<Document> {
-  return request(`/document/action/${id}/param`, {
+export async function patchActionParam(id: string, key: string, value: number | string | boolean): Promise<DocumentMutation> {
+  return requestDocumentMutation(`/document/action/${id}/param`, {
     method: "PATCH",
     body: JSON.stringify({ key, value }),
   });
 }
 
-export async function patchActionParamRapid(id: string, key: string, value: number | string | boolean): Promise<void> {
+export async function patchActionParamRapid(id: string, key: string, value: number | string | boolean): Promise<"state" | "model"> {
   const res = await fetch(BASE + `/document/action/${id}/param/rapid`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key, value }),
   });
   if (!res.ok) throw new Error(`PATCH /document/action/${id}/param/rapid: ${res.status}`);
+  return res.headers.get("X-Viewer-Invalidation") === "model" ? "model" : "state";
 }
 
 export async function toggleActionVisible(id: string): Promise<Document> {

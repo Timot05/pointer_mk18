@@ -175,6 +175,16 @@ module Program =
     let viewerStateResult () =
         Results.Content(JsonSerializer.Serialize(viewerStatePayload (), jsonOpts), "application/json")
 
+    let viewerInvalidationForParam (id: string) (key: string) =
+        let ref = { ActionId = id; Path = key }
+        if Map.containsKey ref compiled.Slots.Index then "state" else "model"
+
+    let withViewerInvalidation (kind: string) (result: IResult) : IResult =
+        { new IResult with
+            member _.ExecuteAsync(ctx) =
+                ctx.Response.Headers.Append("X-Viewer-Invalidation", kind)
+                result.ExecuteAsync(ctx) }
+
     // ── Fast-path: try to update a single slot without recompiling ────────
     // Returns true if the slot update succeeded (no topology change needed).
     let tryFastSlotUpdate (id: string) (key: string) (value: JsonElement) : bool =
@@ -231,20 +241,11 @@ module Program =
                             let loops =
                                 SketchLoops.detectLoops sk.Entities
                                 |> List.map (fun l -> {| Id = l.Id; EntityIds = l.EntityIds |})
-                            Some {| Id = a.Id; Origin = origin; SketchFrame = sketchOrigin; Sketch = sk; Graph = graph; Loops = loops |}
-                        | _ -> None)
-                let frames =
-                    doc.Actions
-                    |> List.choose (fun a ->
-                        match Map.tryFind a.Id compiled.TypeMap with
-                        | Some FieldType.Frame ->
-                            Map.tryFind a.Id compiled.Frames
-                            |> Option.map (fun t -> {| Id = a.Id; Transform = t |})
+                            Some {| Id = a.Id; Origin = origin; Sketch = sk; Graph = graph; Loops = loops |}
                         | _ -> None)
                 let payload =
                     {| Surfaces = compiled.Surfaces
                        Sketches = sketches
-                       Frames = frames
                        NumSlots = compiled.Slots.Values.Length
                        SlotIndex = indexList
                        Pickables = compiled.Pickables |}
@@ -284,12 +285,12 @@ module Program =
                 let key = body.GetProperty("key").GetString()
                 let value = body.GetProperty("value")
                 if tryFastSlotUpdate id key value then
-                    viewerStateResult ()
+                    withViewerInvalidation "state" (viewerStateResult ())
                 else
                     // Topology change (ref, bool, etc.) — full recompile
                     doc <- Document.patchParam id key value doc
                     recompile ()
-                    viewerStateResult ())) |> ignore
+                    withViewerInvalidation "model" (viewerStateResult ()))) |> ignore
 
         // Commit: returns full document (used on pointer up)
         app.MapPatch("/api/document/action/{id}/param",
@@ -297,7 +298,8 @@ module Program =
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
                 let key = body.GetProperty("key").GetString()
                 let value = body.GetProperty("value")
-                mutate (Document.patchParam id key value))) |> ignore
+                let invalidation = viewerInvalidationForParam id key
+                withViewerInvalidation invalidation (mutate (Document.patchParam id key value)))) |> ignore
 
         app.MapPatch("/api/document/action/{id}/visible",
             Func<string, IResult>(fun id -> mutate (Document.toggleVisible id))) |> ignore

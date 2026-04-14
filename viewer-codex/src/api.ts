@@ -42,15 +42,9 @@ export interface SketchLoop {
 export interface ViewerSketch {
   id: string;
   origin: string | null;
-  sketchFrame: JsonRigidTransform;
   sketch: ActionSketch;
   graph: Graph;
   loops: SketchLoop[];
-}
-
-export interface ViewerFrame {
-  id: string;
-  transform: JsonRigidTransform;
 }
 
 export interface Pickable {
@@ -67,7 +61,6 @@ export interface Pickable {
 export interface ViewerModel {
   surfaces: unknown[];
   sketches: ViewerSketch[];
-  frames: ViewerFrame[];
   numSlots: number;
   slotIndex: SlotIndexEntry[];
   pickables: Pickable[];
@@ -83,7 +76,7 @@ interface ViewerModelJson extends Omit<ViewerModel, "sketches"> {
 
 export interface ViewerState {
   params: number[];
-  frames: ViewerFrame[];
+  frames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchFrames: Array<{ id: string; transform: JsonRigidTransform }>;
   visible: Record<string, boolean>;
   constraintLabelPositions: Array<{ sketchId: string; constraintIndex: number; position: { x: number; y: number } }>;

@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SketchLoop, type ViewerFrame, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -568,7 +568,6 @@ export class ViewerApp {
   private readonly root: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
   private readonly statusEl: HTMLElement;
-  private readonly metaEl: HTMLElement;
   private readonly hoverEl: HTMLElement;
   private readonly errorEl: HTMLElement;
   private gpu: GpuContext | null = null;
@@ -608,15 +607,12 @@ export class ViewerApp {
     this.canvas.className = "viewer-canvas";
 
     this.statusEl = document.createElement("div");
-    this.metaEl = document.createElement("div");
     this.hoverEl = document.createElement("div");
     this.errorEl = document.createElement("div");
     this.errorEl.className = "status-row is-error";
     const shell = document.createElement("div");
     shell.className = "viewer-shell";
     shell.innerHTML = `<div class="viewer-main"></div>`;
-    this.metaEl.className = "viewer-meta mono";
-
     const main = shell.querySelector(".viewer-main");
     if (!main) throw new Error("Missing viewer main");
     main.appendChild(this.canvas);
@@ -875,7 +871,8 @@ export class ViewerApp {
   }
 
   private fitCamera(): void {
-    if (!this.model || !this.state || this.model.sketches.length === 0) return;
+    if (!this.model || !this.state) return;
+    if (this.model.sketches.length === 0 && this.state.frames.length === 0) return;
     let worldMin: Vec3 = [Infinity, Infinity, Infinity];
     let worldMax: Vec3 = [-Infinity, -Infinity, -Infinity];
     for (const frame of this.state.frames) {
@@ -933,8 +930,6 @@ export class ViewerApp {
         loops: built.loops,
       };
     });
-    const visibleFrameCount = this.state.frames.filter((frame) => this.isVisible(frame.id)).length;
-    this.metaEl.textContent = `${this.renderSketches.length} sketch${this.renderSketches.length === 1 ? "" : "es"}  ·  ${visibleFrameCount} frame${visibleFrameCount === 1 ? "" : "s"}  ·  ${this.model.numSlots} slots`;
   }
 
   private sketchFrameFor(sketchId: string): SketchFrame {
@@ -2138,7 +2133,7 @@ function buildPickIndex(pickables: Pickable[], sketchId: string): Map<string, nu
   return map;
 }
 
-function buildFrameLineData(frames: ViewerFrame[], selectedActionId: string | null): Float32Array {
+function buildFrameLineData(frames: Array<{ id: string; transform: JsonRigidTransform }>, selectedActionId: string | null): Float32Array {
   const data: number[] = [];
   for (const frame of frames) {
     const t = toSketchFrame(frame.transform);

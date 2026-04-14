@@ -36,23 +36,6 @@ let sketchEditMode = false;
 let mountRoot: HTMLElement | null = null;
 let mountOptions: UserInterfaceMountOptions = {};
 
-function viewerInvalidationForParam(actionId: string, key: string, value: number | string | boolean): "state" | "model" {
-  if (key.startsWith("sketch.entity.") || key.startsWith("sketch.constraint.")) return "state";
-  if (typeof value !== "number") return "model";
-
-  const action = doc?.actions.find((candidate) => candidate.id === actionId);
-  switch (action?.kind.case) {
-    case "Mesh":
-      return key === "size" || key === "resolution" ? "model" : "state";
-    case "Sketch":
-      return key === "origin" ? "model" : "state";
-    case "FromSketch":
-      return "model";
-    default:
-      return "state";
-  }
-}
-
 function emitViewerInvalidation(kind: "state" | "model"): void {
   if (kind === "state") mountOptions.onViewerStateDirty?.();
   else mountOptions.onViewerModelDirty?.();
@@ -105,14 +88,15 @@ const callbacks: RenderCallbacks = {
   },
 
   onParamRapid: (actionId, key, value) => {
-    void patchActionParamRapid(actionId, key, value).then(() => {
-      mountOptions.onViewerStateDirty?.();
+    void patchActionParamRapid(actionId, key, value).then((kind) => {
+      emitViewerInvalidation(kind);
     });
   },
 
   onParamChange: async (actionId, key, value) => {
-    refresh(await patchActionParam(actionId, key, value));
-    emitViewerInvalidation(viewerInvalidationForParam(actionId, key, value));
+    const result = await patchActionParam(actionId, key, value);
+    refresh(result.document);
+    emitViewerInvalidation(result.viewerInvalidation);
   },
 
   onToggleDisplay: async (id) => {

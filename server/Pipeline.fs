@@ -11,7 +11,8 @@ type PipelineResult =
       TypeMap: Map<ActionId, FieldType>
       Errors: TypeError list
       Slots: SlotTable
-      Pickables: Pickable list }
+      Pickables: Pickable list
+      Frames: Map<ActionId, RigidTransform> }
 
 module Pipeline =
 
@@ -208,8 +209,23 @@ module Pipeline =
 
         let pickables = buildPickables b actions typeMap
 
+        // Fold each FrameChain into a concrete RigidTransform. Chain is
+        // outermost-first, so left-fold with `*` gives world-from-local.
+        let foldChain (chain: FrameChain) : RigidTransform =
+            chain
+            |> List.fold (fun acc step ->
+                let step' =
+                    match step with
+                    | FrameTranslate(_, x, y, z) ->
+                        RigidTransform.translate { X = x; Y = y; Z = z }
+                    | FrameRotate(_, ax, ay, az, angle) ->
+                        RigidTransform.fromAxisAngle { X = ax; Y = ay; Z = az } angle
+                acc * step') RigidTransform.Identity
+        let frames = buildResult.Frames |> Map.map (fun _ c -> foldChain c)
+
         { Surfaces = surfaces
           TypeMap = typeMap
           Errors = tc.Errors
           Slots = SlotTable.toTable b
-          Pickables = pickables }
+          Pickables = pickables
+          Frames = frames }

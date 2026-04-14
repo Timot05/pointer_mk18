@@ -32,6 +32,14 @@ type Vec3 =
         if len < 1e-12 then Vec3.Zero
         else (1.0 / len) * v
 
+    static member Dot (a: Vec3, b: Vec3) =
+        a.X * b.X + a.Y * b.Y + a.Z * b.Z
+
+    static member Cross (a: Vec3, b: Vec3) =
+        { X = a.Y * b.Z - a.Z * b.Y
+          Y = a.Z * b.X - a.X * b.Z
+          Z = a.X * b.Y - a.Y * b.X }
+
 /// Unit quaternion representing SO(3) rotation.
 /// Convention: w + xi + yj + zk
 [<Struct>]

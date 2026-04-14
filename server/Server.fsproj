@@ -10,6 +10,8 @@
     <Compile Include="SketchLoops.fs" />
     <Compile Include="Domain.fs" />
     <Compile Include="TypeCheck.fs" />
+    <Compile Include="GraphIR.fs" />
+    <Compile Include="SketchCompile.fs" />
     <Compile Include="SlotTable.fs" />
     <Compile Include="Element.fs" />
     <Compile Include="FieldIR.fs" />

@@ -163,7 +163,15 @@ module Program =
                     doc.Actions
                     |> List.choose (fun a ->
                         match a.Kind with
-                        | Sketch(origin, sk) -> Some {| Id = a.Id; Origin = origin; Sketch = sk |}
+                        | Sketch(origin, sk) ->
+                            let sketchOrigin =
+                                origin
+                                |> Option.bind (fun id -> Map.tryFind id compiled.Frames)
+                                |> Option.defaultValue RigidTransform.Identity
+                            let ctx : SketchCompileContext =
+                                { SketchOrigin = sketchOrigin; Frames = compiled.Frames }
+                            let graph = SketchCompile.compile sk ctx
+                            Some {| Id = a.Id; Origin = origin; Sketch = sk; Graph = graph |}
                         | _ -> None)
                 let payload =
                     {| Surfaces = compiled.Surfaces

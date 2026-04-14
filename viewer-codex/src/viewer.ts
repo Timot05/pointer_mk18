@@ -1,6 +1,9 @@
 import { getViewerModel, getViewerState, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
+import type { Graph } from "./graph";
+import { solveGraphWithGpu } from "./gpu-lm-solver";
+import { createGpuSolver, type GpuSolver } from "./gpu-solver";
 import { loadFontMetrics, loadMsdfAtlas, type FontMetrics } from "./msdf-atlas";
 import { add2, add3, len2, norm2, perp, scale2, scale3, sub2, type Vec2, type Vec3 } from "./math";
 import { createMsdfLabelPipeline, writeLabelUniform } from "./pipeline-msdf-label";
@@ -61,6 +64,13 @@ interface ConstraintLabel {
   text: string;
   anchor: Vec2;
   hovered: boolean;
+}
+
+interface SketchSolverBinding {
+  graph: Graph;
+  solver: GpuSolver;
+  localByPath: Map<string, number>;
+  localToGlobal: number[];
 }
 
 interface HoverHit {
@@ -393,6 +403,8 @@ export class ViewerApp {
   private state: ViewerState | null = null;
   private fontMetrics: FontMetrics | null = null;
   private slotLookup = new Map<string, number>();
+  private solverBindings = new Map<string, SketchSolverBinding>();
+  private solvedSketchParams = new Map<string, Float32Array>();
   private renderSketches: RenderSketch[] = [];
   private selectedActionId: string | null = null;
   private hovered: HoverHit | null = null;
@@ -490,8 +502,10 @@ export class ViewerApp {
   }
 
   private async reloadModel(resetCamera: boolean): Promise<void> {
+    this.destroySolverBindings();
     this.model = await getViewerModel();
     this.slotLookup = new Map(this.model.slotIndex.map((entry) => [`${entry.actionId}:${entry.path}`, entry.slot]));
+    await this.buildSolverBindings();
     this.rebuildRenderData();
     if (resetCamera) this.fitCamera();
     this.queueRender();
@@ -502,6 +516,7 @@ export class ViewerApp {
     this.errorEl.textContent = this.state.errors.length > 0
       ? `errors: ${this.state.errors[0].actionId}.${this.state.errors[0].key} ${this.state.errors[0].error}`
       : "";
+    await this.solveSketches();
     this.rebuildRenderData();
     this.queueRender();
   }
@@ -585,9 +600,52 @@ export class ViewerApp {
     this.renderSketches = this.model.sketches.map((sketch) => ({
       sketchId: sketch.id,
       frame: toSketchFrame(sketch.sketchFrame),
-      buffers: buildSketchBuffers(sketch, this.model!.pickables, this.slotLookup, this.state!.params, this.hovered, this.selectedActionId, this.fontMetrics),
+      buffers: buildSketchBuffers(
+        sketch,
+        this.model!.pickables,
+        this.slotLookup,
+        this.state!.params,
+        this.hovered,
+        this.selectedActionId,
+        this.fontMetrics,
+        this.solverBindings.get(sketch.id),
+        this.solvedSketchParams.get(sketch.id),
+      ),
     }));
     this.metaEl.textContent = `${this.model.sketches.length} sketch${this.model.sketches.length === 1 ? "" : "es"}  ·  ${this.model.numSlots} slots`;
+  }
+
+  private async buildSolverBindings(): Promise<void> {
+    if (!this.model) return;
+    const bindings = await Promise.all(this.model.sketches.map(async (sketch) => {
+      const binding = await createSketchSolverBinding(sketch, this.slotLookup);
+      return [sketch.id, binding] as const;
+    }));
+    this.solverBindings = new Map(bindings);
+    this.solvedSketchParams.clear();
+  }
+
+  private async solveSketches(): Promise<void> {
+    if (!this.model || !this.state) return;
+    const solved = new Map<string, Float32Array>();
+    await Promise.all(this.model.sketches.map(async (sketch) => {
+      const binding = this.solverBindings.get(sketch.id);
+      if (!binding || binding.localToGlobal.length === 0) return;
+      const localParams = new Float32Array(binding.graph.params);
+      for (let i = 0; i < binding.localToGlobal.length; i++) {
+        const globalSlot = binding.localToGlobal[i];
+        localParams[i] = this.state!.params[globalSlot] ?? localParams[i];
+      }
+      const result = await solveGraphWithGpu(binding.graph, binding.solver, localParams);
+      solved.set(sketch.id, result);
+    }));
+    this.solvedSketchParams = solved;
+  }
+
+  private destroySolverBindings(): void {
+    for (const binding of this.solverBindings.values()) binding.solver.destroy();
+    this.solverBindings.clear();
+    this.solvedSketchParams.clear();
   }
 
   private resizeCanvas(): void {
@@ -983,6 +1041,8 @@ function buildSketchBuffers(
   hovered: HoverHit | null,
   selectedActionId: string | null,
   fontMetrics: FontMetrics | null,
+  solverBinding?: SketchSolverBinding,
+  solvedLocal?: Float32Array,
 ): RenderBuffers {
   const entityMap = new Map(viewerSketch.sketch.entities.map((entity) => [entity.id, entity]));
   const pointMap = new Map<string, Vec2>();
@@ -995,17 +1055,19 @@ function buildSketchBuffers(
   const sketchHovered = hovered?.sketchId === viewerSketch.id ? hovered : null;
   const sketchSelected = selectedActionId === viewerSketch.id;
   const labels: ConstraintLabel[] = [];
+  const resolveValue = (path: string, fallback: number) =>
+    resolvedSketchValue(solverBinding, solvedLocal, params, slotLookup, viewerSketch.id, path, fallback);
 
   for (const entity of viewerSketch.sketch.entities) {
     if (entity.case === "REPoint") {
       pointMap.set(entity.id, [
-        slotValue(params, slotLookup, viewerSketch.id, `sketch.entity.${entity.id}.x`, entity.x),
-        slotValue(params, slotLookup, viewerSketch.id, `sketch.entity.${entity.id}.y`, entity.y),
+        resolveValue(`sketch.entity.${entity.id}.x`, entity.x),
+        resolveValue(`sketch.entity.${entity.id}.y`, entity.y),
       ]);
     }
   }
 
-  const [minPoint, maxPoint] = computeBounds(viewerSketch.sketch, pointMap);
+  const [minPoint, maxPoint] = computeBounds(viewerSketch.sketch, pointMap, resolveValue);
   pushGrid(lineVertices, minPoint, maxPoint);
 
   for (const entity of viewerSketch.sketch.entities) {
@@ -1035,7 +1097,7 @@ function buildSketchBuffers(
     if (entity.case === "RECircle") {
       const c = pointMap.get(entity.center);
       if (!c) continue;
-      const radius = slotValue(params, slotLookup, viewerSketch.id, `sketch.entity.${entity.id}.radius`, entity.radius);
+      const radius = resolveValue(`sketch.entity.${entity.id}.radius`, entity.radius);
       const pickId = pickMap.get(`circle:${entity.id}`);
       const hoveredCircle = sketchHovered?.pickId === pickId;
       const color = hoveredCircle || sketchSelected ? ACCENT : SKETCH_LINE;
@@ -1057,7 +1119,7 @@ function buildSketchBuffers(
   }
 
   for (const constraint of viewerSketch.sketch.constraints) {
-    pushConstraintGeometry(lineVertices, labels, pointMap, entityMap, params, slotLookup, viewerSketch.id, constraint, sketchHovered);
+    pushConstraintGeometry(lineVertices, labels, pointMap, entityMap, resolveValue, constraint, sketchHovered);
   }
 
   return {
@@ -1075,9 +1137,7 @@ function pushConstraintGeometry(
   labels: ConstraintLabel[],
   pointMap: Map<string, Vec2>,
   entityMap: Map<string, RenderEntity>,
-  params: number[],
-  slotLookup: Map<string, number>,
-  sketchId: string,
+  resolveValue: (path: string, fallback: number) => number,
   constraint: ActionSketch["constraints"][number],
   hovered: HoverHit | null,
 ): void {
@@ -1128,7 +1188,7 @@ function pushConstraintGeometry(
       const center = pointMap.get(constraint.center);
       const circle = entityMap.get(constraint.circle);
       if (!center || !circle || circle.case !== "RECircle") return;
-      const radius = slotValue(params, slotLookup, sketchId, `sketch.entity.${circle.id}.radius`, circle.radius);
+      const radius = resolveValue(`sketch.entity.${circle.id}.radius`, circle.radius);
       lines.push({ x: center[0] - radius, y: center[1], color }, { x: center[0] + radius, y: center[1], color });
       labels.push({
         text: `⌀ ${formatNumber(constraint.diameter)}`,
@@ -1163,7 +1223,11 @@ function pushConstraintGeometry(
   }
 }
 
-function computeBounds(sketch: ActionSketch, pointMap: Map<string, Vec2>): [Vec2, Vec2] {
+function computeBounds(
+  sketch: ActionSketch,
+  pointMap: Map<string, Vec2>,
+  resolveValue: (path: string, fallback: number) => number,
+): [Vec2, Vec2] {
   let min: Vec2 = [Infinity, Infinity];
   let max: Vec2 = [-Infinity, -Infinity];
   for (const entity of sketch.entities) {
@@ -1176,8 +1240,9 @@ function computeBounds(sketch: ActionSketch, pointMap: Map<string, Vec2>): [Vec2
     if (entity.case === "RECircle") {
       const c = pointMap.get(entity.center);
       if (!c) continue;
-      min = [Math.min(min[0], c[0] - entity.radius), Math.min(min[1], c[1] - entity.radius)];
-      max = [Math.max(max[0], c[0] + entity.radius), Math.max(max[1], c[1] + entity.radius)];
+      const radius = resolveValue(`sketch.entity.${entity.id}.radius`, entity.radius);
+      min = [Math.min(min[0], c[0] - radius), Math.min(min[1], c[1] - radius)];
+      max = [Math.max(max[0], c[0] + radius), Math.max(max[1], c[1] + radius)];
     }
   }
   if (!Number.isFinite(min[0])) return [[-10, -10], [10, 10]];
@@ -1336,6 +1401,64 @@ function buildPickIndex(pickables: Pickable[], sketchId: string): Map<string, nu
 function slotValue(params: number[], slotLookup: Map<string, number>, actionId: string, path: string, fallback: number): number {
   const slot = slotLookup.get(`${actionId}:${path}`);
   return slot == null ? fallback : (params[slot] ?? fallback);
+}
+
+function resolvedSketchValue(
+  solverBinding: SketchSolverBinding | undefined,
+  solvedLocal: Float32Array | undefined,
+  params: number[],
+  slotLookup: Map<string, number>,
+  actionId: string,
+  path: string,
+  fallback: number,
+): number {
+  const localSlot = solverBinding?.localByPath.get(path);
+  if (localSlot != null && solvedLocal && localSlot < solvedLocal.length) return solvedLocal[localSlot];
+  return slotValue(params, slotLookup, actionId, path, fallback);
+}
+
+async function createSketchSolverBinding(
+  sketch: ViewerSketch,
+  slotLookup: Map<string, number>,
+): Promise<SketchSolverBinding> {
+  const localByPath = new Map<string, number>();
+  let localSlot = 0;
+  for (const entity of sketch.sketch.entities) {
+    switch (entity.case) {
+      case "REPoint":
+        localByPath.set(`sketch.entity.${entity.id}.x`, localSlot++);
+        localByPath.set(`sketch.entity.${entity.id}.y`, localSlot++);
+        break;
+      case "RECircle":
+        localByPath.set(`sketch.entity.${entity.id}.radius`, localSlot++);
+        break;
+      case "REArc":
+        if (entity.data.case === "ArcThreePoint") {
+          localByPath.set(`sketch.entity.${entity.id}.throughX`, localSlot++);
+          localByPath.set(`sketch.entity.${entity.id}.throughY`, localSlot++);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  const localToGlobal = new Array<number>(localByPath.size);
+  for (const [path, local] of localByPath) {
+    const globalSlot = slotLookup.get(`${sketch.id}:${path}`);
+    if (globalSlot == null) {
+      throw new Error(`Missing slot for ${sketch.id}:${path}`);
+    }
+    localToGlobal[local] = globalSlot;
+  }
+
+  const solver = await createGpuSolver(sketch.graph, 1);
+  return {
+    graph: sketch.graph,
+    solver,
+    localByPath,
+    localToGlobal,
+  };
 }
 
 function toSketchFrame(t: JsonRigidTransform): SketchFrame {

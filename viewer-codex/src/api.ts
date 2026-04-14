@@ -1,3 +1,5 @@
+import { graphFromJson, type Graph, type GraphJson } from "./graph";
+
 export interface JsonVec3 { x: number; y: number; z: number }
 export interface JsonQuat { w: number; x: number; y: number; z: number }
 export interface JsonRigidTransform { rot: JsonQuat; trans: JsonVec3 }
@@ -37,7 +39,7 @@ export interface ViewerSketch {
   origin: string | null;
   sketchFrame: JsonRigidTransform;
   sketch: ActionSketch;
-  graph: unknown;
+  graph: Graph;
 }
 
 export interface Pickable {
@@ -55,6 +57,14 @@ export interface ViewerModel {
   numSlots: number;
   slotIndex: SlotIndexEntry[];
   pickables: Pickable[];
+}
+
+interface ViewerSketchJson extends Omit<ViewerSketch, "graph"> {
+  graph: GraphJson;
+}
+
+interface ViewerModelJson extends Omit<ViewerModel, "sketches"> {
+  sketches: ViewerSketchJson[];
 }
 
 export interface ViewerState {
@@ -78,8 +88,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export function getViewerModel(): Promise<ViewerModel> {
-  return request("/viewer/model");
+export async function getViewerModel(): Promise<ViewerModel> {
+  const model = await request<ViewerModelJson>("/viewer/model");
+  return {
+    ...model,
+    sketches: model.sketches.map((sketch) => ({
+      ...sketch,
+      graph: graphFromJson(sketch.graph),
+    })),
+  };
 }
 
 export function getViewerState(): Promise<ViewerState> {

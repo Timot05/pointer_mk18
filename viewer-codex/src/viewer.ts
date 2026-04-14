@@ -1,5 +1,5 @@
-import { getViewerModel, getViewerState, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
-import { ACCENT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
+import { getViewerModel, getViewerState, postViewerPick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
 import { solveGraphWithGpu } from "./gpu-lm-solver";
@@ -8,7 +8,7 @@ import { loadFontMetrics, loadMsdfAtlas, type FontMetrics } from "./msdf-atlas";
 import { add2, add3, len2, norm2, perp, scale2, scale3, sub2, type Vec2, type Vec3 } from "./math";
 import { createMsdfLabelPipeline, writeLabelUniform } from "./pipeline-msdf-label";
 
-type PickKind = "point" | "line" | "circle" | "arc";
+type PickKind = "point" | "line" | "circle" | "arc" | "loop";
 
 interface LineVertex {
   x: number;
@@ -45,12 +45,21 @@ interface PickCircle {
   pickId: number;
 }
 
+interface PickLoopTriangle {
+  a: Vec2;
+  b: Vec2;
+  c: Vec2;
+  pickId: number;
+}
+
 interface RenderBuffers {
+  triData: Float32Array;
   lineData: Float32Array;
   pointData: Float32Array;
   pickPoints: Float32Array;
   pickLines: Float32Array;
   pickCircles: Float32Array;
+  pickLoops: Float32Array;
   labelData: Float32Array;
 }
 
@@ -58,6 +67,7 @@ interface RenderSketch {
   sketchId: string;
   frame: SketchFrame;
   buffers: RenderBuffers;
+  loops: ResolvedLoopGeometry[];
 }
 
 interface ConstraintLabel {
@@ -71,6 +81,12 @@ interface SketchSolverBinding {
   solver: GpuSolver;
   localByPath: Map<string, number>;
   localToGlobal: number[];
+}
+
+interface ResolvedLoopGeometry {
+  id: string;
+  pickId: number | null;
+  boundary: Vec2[];
 }
 
 interface HoverHit {
@@ -93,6 +109,7 @@ interface GpuContext {
   format: GPUTextureFormat;
   cameraBuffer: GPUBuffer;
   cameraBindGroup: GPUBindGroup;
+  triPipeline: GPURenderPipeline;
   linePipeline: GPURenderPipeline;
   pointPipeline: GPURenderPipeline;
   sketchFrameLayout: GPUBindGroupLayout;
@@ -302,7 +319,8 @@ struct PickSample {
 @group(0) @binding(3) var<storage, read> points: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read> lines: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read> circles: array<vec4<f32>>;
-@group(0) @binding(6) var<storage, read_write> samples: array<PickSample, ${PICK_SAMPLES}>;
+@group(0) @binding(6) var<storage, read> loops: array<vec4<f32>>;
+@group(0) @binding(7) var<storage, read_write> samples: array<PickSample, ${PICK_SAMPLES}>;
 
 fn make_ray(pixel: vec2<f32>) -> vec3<f32> {
   let uv = pixel / max(pick.viewport, vec2<f32>(1.0, 1.0));
@@ -330,6 +348,21 @@ fn sdf_segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
   let denom = max(dot(ab, ab), 1e-8);
   let h = clamp(dot(p - a, ab) / denom, 0.0, 1.0);
   return length((a + ab * h) - p);
+}
+
+fn point_in_triangle(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> bool {
+  let v0 = c - a;
+  let v1 = b - a;
+  let v2 = p - a;
+  let dot00 = dot(v0, v0);
+  let dot01 = dot(v0, v1);
+  let dot02 = dot(v0, v2);
+  let dot11 = dot(v1, v1);
+  let dot12 = dot(v1, v2);
+  let inv = 1.0 / max(dot00 * dot11 - dot01 * dot01, 1e-8);
+  let u = (dot11 * dot02 - dot01 * dot12) * inv;
+  let v = (dot00 * dot12 - dot01 * dot02) * inv;
+  return u >= 0.0 && v >= 0.0 && (u + v) <= 1.0;
 }
 
 @compute @workgroup_size(${PICK_SAMPLES})
@@ -381,6 +414,21 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
         bestScore = score;
         bestId = u32(info.x + 0.5);
         bestKind = 3u;
+      }
+    }
+
+    let loopCount = arrayLength(&loops) / 2u;
+    for (var i: u32 = 0u; i < loopCount; i = i + 1u) {
+      let tri0 = loops[i * 2u];
+      let tri1 = loops[i * 2u + 1u];
+      if (point_in_triangle(p, tri0.xy, tri0.zw, tri1.xy)) {
+        let centroid = (tri0.xy + tri0.zw + tri1.xy) / 3.0;
+        let score = 50.0 + length(p - centroid);
+        if (score < bestScore) {
+          bestScore = score;
+          bestId = u32(tri1.z + 0.5);
+          bestKind = 5u;
+        }
       }
     }
   }
@@ -597,10 +645,9 @@ export class ViewerApp {
 
   private rebuildRenderData(): void {
     if (!this.model || !this.state) return;
-    this.renderSketches = this.model.sketches.map((sketch) => ({
-      sketchId: sketch.id,
-      frame: toSketchFrame(sketch.sketchFrame),
-      buffers: buildSketchBuffers(
+    this.renderSketches = this.model.sketches.map((sketch) => {
+      const frame = toSketchFrame(sketch.sketchFrame);
+      const built = buildSketchBuffers(
         sketch,
         this.model!.pickables,
         this.slotLookup,
@@ -610,8 +657,14 @@ export class ViewerApp {
         this.fontMetrics,
         this.solverBindings.get(sketch.id),
         this.solvedSketchParams.get(sketch.id),
-      ),
-    }));
+      );
+      return {
+        sketchId: sketch.id,
+        frame,
+        buffers: built.buffers,
+        loops: built.loops,
+      };
+    });
     this.metaEl.textContent = `${this.model.sketches.length} sketch${this.model.sketches.length === 1 ? "" : "es"}  ·  ${this.model.numSlots} slots`;
   }
 
@@ -678,7 +731,7 @@ export class ViewerApp {
 
   private render(): void {
     if (!this.gpu) return;
-    const { device, context, cameraBuffer, cameraBindGroup, linePipeline, pointPipeline, frameBuffer, frameBindGroup, viewportBuffer, viewportBindGroup, pointQuadBuffer, labelPipeline, labelBindGroup, labelUniformBuffer } = this.gpu;
+    const { device, context, cameraBuffer, cameraBindGroup, triPipeline, linePipeline, pointPipeline, frameBuffer, frameBindGroup, viewportBuffer, viewportBindGroup, pointQuadBuffer, labelPipeline, labelBindGroup, labelUniformBuffer } = this.gpu;
     this.resizeCanvas();
 
     const width = this.canvas.width;
@@ -713,6 +766,17 @@ export class ViewerApp {
       frameData.set(sketch.frame.yAxis, 8);
       device.queue.writeBuffer(frameBuffer, 0, frameData);
       pass.setBindGroup(1, frameBindGroup);
+
+      if (sketch.buffers.triData.length > 0) {
+        const triBuffer = device.createBuffer({
+          size: sketch.buffers.triData.byteLength,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(triBuffer, 0, sketch.buffers.triData);
+        pass.setPipeline(triPipeline);
+        pass.setVertexBuffer(0, triBuffer);
+        pass.draw(sketch.buffers.triData.length / 6);
+      }
 
       if (sketch.buffers.lineData.length > 0) {
         const lineBuffer = device.createBuffer({
@@ -828,6 +892,12 @@ export class ViewerApp {
     });
     device.queue.writeBuffer(circleBuffer, 0, sketch.buffers.pickCircles);
 
+    const loopBuffer = device.createBuffer({
+      size: Math.max(16, sketch.buffers.pickLoops.byteLength),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(loopBuffer, 0, sketch.buffers.pickLoops);
+
     const bindGroup = device.createBindGroup({
       layout: pickBindGroupLayout,
       entries: [
@@ -837,7 +907,8 @@ export class ViewerApp {
         { binding: 3, resource: { buffer: pointBuffer } },
         { binding: 4, resource: { buffer: lineBuffer } },
         { binding: 5, resource: { buffer: circleBuffer } },
-        { binding: 6, resource: { buffer: pickResultBuffer } },
+        { binding: 6, resource: { buffer: loopBuffer } },
+        { binding: 7, resource: { buffer: pickResultBuffer } },
       ],
     });
 
@@ -899,6 +970,32 @@ export class ViewerApp {
     const viewportBindGroup = device.createBindGroup({ layout: viewportLayout, entries: [{ binding: 0, resource: { buffer: viewportBuffer } }] });
 
     const lineModule = device.createShaderModule({ code: LINE_SHADER });
+    const triPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [cameraLayout, sketchFrameLayout] }),
+      vertex: {
+        module: lineModule,
+        entryPoint: "vs_main",
+        buffers: [{
+          arrayStride: 24,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x2" },
+            { shaderLocation: 1, offset: 8, format: "float32x4" },
+          ],
+        }],
+      },
+      fragment: {
+        module: lineModule,
+        entryPoint: "fs_main",
+        targets: [{
+          format,
+          blend: {
+            color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+            alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+          },
+        }],
+      },
+      primitive: { topology: "triangle-list" },
+    });
     const linePipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [cameraLayout, sketchFrameLayout] }),
       vertex: {
@@ -995,7 +1092,8 @@ export class ViewerApp {
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
         { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
     const pickPipeline = device.createComputePipeline({
@@ -1012,6 +1110,7 @@ export class ViewerApp {
       format,
       cameraBuffer,
       cameraBindGroup,
+      triPipeline,
       linePipeline,
       pointPipeline,
       sketchFrameLayout,
@@ -1043,14 +1142,16 @@ function buildSketchBuffers(
   fontMetrics: FontMetrics | null,
   solverBinding?: SketchSolverBinding,
   solvedLocal?: Float32Array,
-): RenderBuffers {
+): { buffers: RenderBuffers; loops: ResolvedLoopGeometry[] } {
   const entityMap = new Map(viewerSketch.sketch.entities.map((entity) => [entity.id, entity]));
   const pointMap = new Map<string, Vec2>();
+  const triVertices: LineVertex[] = [];
   const lineVertices: LineVertex[] = [];
   const pointInstances: PointInstance[] = [];
   const pickPoints: PickPoint[] = [];
   const pickSegments: PickSegment[] = [];
   const pickCircles: PickCircle[] = [];
+  const pickLoopTriangles: PickLoopTriangle[] = [];
   const pickMap = buildPickIndex(pickables, viewerSketch.id);
   const sketchHovered = hovered?.sketchId === viewerSketch.id ? hovered : null;
   const sketchSelected = selectedActionId === viewerSketch.id;
@@ -1065,6 +1166,15 @@ function buildSketchBuffers(
         resolveValue(`sketch.entity.${entity.id}.y`, entity.y),
       ]);
     }
+  }
+
+  const resolvedLoops = viewerSketch.loops
+    .map((loop) => resolveLoopGeometry(loop, entityMap, pointMap, resolveValue))
+    .filter((loop): loop is ResolvedLoopGeometry => loop !== null);
+  for (const loop of resolvedLoops) {
+    loop.pickId = pickMap.get(`loop:${loop.id}`) ?? null;
+    const hoveredLoop = sketchHovered?.pickId === loop.pickId;
+    pushLoopFill(triVertices, pickLoopTriangles, loop.boundary, hoveredLoop || sketchSelected ? ACCENT_SOFT : LOOP_FILL, loop.pickId);
   }
 
   const [minPoint, maxPoint] = computeBounds(viewerSketch.sketch, pointMap, resolveValue);
@@ -1123,12 +1233,17 @@ function buildSketchBuffers(
   }
 
   return {
-    lineData: flattenLines(lineVertices),
-    pointData: flattenPoints(pointInstances),
-    pickPoints: flattenPickPoints(pickPoints),
-    pickLines: flattenPickSegments(pickSegments),
-    pickCircles: flattenPickCircles(pickCircles),
-    labelData: fontMetrics ? buildLabelVertices(labels, fontMetrics) : new Float32Array(),
+    buffers: {
+      triData: flattenLines(triVertices),
+      lineData: flattenLines(lineVertices),
+      pointData: flattenPoints(pointInstances),
+      pickPoints: flattenPickPoints(pickPoints),
+      pickLines: flattenPickSegments(pickSegments),
+      pickCircles: flattenPickCircles(pickCircles),
+      pickLoops: flattenPickLoopTriangles(pickLoopTriangles),
+      labelData: fontMetrics ? buildLabelVertices(labels, fontMetrics) : new Float32Array(),
+    },
+    loops: resolvedLoops,
   };
 }
 
@@ -1267,6 +1382,178 @@ function pushGrid(lines: LineVertex[], min: Vec2, max: Vec2): void {
   lines.push({ x: 0, y: loY, color: AXIS }, { x: 0, y: hiY, color: AXIS });
 }
 
+function resolveLoopGeometry(
+  loop: SketchLoop,
+  entityMap: Map<string, RenderEntity>,
+  pointMap: Map<string, Vec2>,
+  resolveValue: (path: string, fallback: number) => number,
+): ResolvedLoopGeometry | null {
+  if (loop.entityIds.length === 1) {
+    const entity = entityMap.get(loop.entityIds[0]);
+    if (!entity || entity.case !== "RECircle") return null;
+    const center = pointMap.get(entity.center);
+    if (!center) return null;
+    const radius = resolveValue(`sketch.entity.${entity.id}.radius`, entity.radius);
+    return { id: loop.id, pickId: null, boundary: sampleCircleBoundary(center, radius, 48) };
+  }
+
+  const edges = loop.entityIds.map((id) => entityMap.get(id)).map((entity) => entity ? makeLoopEdge(entity, pointMap) : null);
+  if (edges.some((edge) => edge == null)) return null;
+
+  const forwardEdges = edges as Array<{ forward: Vec2[] }>;
+  const ordered: Vec2[] = [...forwardEdges[0].forward];
+  const used = new Set<number>([0]);
+  let tail = ordered[ordered.length - 1];
+
+  while (used.size < forwardEdges.length) {
+    let found = false;
+    for (let i = 0; i < forwardEdges.length; i++) {
+      if (used.has(i)) continue;
+      const edge = forwardEdges[i];
+      const startsAtTail = near2(edge.forward[0], tail);
+      const endsAtTail = near2(edge.forward[edge.forward.length - 1], tail);
+      if (!startsAtTail && !endsAtTail) continue;
+      const segment = startsAtTail ? edge.forward : [...edge.forward].reverse();
+      ordered.push(...segment.slice(1));
+      tail = segment[segment.length - 1];
+      used.add(i);
+      found = true;
+      break;
+    }
+    if (!found) return null;
+  }
+
+  if (!near2(ordered[0], ordered[ordered.length - 1])) ordered.push(ordered[0]);
+  return ordered.length >= 4 ? { id: loop.id, pickId: null, boundary: ordered } : null;
+}
+
+function makeLoopEdge(entity: RenderEntity, pointMap: Map<string, Vec2>): { forward: Vec2[] } | null {
+  if (entity.case === "RELine") {
+    const start = pointMap.get(entity.startId);
+    const end = pointMap.get(entity.endId);
+    return start && end ? { forward: [start, end] } : null;
+  }
+  if (entity.case === "REArc" && entity.data.case === "ArcCenter") {
+    const start = pointMap.get(entity.startId);
+    const end = pointMap.get(entity.endId);
+    const center = pointMap.get(entity.data.center);
+    return start && end && center ? { forward: sampleArcBoundary(start, end, center, entity.data.clockwise, 48) } : null;
+  }
+  return null;
+}
+
+function sampleCircleBoundary(center: Vec2, radius: number, segments: number): Vec2[] {
+  const points: Vec2[] = [];
+  for (let i = 0; i <= segments; i++) {
+    const angle = (i / segments) * Math.PI * 2;
+    points.push([center[0] + Math.cos(angle) * radius, center[1] + Math.sin(angle) * radius]);
+  }
+  return points;
+}
+
+function sampleArcBoundary(start: Vec2, end: Vec2, center: Vec2, clockwise: boolean, segments: number): Vec2[] {
+  const startAngle = Math.atan2(start[1] - center[1], start[0] - center[0]);
+  const endAngle = Math.atan2(end[1] - center[1], end[0] - center[0]);
+  const radius = len2(sub2(start, center));
+  let sweep = endAngle - startAngle;
+  if (clockwise && sweep > 0) sweep -= Math.PI * 2;
+  if (!clockwise && sweep < 0) sweep += Math.PI * 2;
+  const points: Vec2[] = [];
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    const angle = startAngle + sweep * t;
+    points.push([center[0] + Math.cos(angle) * radius, center[1] + Math.sin(angle) * radius]);
+  }
+  return points;
+}
+
+function pushLoopFill(
+  vertices: LineVertex[],
+  pickTriangles: PickLoopTriangle[],
+  boundary: Vec2[],
+  color: readonly number[],
+  pickId: number | null,
+): void {
+  const polygon = boundary.slice(0, -1);
+  for (const [a, b, c] of triangulatePolygon(polygon)) {
+    vertices.push(
+      { x: a[0], y: a[1], color },
+      { x: b[0], y: b[1], color },
+      { x: c[0], y: c[1], color },
+    );
+    if (pickId != null) pickTriangles.push({ a, b, c, pickId });
+  }
+}
+
+function triangulatePolygon(points: Vec2[]): [Vec2, Vec2, Vec2][] {
+  const triangles: [Vec2, Vec2, Vec2][] = [];
+  if (points.length < 3) return triangles;
+  const winding = polygonSignedArea(points) >= 0 ? 1 : -1;
+  const indices = points.map((_, i) => i);
+  let guard = 0;
+  while (indices.length > 2 && guard < points.length * points.length) {
+    let clipped = false;
+    for (let i = 0; i < indices.length; i++) {
+      const i0 = indices[(i + indices.length - 1) % indices.length];
+      const i1 = indices[i];
+      const i2 = indices[(i + 1) % indices.length];
+      const a = points[i0];
+      const b = points[i1];
+      const c = points[i2];
+      if (!isEar(a, b, c, points, indices, winding)) continue;
+      triangles.push(winding > 0 ? [a, b, c] : [a, c, b]);
+      indices.splice(i, 1);
+      clipped = true;
+      break;
+    }
+    if (!clipped) break;
+    guard++;
+  }
+  return triangles;
+}
+
+function isEar(a: Vec2, b: Vec2, c: Vec2, points: Vec2[], indices: number[], winding: number): boolean {
+  const turn = cross2(sub2(b, a), sub2(c, b));
+  if (winding > 0 ? turn <= 1e-6 : turn >= -1e-6) return false;
+  for (const index of indices) {
+    const p = points[index];
+    if (same2(p, a) || same2(p, b) || same2(p, c)) continue;
+    if (pointInTriangle(p, a, b, c)) return false;
+  }
+  return true;
+}
+
+function pointInTriangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2): boolean {
+  const s1 = cross2(sub2(b, a), sub2(p, a));
+  const s2 = cross2(sub2(c, b), sub2(p, b));
+  const s3 = cross2(sub2(a, c), sub2(p, c));
+  const hasNeg = s1 < -1e-6 || s2 < -1e-6 || s3 < -1e-6;
+  const hasPos = s1 > 1e-6 || s2 > 1e-6 || s3 > 1e-6;
+  return !(hasNeg && hasPos);
+}
+
+function polygonSignedArea(points: Vec2[]): number {
+  let area = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  return area * 0.5;
+}
+
+function cross2(a: Vec2, b: Vec2): number {
+  return a[0] * b[1] - a[1] * b[0];
+}
+
+function near2(a: Vec2, b: Vec2): boolean {
+  return len2(sub2(a, b)) < 1e-3;
+}
+
+function same2(a: Vec2, b: Vec2): boolean {
+  return near2(a, b);
+}
+
 function pushCircle(lines: LineVertex[], center: Vec2, radius: number, color: readonly number[]): void {
   const segments = 64;
   for (let i = 0; i < segments; i++) {
@@ -1380,10 +1667,30 @@ function flattenPickCircles(circles: PickCircle[]): Float32Array {
   return data;
 }
 
+function flattenPickLoopTriangles(triangles: PickLoopTriangle[]): Float32Array {
+  const data = new Float32Array(triangles.length * 8);
+  let o = 0;
+  for (const tri of triangles) {
+    data[o++] = tri.a[0];
+    data[o++] = tri.a[1];
+    data[o++] = tri.b[0];
+    data[o++] = tri.b[1];
+    data[o++] = tri.c[0];
+    data[o++] = tri.c[1];
+    data[o++] = tri.pickId;
+    data[o++] = 0;
+  }
+  return data;
+}
+
 function buildPickIndex(pickables: Pickable[], sketchId: string): Map<string, number> {
   const map = new Map<string, number>();
   for (const pickable of pickables) {
     if ((pickable as { sketchId?: string }).sketchId !== sketchId) continue;
+    if (pickable.case === "PickLoop" && typeof pickable.loopId === "string") {
+      map.set(`loop:${pickable.loopId}`, pickable.pickId);
+      continue;
+    }
     if ("entityId" in pickable && typeof pickable.entityId === "string") {
       let prefix: string | null = null;
       switch (pickable.case) {
@@ -1488,12 +1795,14 @@ function rotateByQuat(q: JsonRigidTransform["rot"], v: Vec3): Vec3 {
   ];
 }
 
+
 function pickKind(kind: number): PickKind | null {
   switch (kind) {
     case 1: return "point";
     case 2: return "line";
     case 3: return "circle";
     case 4: return "arc";
+    case 5: return "loop";
     default: return null;
   }
 }

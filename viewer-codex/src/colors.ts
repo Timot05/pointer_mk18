@@ -5,6 +5,7 @@ export const TEXT_PRIMARY = "#333333";
 export const TEXT_MUTED = "#666666";
 export const ACCENT = [0.502, 0.745, 0.549, 1.0] as const;
 export const ACCENT_SOFT = [0.502, 0.745, 0.549, 0.2] as const;
+export const LOOP_FILL = [0.741, 0.694, 0.575, 0.18] as const;
 export const GRID_MINOR = [0.835, 0.816, 0.769, 0.35] as const;
 export const GRID_MAJOR = [0.835, 0.816, 0.769, 0.75] as const;
 export const AXIS = [0.6, 0.58, 0.52, 0.9] as const;

@@ -34,12 +34,18 @@ export interface ActionSketch {
   constraints: SketchConstraint[];
 }
 
+export interface SketchLoop {
+  id: string;
+  entityIds: string[];
+}
+
 export interface ViewerSketch {
   id: string;
   origin: string | null;
   sketchFrame: JsonRigidTransform;
   sketch: ActionSketch;
   graph: Graph;
+  loops: SketchLoop[];
 }
 
 export interface Pickable {
@@ -47,6 +53,8 @@ export interface Pickable {
   pickId: number;
   sketchId?: string;
   entityId?: string;
+  loopId?: string;
+  entityIds?: string[];
   actionId?: string;
   constraintIndex?: number;
 }

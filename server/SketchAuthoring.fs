@@ -8,6 +8,8 @@ type SketchUiState =
       ToolPoints: LabelPos list
       EditingDimension: EditingDimension option
       ConstraintPlacementMode: string option
+      ConstraintPlacementDraft: ConstraintPlacementDraft option
+      PendingConstraintPlacement: PendingConstraintPlacement option
       ConstraintAvailability: Map<string, bool>
       DimensionPlacementAvailability: Map<string, bool> }
 
@@ -17,6 +19,20 @@ and EditingDimension =
       Key: string
       Value: float }
 
+and PendingConstraintPlacement =
+    { SketchId: string
+      Constraint: SketchConstraint }
+
+and ConstraintPlacementRef =
+    | RefPoint of string
+    | RefLine of string
+    | RefCircle of string
+
+and ConstraintPlacementDraft =
+    { SketchId: string
+      Kind: string
+      ClickedRefs: ConstraintPlacementRef list }
+
 module SketchAuthoring =
 
     let emptyUiState =
@@ -25,6 +41,8 @@ module SketchAuthoring =
           ToolPoints = []
           EditingDimension = None
           ConstraintPlacementMode = None
+          ConstraintPlacementDraft = None
+          PendingConstraintPlacement = None
           ConstraintAvailability = Map.empty
           DimensionPlacementAvailability = Map.empty }
 
@@ -104,6 +122,26 @@ module SketchAuthoring =
     let private cross (ax, ay) (bx, by) = ax * by - ay * bx
     let private sub (ax, ay) (bx, by) = (ax - bx, ay - by)
     let private clamp minv maxv value = max minv (min maxv value)
+    let private angleOf (x, y) = Math.Atan2(y, x)
+    let private tau = Math.PI * 2.0
+
+    let private normalizePositive angle =
+        let mutable a = angle
+        while a < 0.0 do a <- a + tau
+        while a >= tau do a <- a - tau
+        a
+
+    let private clockwiseSweep fromAngle toAngle =
+        let ccw = normalizePositive (toAngle - fromAngle)
+        if ccw <= 0.0 then 0.0 else tau - ccw
+
+    let private pointInSector cursorAngle startAngle sweep ccw =
+        let delta =
+            if ccw then
+                normalizePositive (cursorAngle - startAngle)
+            else
+                clockwiseSweep startAngle cursorAngle
+        delta <= sweep + 1e-6
 
     let private lineDirection (sketch: ActionSketch) lineId =
         tryLine sketch lineId
@@ -168,7 +206,80 @@ module SketchAuthoring =
             | _ ->
                 None)
 
-    let private buildConstraint sketch sketchId kind targets =
+    let private chooseAngleConstraint sketch lineA lineB cursor =
+        match tryLine sketch lineA, tryLine sketch lineB with
+        | Some(aStart, aEnd), Some(bStart, bEnd) ->
+            match tryPoint sketch aStart, tryPoint sketch aEnd, tryPoint sketch bStart, tryPoint sketch bEnd with
+            | Some pa0, Some pa1, Some pb0, Some pb1 ->
+                let lineIntersection =
+                    let ad = sub pa1 pa0
+                    let bd = sub pb1 pb0
+                    let det = cross ad bd
+                    if abs det < 1e-6 then None
+                    else
+                        let t = cross (sub pb0 pa0) bd / det
+                        Some(fst pa0 + fst ad * t, snd pa0 + snd ad * t)
+
+                let sharedVertex =
+                    [ (aStart, bStart, pa0, false, false)
+                      (aStart, bEnd, pa0, false, true)
+                      (aEnd, bStart, pa1, true, false)
+                      (aEnd, bEnd, pa1, true, true) ]
+                    |> List.tryFind (fun (aVertex, bVertex, _, _, _) -> aVertex = bVertex)
+
+                let vertex =
+                    match sharedVertex with
+                    | Some(_, _, vertex, _, _) -> vertex
+                    | None -> lineIntersection |> Option.defaultValue pa0
+
+                let candidates =
+                    [ false, false
+                      false, true
+                      true, false
+                      true, true ]
+                    |> List.choose (fun (aReverse, bReverse) ->
+                        let rayA = if aReverse then sub pa0 pa1 else sub pa1 pa0
+                        let rayB = if bReverse then sub pb0 pb1 else sub pb1 pb0
+                        let lenA = sqrt (dot rayA rayA)
+                        let lenB = sqrt (dot rayB rayB)
+                        if lenA < 1e-6 || lenB < 1e-6 then None
+                        else
+                            let angleA = angleOf rayA
+                            let angleB = angleOf rayB
+                            let ccwSweep = normalizePositive (angleB - angleA)
+                            let ccw =
+                                if ccwSweep <= Math.PI then true else false
+                            let sweep =
+                                if ccw then ccwSweep else tau - ccwSweep
+                            let midAngle =
+                                if ccw then angleA + sweep * 0.5 else angleA - sweep * 0.5
+                            Some(aReverse, bReverse, ccw, sweep * 180.0 / Math.PI, normalizePositive midAngle, angleA, sweep))
+
+                let chosen =
+                    match cursor with
+                    | Some cursorPoint ->
+                        let cursorAngle = angleOf (sub cursorPoint vertex)
+                        candidates
+                        |> List.tryFind (fun (_, _, ccw, _, _, angleA, sweep) ->
+                            pointInSector cursorAngle angleA sweep ccw)
+                    | None ->
+                        None
+
+                let aReverse, bReverse, ccw, degrees =
+                    match chosen, candidates with
+                    | Some(aReverse, bReverse, ccw, degrees, _, _, _), _ ->
+                        aReverse, bReverse, ccw, degrees
+                    | None, first :: _ ->
+                        let (aReverse, bReverse, ccw, degrees, _, _, _) = first
+                        aReverse, bReverse, ccw, degrees
+                    | None, [] ->
+                        false, false, true, angleValue sketch lineA lineB
+
+                Some(Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, None))
+            | _ -> None
+        | _ -> None
+
+    let private buildConstraint sketch sketchId kind targets cursor =
         let selection = selectionForSketch sketchId targets
         match kind with
         | "Coincident" ->
@@ -253,23 +364,80 @@ module SketchAuthoring =
         | "angle" ->
             match selection.Lines with
             | [ lineA; lineB ] ->
-                match tryLine sketch lineA, tryLine sketch lineB with
-                | Some(aStart, aEnd), Some(bStart, bEnd) ->
-                    let degrees = angleValue sketch lineA lineB
-                    let ccw =
-                        match tryPoint sketch aStart, tryPoint sketch aEnd, tryPoint sketch bStart, tryPoint sketch bEnd with
-                        | Some pa0, Some pa1, Some pb0, Some pb1 ->
-                            cross (sub pa1 pa0) (sub pb1 pb0) >= 0.0
-                        | _ -> true
-                    Some(Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, false, false, ccw, None))
-                | _ -> None
+                chooseAngleConstraint sketch lineA lineB cursor
             | _ -> None
         | _ -> None
+
+    let private buildDistanceConstraintFromDraft sketch draft hoveredRef =
+        match draft.ClickedRefs, hoveredRef with
+        | [ RefLine lineA ], Some(RefLine lineB) when lineA <> lineB ->
+            match tryLine sketch lineA, tryLine sketch lineB with
+            | Some(aStart, aEnd), Some(bStart, bEnd) ->
+                Some(LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, lineDistanceValue sketch lineA lineB, None))
+            | _ -> None
+        | [ RefLine lineId ], _ ->
+            tryLine sketch lineId
+            |> Option.bind (fun (a, b) ->
+                Option.map2 (fun pa pb -> Distance(a, b, dist pa pb, None)) (tryPoint sketch a) (tryPoint sketch b))
+        | [ RefCircle circleId ], _ ->
+            match tryCircle sketch circleId with
+            | Some(centerId, radius) -> Some(CircleDiameter(circleId, centerId, radius * 2.0, None))
+            | _ -> None
+        | [ RefPoint a ], Some(RefPoint b) when a <> b ->
+            Option.map2 (fun pa pb -> Distance(a, b, dist pa pb, None)) (tryPoint sketch a) (tryPoint sketch b)
+        | [ RefLine lineA; RefLine lineB ], _ when lineA <> lineB ->
+            match tryLine sketch lineA, tryLine sketch lineB with
+            | Some(aStart, aEnd), Some(bStart, bEnd) ->
+                Some(LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, lineDistanceValue sketch lineA lineB, None))
+            | _ -> None
+        | [ RefPoint a; RefPoint b ], _ when a <> b ->
+            Option.map2 (fun pa pb -> Distance(a, b, dist pa pb, None)) (tryPoint sketch a) (tryPoint sketch b)
+        | _ -> None
+
+    let private buildAngleConstraintFromDraft sketch draft hoveredRef cursor =
+        match draft.ClickedRefs, hoveredRef with
+        | [ RefLine lineA ], Some(RefLine lineB) when lineA <> lineB ->
+            chooseAngleConstraint sketch lineA lineB cursor
+        | [ RefLine lineA; RefLine lineB ], _ when lineA <> lineB ->
+            chooseAngleConstraint sketch lineA lineB cursor
+        | _ -> None
+
+    let pendingConstraintForDraft sketch draft hoveredRef cursor =
+        match draft.Kind with
+        | "distance" -> buildDistanceConstraintFromDraft sketch draft hoveredRef
+        | "angle" -> buildAngleConstraintFromDraft sketch draft hoveredRef cursor
+        | _ -> None
+
+    let placementRefFromTarget sketchId =
+        function
+        | TargetPoint(id, entityId) when id = sketchId -> Some(RefPoint entityId)
+        | TargetLine(id, entityId) when id = sketchId -> Some(RefLine entityId)
+        | TargetCircle(id, entityId) when id = sketchId -> Some(RefCircle entityId)
+        | _ -> None
+
+    let updatePlacementDraft sketchId kind hoveredTarget draft =
+        let clickedRef = hoveredTarget |> Option.bind (placementRefFromTarget sketchId)
+        match kind, clickedRef, draft with
+        | _, None, _ -> draft
+        | "distance", Some ref_, _ ->
+            let nextRefs =
+                match ref_, draft |> Option.bind (fun d -> if d.Kind = kind then Some d.ClickedRefs else None) with
+                | RefLine lineB, Some [ RefLine lineA ] when lineA <> lineB -> [ RefLine lineA; RefLine lineB ]
+                | RefPoint b, Some [ RefPoint a ] when a <> b -> [ RefPoint a; RefPoint b ]
+                | _, _ -> [ ref_ ]
+            Some { SketchId = sketchId; Kind = kind; ClickedRefs = nextRefs }
+        | "angle", Some(RefLine line), _ ->
+            let nextRefs =
+                match draft |> Option.bind (fun d -> if d.Kind = kind then Some d.ClickedRefs else None) with
+                | Some [ RefLine lineA ] when lineA <> line -> [ RefLine lineA; RefLine line ]
+                | _ -> [ RefLine line ]
+            Some { SketchId = sketchId; Kind = kind; ClickedRefs = nextRefs }
+        | _ -> draft
 
     let addConstraintFromSelection doc targets kind =
         trySelectedSketch doc
         |> Option.bind (fun ctx ->
-            buildConstraint ctx.Sketch ctx.Action.Id kind targets
+            buildConstraint ctx.Sketch ctx.Action.Id kind targets None
             |> Option.map (fun constraint_ ->
                 let nextSketch = { ctx.Sketch with Constraints = ctx.Sketch.Constraints @ [ constraint_ ] }
                 withUpdatedSketch doc ctx.Action.Id nextSketch))
@@ -277,7 +445,7 @@ module SketchAuthoring =
     let placeConstraintFromSelection doc targets placementKind labelPosition =
         trySelectedSketch doc
         |> Option.bind (fun ctx ->
-            buildConstraint ctx.Sketch ctx.Action.Id placementKind targets
+            buildConstraint ctx.Sketch ctx.Action.Id placementKind targets (Some(labelPosition.X, labelPosition.Y))
             |> Option.map (fun constraint_ ->
                 let withLabel =
                     match constraint_ with
@@ -290,28 +458,69 @@ module SketchAuthoring =
                 let nextSketch = { ctx.Sketch with Constraints = ctx.Sketch.Constraints @ [ withLabel ] }
                 withUpdatedSketch doc ctx.Action.Id nextSketch))
 
-    let availabilityForSelection doc editMode tool placementMode targets =
+    let placePendingConstraint doc pending labelPosition =
+        let withLabel =
+            match pending.Constraint with
+            | Distance(a, b, distance, _) -> Distance(a, b, distance, Some labelPosition)
+            | LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, distance, _) -> LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, distance, Some labelPosition)
+            | CircleDiameter(circle, center, diameter, _) -> CircleDiameter(circle, center, diameter, Some labelPosition)
+            | Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, _) ->
+                Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, Some labelPosition)
+            | other -> other
+
+        trySelectedSketch doc
+        |> Option.filter (fun ctx -> ctx.Action.Id = pending.SketchId)
+        |> Option.map (fun ctx ->
+            let nextSketch = { ctx.Sketch with Constraints = ctx.Sketch.Constraints @ [ withLabel ] }
+            withUpdatedSketch doc ctx.Action.Id nextSketch)
+
+    let availabilityForSelection doc editMode tool placementMode targets placementCursor placementDraft hoveredTarget =
         match trySelectedSketch doc with
         | None ->
             { emptyUiState with
                 EditMode = false
                 Tool = "none"
                 ToolPoints = []
-                ConstraintPlacementMode = None }
+                ConstraintPlacementMode = None
+                ConstraintPlacementDraft = None
+                PendingConstraintPlacement = None }
         | Some ctx ->
-            let can kind = buildConstraint ctx.Sketch ctx.Action.Id kind targets |> Option.isSome
+            let can kind = buildConstraint ctx.Sketch ctx.Action.Id kind targets None |> Option.isSome
+            let activeDraft =
+                if editMode then
+                    placementDraft |> Option.filter (fun d -> d.SketchId = ctx.Action.Id && placementMode = Some d.Kind)
+                else
+                    None
+            let hoveredRef = hoveredTarget |> Option.bind (placementRefFromTarget ctx.Action.Id)
+            let pendingConstraintPlacement =
+                if editMode then
+                    match activeDraft with
+                    | Some draft ->
+                        pendingConstraintForDraft ctx.Sketch draft hoveredRef placementCursor
+                        |> Option.map (fun constraint_ -> { SketchId = ctx.Action.Id; Constraint = constraint_ })
+                    | None ->
+                        placementMode
+                        |> Option.bind (fun kind ->
+                            buildConstraint ctx.Sketch ctx.Action.Id kind targets placementCursor
+                            |> Option.map (fun constraint_ ->
+                                { SketchId = ctx.Action.Id
+                                  Constraint = constraint_ }))
+                else
+                    None
             { EditMode = editMode
               Tool = if editMode then tool else "none"
               ToolPoints = []
               EditingDimension = None
               ConstraintPlacementMode = if editMode then placementMode else None
+              ConstraintPlacementDraft = activeDraft
+              PendingConstraintPlacement = pendingConstraintPlacement
               ConstraintAvailability =
                 [ "Coincident"; "Horizontal"; "Vertical"; "Midpoint"; "Parallel"; "Perpendicular"; "Equal"; "Tangent"; "Concentric"; "Fixed" ]
                 |> List.map (fun kind -> kind, can kind)
                 |> Map.ofList
               DimensionPlacementAvailability =
                 [ "distance"; "angle" ]
-                |> List.map (fun kind -> kind, can kind)
+                |> List.map (fun kind -> kind, editMode)
                 |> Map.ofList }
 
     let requiredToolPoints tool =

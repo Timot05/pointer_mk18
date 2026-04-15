@@ -26,6 +26,7 @@ export type SketchConstraint =
   | { case: "Vertical"; a: string; b: string }
   | { case: "Distance"; a: string; b: string; distance: number }
   | { case: "CircleDiameter"; circle: string; center: string; diameter: number }
+  | { case: "LineDistance"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; distance: number }
   | { case: "Angle"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; angleDegrees: number; aReverse: boolean; bReverse: boolean; ccwFromAToB: boolean }
   | { case: string; [key: string]: unknown };
 
@@ -107,6 +108,8 @@ export interface SketchUiState {
   toolPoints: Array<{ x: number; y: number }>;
   editingDimension: { sketchId: string; constraintIndex: number; key: string; value: number } | null;
   constraintPlacementMode: string | null;
+  constraintPlacementDraft: { sketchId: string; kind: string; clickedRefs: Array<{ case: string; [key: string]: unknown }> } | null;
+  pendingConstraintPlacement: { sketchId: string; constraint: SketchConstraint } | null;
   constraintAvailability: Record<string, boolean>;
   dimensionPlacementAvailability: Record<string, boolean>;
 }
@@ -137,10 +140,13 @@ export function getViewerState(): Promise<ViewerState> {
   return request("/viewer/state");
 }
 
-export function postViewerHover(candidates: Array<{ pickId: number; score: number }>): Promise<ViewerState> {
+export function postViewerHover(
+  candidates: Array<{ pickId: number; score: number }>,
+  placementCursor?: { sketchId: string; x: number; y: number } | null,
+): Promise<ViewerState> {
   return request("/viewer/hover", {
     method: "POST",
-    body: JSON.stringify({ candidates }),
+    body: JSON.stringify({ candidates, placementCursor: placementCursor ?? undefined }),
   });
 }
 
@@ -196,6 +202,12 @@ export function postStartEditingDimension(constraintIndex: number): Promise<View
   return request("/viewer/dimension-edit/start", {
     method: "POST",
     body: JSON.stringify({ constraintIndex }),
+  });
+}
+
+export function postViewerDimensionClickTarget(): Promise<ViewerState> {
+  return request("/viewer/dimension-click-target", {
+    method: "POST",
   });
 }
 

@@ -131,6 +131,8 @@ export interface SketchUiState {
   toolPoints: LabelPos[];
   editingDimension: { sketchId: string; constraintIndex: number; key: string; value: number } | null;
   constraintPlacementMode: string | null;
+  constraintPlacementDraft: { sketchId: string; kind: string; clickedRefs: Array<{ case: string; [key: string]: unknown }> } | null;
+  pendingConstraintPlacement: { sketchId: string; constraint: SketchConstraint } | null;
   constraintAvailability: Record<string, boolean>;
   dimensionPlacementAvailability: Record<string, boolean>;
 }

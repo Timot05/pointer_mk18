@@ -10,6 +10,7 @@
     <Compile Include="Tests.fs" />
     <Compile Include="SketchLoopsTests.fs" />
     <Compile Include="CompileTests.fs" />
+    <Compile Include="SketchAuthoringTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

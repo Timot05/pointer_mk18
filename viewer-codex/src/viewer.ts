@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postCancelEditingDimension, postCommitEditingDimension, postStartEditingDimension, postViewerHover, postViewerPick, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postCancelEditingDimension, postCommitEditingDimension, postStartEditingDimension, postViewerDimensionClickTarget, postViewerHover, postViewerPick, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -761,7 +761,7 @@ export class ViewerApp {
       return;
     }
     const candidates = await this.pickAcrossSketches();
-    this.state = await postViewerHover(toPickRequest(candidates));
+    this.state = await postViewerHover(toPickRequest(candidates), this.currentPlacementCursor());
     this.rebuildRenderData();
     this.queueRender();
     if (event.shiftKey) return;
@@ -852,6 +852,57 @@ export class ViewerApp {
     return buildToolPreviewBuffers(tool, points, cursor, authored.frame);
   }
 
+  private currentConstraintPreview(): { frame: SketchFrame; lineData: Float32Array; labelData: Float32Array } | null {
+    const authored = this.authoringSketch();
+    const pending = this.state?.sketchUi.pendingConstraintPlacement;
+    if (!authored || !pending || pending.sketchId !== authored.model.id) return null;
+    const cursor = pointerToSketchLocal(this.pointer, this.canvas, this.camera, authored.frame);
+    if (!cursor) return null;
+
+    const entityMap = new Map(authored.model.sketch.entities.map((entity) => [entity.id, entity]));
+    const pointMap = new Map<string, Vec2>();
+    const binding = this.solverBindings.get(authored.model.id);
+    const solved = this.solvedSketchParams.get(authored.model.id);
+    const resolveValue = (path: string, fallback: number) =>
+      resolvedSketchValue(binding, solved, this.state!.params, this.slotLookup, authored.model.id, path, fallback);
+
+    for (const entity of authored.model.sketch.entities) {
+      if (entity.case === "REPoint") {
+        pointMap.set(entity.id, [
+          resolveValue(`sketch.entity.${entity.id}.x`, entity.x),
+          resolveValue(`sketch.entity.${entity.id}.y`, entity.y),
+        ]);
+      }
+    }
+
+    const lineVertices: LineVertex[] = [];
+    const labels: ConstraintLabel[] = [];
+    pushConstraintGeometry(
+      lineVertices,
+      [],
+      labels,
+      [],
+      new Map<number, Vec2>(),
+      pointMap,
+      entityMap,
+      resolveValue,
+      () => cursor,
+      pending.constraint,
+      -1,
+      null,
+      null,
+      [],
+      authored.model.id,
+      true,
+    );
+
+    return {
+      frame: authored.frame,
+      lineData: flattenLines(lineVertices),
+      labelData: this.fontMetrics ? buildLabelVertices(labels, this.fontMetrics) : new Float32Array(),
+    };
+  }
+
   private async tryHandleSketchAuthoringClick(): Promise<boolean> {
     if (!this.authoringSketch()) {
       return false;
@@ -863,6 +914,18 @@ export class ViewerApp {
 
     const placement = this.state?.sketchUi.constraintPlacementMode;
     if (placement) {
+      const candidates = await this.pickAcrossSketches();
+      this.state = await postViewerHover(toPickRequest(candidates), this.currentPlacementCursor());
+      const hovered = this.state?.hoveredTarget;
+      if (hovered && hovered.case !== "TargetDimension" && hovered.case !== "TargetLoop" && hovered.case !== "TargetSurface") {
+        this.state = await postViewerDimensionClickTarget();
+        this.rebuildRenderData();
+        this.queueRender();
+        return true;
+      }
+      if (!this.state?.sketchUi.pendingConstraintPlacement) {
+        return false;
+      }
       this.state = await placeViewerConstraint(local[0], local[1]);
       await this.reloadModel(false);
       this.startOptions.onDocumentDirty?.();
@@ -1300,6 +1363,43 @@ export class ViewerApp {
       }
     }
 
+    const constraintPreview = this.currentConstraintPreview();
+    if (constraintPreview) {
+      const frameData = new Float32Array(12);
+      frameData.set(constraintPreview.frame.position, 0);
+      frameData.set(constraintPreview.frame.xAxis, 4);
+      frameData.set(constraintPreview.frame.yAxis, 8);
+      device.queue.writeBuffer(frameBuffer, 0, frameData);
+      pass.setBindGroup(1, frameBindGroup);
+      if (constraintPreview.lineData.length > 0) {
+        const lineBuffer = device.createBuffer({
+          size: constraintPreview.lineData.byteLength,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(lineBuffer, 0, constraintPreview.lineData);
+        pass.setPipeline(linePipeline);
+        pass.setVertexBuffer(0, lineBuffer);
+        pass.draw(constraintPreview.lineData.length / 6);
+      }
+      if (labelPipeline && labelBindGroup && labelUniformBuffer && constraintPreview.labelData.length > 0) {
+        const labelBuffer = device.createBuffer({
+          size: constraintPreview.labelData.byteLength,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(labelBuffer, 0, constraintPreview.labelData);
+        writeLabelUniform(
+          device,
+          labelUniformBuffer,
+          [Math.max(1, this.canvas.clientWidth), Math.max(1, this.canvas.clientHeight)],
+          constraintPreview.frame,
+        );
+        pass.setPipeline(labelPipeline);
+        pass.setBindGroup(1, labelBindGroup);
+        pass.setVertexBuffer(0, labelBuffer);
+        pass.draw(constraintPreview.labelData.length / 10);
+      }
+    }
+
     pass.end();
     device.queue.submit([encoder.finish()]);
     this.syncDimensionEditor();
@@ -1386,7 +1486,7 @@ export class ViewerApp {
         this.state = await postViewerPick(toPickRequest(candidates), intent);
         this.startOptions.onDocumentDirty?.();
       } else {
-        this.state = await postViewerHover(toPickRequest(candidates));
+        this.state = await postViewerHover(toPickRequest(candidates), this.currentPlacementCursor());
       }
       this.rebuildRenderData();
       this.queueRender();
@@ -1500,6 +1600,15 @@ export class ViewerApp {
       }
     }
     return [...hits.values()];
+  }
+
+  private currentPlacementCursor(): { sketchId: string; x: number; y: number } | null {
+    const placement = this.state?.sketchUi.constraintPlacementMode;
+    const authored = this.authoringSketch();
+    if (!placement || !authored) return null;
+    const local = pointerToSketchLocal(this.pointer, this.canvas, this.camera, authored.frame);
+    if (!local) return null;
+    return { sketchId: authored.model.id, x: local[0], y: local[1] };
   }
 
   private async initGpu(): Promise<GpuContext> {
@@ -1943,13 +2052,29 @@ function pushConstraintGeometry(
       const off = scale2(n, Math.abs(offsetAmount) < 0.5 ? 1.8 : offsetAmount);
       const aa = add2(a, off);
       const bb = add2(b, off);
+      const axis = norm2(sub2(bb, aa));
+      const projected = add2(aa, scale2(axis, dot2(sub2(anchor, aa), axis)));
+      const extentA = dot2(sub2(projected, aa), axis);
+      const extentB = dot2(sub2(projected, bb), axis);
       lines.push({ x: a[0], y: a[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
       lines.push({ x: b[0], y: b[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
       lines.push({ x: aa[0], y: aa[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
+      if (extentA < 0) {
+        lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
+      } else if (extentB > 0) {
+        lines.push({ x: bb[0], y: bb[1], color: DIM_COLOR }, { x: projected[0], y: projected[1], color: DIM_COLOR });
+      }
+      lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: anchor[0], y: anchor[1], color: DIM_COLOR });
       if (activeDimension) {
         highlightLines.push({ x: a[0], y: a[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
         highlightLines.push({ x: b[0], y: b[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
         highlightLines.push({ x: aa[0], y: aa[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
+        if (extentA < 0) {
+          highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
+        } else if (extentB > 0) {
+          highlightLines.push({ x: bb[0], y: bb[1], color: DIM_HOVER }, { x: projected[0], y: projected[1], color: DIM_HOVER });
+        }
+        highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: anchor[0], y: anchor[1], color: DIM_HOVER });
       }
       labels.push({
         text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)),
@@ -1958,6 +2083,43 @@ function pushConstraintGeometry(
         hovered: false,
       });
       if (activeDimension) highlightLabels.push({ text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)), anchor, pickId, hovered: true });
+      return;
+    }
+    case "LineDistance": {
+      if (!showDimensions) return;
+      const aStart = pointMap.get(constraint.aStart);
+      const aEnd = pointMap.get(constraint.aEnd);
+      const bStart = pointMap.get(constraint.bStart);
+      const bEnd = pointMap.get(constraint.bEnd);
+      if (!aStart || !aEnd || !bStart || !bEnd) return;
+      const midA = scale2(add2(aStart, aEnd), 0.5);
+      const midB = scale2(add2(bStart, bEnd), 0.5);
+      const fallbackAnchor = scale2(add2(midA, midB), 0.5);
+      const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
+      dimensionAnchors.set(constraintIndex, anchor);
+      const pa = projectPointToInfiniteLine(anchor, aStart, aEnd);
+      const pb = projectPointToInfiniteLine(anchor, bStart, bEnd);
+      const mid = scale2(add2(pa, pb), 0.5);
+      lines.push({ x: pa[0], y: pa[1], color: DIM_COLOR }, { x: pb[0], y: pb[1], color: DIM_COLOR });
+      lines.push({ x: mid[0], y: mid[1], color: DIM_COLOR }, { x: anchor[0], y: anchor[1], color: DIM_COLOR });
+      if (activeDimension) {
+        highlightLines.push({ x: pa[0], y: pa[1], color: DIM_HOVER }, { x: pb[0], y: pb[1], color: DIM_HOVER });
+        highlightLines.push({ x: mid[0], y: mid[1], color: DIM_HOVER }, { x: anchor[0], y: anchor[1], color: DIM_HOVER });
+      }
+      labels.push({
+        text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)),
+        anchor,
+        pickId,
+        hovered: false,
+      });
+      if (activeDimension) {
+        highlightLabels.push({
+          text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)),
+          anchor,
+          pickId,
+          hovered: true,
+        });
+      }
       return;
     }
     case "CircleDiameter": {
@@ -1997,18 +2159,34 @@ function pushConstraintGeometry(
       const b0 = pointMap.get(constraint.bStart);
       const b1 = pointMap.get(constraint.bEnd);
       if (!a0 || !a1 || !b0 || !b1) return;
-      const vertex = a0;
-      const ra = norm2(sub2(a1, a0));
-      const rb = norm2(sub2(b1, b0));
-      const fallback = len2(norm2(add2(ra, rb))) < 1e-6 ? [vertex[0] + 2.6, vertex[1] + 2.6] : add2(vertex, scale2(norm2(add2(ra, rb)), 4.4));
+      const resolved = resolveAngleGeometry(a0, a1, b0, b1, constraint.aReverse, constraint.bReverse, constraint.ccwFromAToB);
+      if (!resolved) return;
+      const { vertex, rayA, rayB, midDir } = resolved;
+      const fallback = add2(vertex, scale2(midDir, 4.4));
       const anchor = resolveLabelAnchor(constraintIndex, fallback);
       dimensionAnchors.set(constraintIndex, anchor);
-      const r = Math.max(2.4, len2(sub2(anchor, vertex)) - 0.8);
-      lines.push({ x: vertex[0], y: vertex[1], color: DIM_COLOR }, { x: vertex[0] + ra[0] * r, y: vertex[1] + ra[1] * r, color: DIM_COLOR });
-      lines.push({ x: vertex[0], y: vertex[1], color: DIM_COLOR }, { x: vertex[0] + rb[0] * r, y: vertex[1] + rb[1] * r, color: DIM_COLOR });
+      const anchorVec = sub2(anchor, vertex);
+      const anchorRadius = len2(anchorVec);
+      const anchorAngle = Math.atan2(anchorVec[1], anchorVec[0]);
+      const startAngle = Math.atan2(rayA[1], rayA[0]);
+      const endAngle = Math.atan2(rayB[1], rayB[0]);
+      const arcSweep = Math.abs(deltaAlongSweep(startAngle, endAngle, constraint.ccwFromAToB));
+      const anchorSweep = Math.abs(deltaAlongSweep(startAngle, anchorAngle, constraint.ccwFromAToB));
+      const anchorInsideSector = anchorSweep <= arcSweep + 1e-6;
+      const r = anchorInsideSector ? anchorRadius - 0.8 : anchorRadius;
+      if (r <= 1e-6) return;
+      const extendAfterEnd = Math.abs(deltaAlongSweep(endAngle, anchorAngle, constraint.ccwFromAToB));
+      const extendBeforeStart = Math.abs(deltaAlongSweep(anchorAngle, startAngle, constraint.ccwFromAToB));
+      const extendStart = !anchorInsideSector && extendBeforeStart < extendAfterEnd;
+      const arcStartAngle = extendStart ? anchorAngle : startAngle;
+      const arcEndAngle = !anchorInsideSector && !extendStart ? anchorAngle : endAngle;
+      lines.push({ x: vertex[0], y: vertex[1], color: DIM_COLOR }, { x: vertex[0] + rayA[0] * r, y: vertex[1] + rayA[1] * r, color: DIM_COLOR });
+      lines.push({ x: vertex[0], y: vertex[1], color: DIM_COLOR }, { x: vertex[0] + rayB[0] * r, y: vertex[1] + rayB[1] * r, color: DIM_COLOR });
+      pushAngleArc(lines, vertex, rayA, rayB, r, constraint.ccwFromAToB, DIM_COLOR, arcStartAngle, arcEndAngle);
       if (activeDimension) {
-        highlightLines.push({ x: vertex[0], y: vertex[1], color: DIM_HOVER }, { x: vertex[0] + ra[0] * r, y: vertex[1] + ra[1] * r, color: DIM_HOVER });
-        highlightLines.push({ x: vertex[0], y: vertex[1], color: DIM_HOVER }, { x: vertex[0] + rb[0] * r, y: vertex[1] + rb[1] * r, color: DIM_HOVER });
+        highlightLines.push({ x: vertex[0], y: vertex[1], color: DIM_HOVER }, { x: vertex[0] + rayA[0] * r, y: vertex[1] + rayA[1] * r, color: DIM_HOVER });
+        highlightLines.push({ x: vertex[0], y: vertex[1], color: DIM_HOVER }, { x: vertex[0] + rayB[0] * r, y: vertex[1] + rayB[1] * r, color: DIM_HOVER });
+        pushAngleArc(highlightLines, vertex, rayA, rayB, r, constraint.ccwFromAToB, DIM_HOVER, arcStartAngle, arcEndAngle);
       }
       labels.push({
         text: `${formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.angleDegrees`, constraint.angleDegrees))}°`,
@@ -2048,6 +2226,88 @@ function computeBounds(
   }
   if (!Number.isFinite(min[0])) return [[-10, -10], [10, 10]];
   return [min, max];
+}
+
+function projectPointToInfiniteLine(point: Vec2, a: Vec2, b: Vec2): Vec2 {
+  const ab = sub2(b, a);
+  const denom = dot2(ab, ab);
+  if (denom < 1e-9) return a;
+  const t = dot2(sub2(point, a), ab) / denom;
+  return add2(a, scale2(ab, t));
+}
+
+function resolveAngleGeometry(
+  aStart: Vec2,
+  aEnd: Vec2,
+  bStart: Vec2,
+  bEnd: Vec2,
+  aReverse: boolean,
+  bReverse: boolean,
+  ccw: boolean,
+): { vertex: Vec2; rayA: Vec2; rayB: Vec2; midDir: Vec2 } | null {
+  const aVertex = aReverse ? aEnd : aStart;
+  const bVertex = bReverse ? bEnd : bStart;
+  const rayA = norm2(aReverse ? sub2(aStart, aEnd) : sub2(aEnd, aStart));
+  const rayB = norm2(bReverse ? sub2(bStart, bEnd) : sub2(bEnd, bStart));
+  if (len2(rayA) < 1e-6 || len2(rayB) < 1e-6) return null;
+  const vertex = len2(sub2(aVertex, bVertex)) < 1e-4 ? aVertex : lineIntersection(aVertex, rayA, bVertex, rayB) ?? aVertex;
+  const angleA = Math.atan2(rayA[1], rayA[0]);
+  const angleB = Math.atan2(rayB[1], rayB[0]);
+  let sweep = angleB - angleA;
+  if (ccw) {
+    while (sweep < 0) sweep += Math.PI * 2;
+  } else {
+    while (sweep > 0) sweep -= Math.PI * 2;
+  }
+  const midAngle = angleA + sweep * 0.5;
+  return { vertex, rayA, rayB, midDir: [Math.cos(midAngle), Math.sin(midAngle)] };
+}
+
+function lineIntersection(originA: Vec2, dirA: Vec2, originB: Vec2, dirB: Vec2): Vec2 | null {
+  const denom = dirA[0] * dirB[1] - dirA[1] * dirB[0];
+  if (Math.abs(denom) < 1e-6) return null;
+  const delta = sub2(originB, originA);
+  const t = (delta[0] * dirB[1] - delta[1] * dirB[0]) / denom;
+  return add2(originA, scale2(dirA, t));
+}
+
+function normalizedSweep(startAngle: number, endAngle: number, ccw: boolean): number {
+  let sweep = endAngle - startAngle;
+  if (ccw) {
+    while (sweep < 0) sweep += Math.PI * 2;
+  } else {
+    while (sweep > 0) sweep -= Math.PI * 2;
+  }
+  return sweep;
+}
+
+function deltaAlongSweep(startAngle: number, targetAngle: number, ccw: boolean): number {
+  return normalizedSweep(startAngle, targetAngle, ccw);
+}
+
+function pushAngleArc(
+  lines: LineVertex[],
+  vertex: Vec2,
+  rayA: Vec2,
+  rayB: Vec2,
+  radius: number,
+  ccw: boolean,
+  color: readonly number[],
+  startOverrideAngle?: number,
+  endOverrideAngle?: number,
+): void {
+  const baseStartAngle = startOverrideAngle ?? Math.atan2(rayA[1], rayA[0]);
+  const baseEndAngle = endOverrideAngle ?? Math.atan2(rayB[1], rayB[0]);
+  const sweep = normalizedSweep(baseStartAngle, baseEndAngle, ccw);
+  const segments = Math.max(12, Math.ceil(Math.abs(sweep) * 12 / Math.PI));
+  let prev: Vec2 = [vertex[0] + Math.cos(baseStartAngle) * radius, vertex[1] + Math.sin(baseStartAngle) * radius];
+  for (let i = 1; i <= segments; i++) {
+    const t = i / segments;
+    const angle = baseStartAngle + sweep * t;
+    const next: Vec2 = [vertex[0] + Math.cos(angle) * radius, vertex[1] + Math.sin(angle) * radius];
+    lines.push({ x: prev[0], y: prev[1], color }, { x: next[0], y: next[1], color });
+    prev = next;
+  }
 }
 
 function pushGrid(lines: LineVertex[], min: Vec2, max: Vec2): void {

@@ -30,10 +30,25 @@ module Program =
     let mutable sketchToolPoints : LabelPos list = []
     let mutable editingDimension : EditingDimension option = None
     let mutable constraintPlacementMode : string option = None
+    let mutable constraintPlacementDraft : ConstraintPlacementDraft option = None
+    let mutable constraintPlacementCursor : (string * LabelPos) option = None
+
+    let effectivePlacementTargets () =
+        match hoveredTarget with
+        | Some target when selectedTargets |> List.contains target |> not -> selectedTargets @ [ target ]
+        | _ -> selectedTargets
 
     let sketchUiState () =
         let baseState =
-            SketchAuthoring.availabilityForSelection doc sketchEditMode sketchTool constraintPlacementMode selectedTargets
+            let placementCursor =
+                match constraintPlacementCursor, doc.SelectedId with
+                | Some(sketchId, position), Some selectedId when sketchEditMode && selectedId = sketchId -> Some(position.X, position.Y)
+                | _ -> None
+            let placementTargets =
+                match constraintPlacementMode with
+                | Some _ -> effectivePlacementTargets ()
+                | None -> selectedTargets
+            SketchAuthoring.availabilityForSelection doc sketchEditMode sketchTool constraintPlacementMode placementTargets placementCursor constraintPlacementDraft hoveredTarget
         { baseState with
             ToolPoints = if baseState.Tool = "none" then [] else sketchToolPoints
             EditingDimension = editingDimension }
@@ -50,6 +65,14 @@ module Program =
                 | Some selected when sketchEditMode && selected.Action.Id = current.SketchId ->
                     SketchAuthoring.tryEditableDimension current.SketchId selected.Sketch current.ConstraintIndex
                 | _ -> None)
+        constraintPlacementCursor <-
+            match constraintPlacementMode, constraintPlacementCursor, doc.SelectedId with
+            | Some _, Some(sketchId, pos), Some selectedId when sketchEditMode && sketchTool = "none" && selectedId = sketchId -> Some(sketchId, pos)
+            | _ -> None
+        constraintPlacementDraft <-
+            match constraintPlacementMode, constraintPlacementDraft, doc.SelectedId with
+            | Some kind, Some draft, Some selectedId when sketchEditMode && sketchTool = "none" && draft.SketchId = selectedId && draft.Kind = kind -> Some draft
+            | _ -> None
         constraintPlacementMode <- next.ConstraintPlacementMode
 
     let recompile () =
@@ -368,6 +391,17 @@ module Program =
             Func<HttpContext, IResult>(fun ctx ->
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
                 let candidates = readPickCandidates body
+                let mutable placementCursorEl = Unchecked.defaultof<JsonElement>
+                if body.TryGetProperty("placementCursor", &placementCursorEl) then
+                    let mutable sketchIdEl = Unchecked.defaultof<JsonElement>
+                    let mutable xEl = Unchecked.defaultof<JsonElement>
+                    let mutable yEl = Unchecked.defaultof<JsonElement>
+                    if placementCursorEl.TryGetProperty("sketchId", &sketchIdEl)
+                        && placementCursorEl.TryGetProperty("x", &xEl)
+                        && placementCursorEl.TryGetProperty("y", &yEl) then
+                        constraintPlacementCursor <- Some(sketchIdEl.GetString(), { X = xEl.GetDouble(); Y = yEl.GetDouble() })
+                else
+                    constraintPlacementCursor <- None
                 hoveredTarget <-
                     Pickable.reduceCandidates compiled.Pickables candidates
                     |> Option.map Pickable.selectionTarget
@@ -407,6 +441,8 @@ module Program =
                     sketchToolPoints <- []
                     editingDimension <- None
                     constraintPlacementMode <- None
+                    constraintPlacementDraft <- None
+                    constraintPlacementCursor <- None
                 normalizeSketchUiState ()
                 withViewerInvalidation "state" (json ()))) |> ignore
 
@@ -419,6 +455,8 @@ module Program =
                 sketchToolPoints <- []
                 editingDimension <- None
                 constraintPlacementMode <- None
+                constraintPlacementDraft <- None
+                constraintPlacementCursor <- None
                 normalizeSketchUiState ()
                 withViewerInvalidation "state" (json ()))) |> ignore
 
@@ -430,10 +468,12 @@ module Program =
                 sketchTool <- "none"
                 sketchToolPoints <- []
                 editingDimension <- None
+                constraintPlacementDraft <- None
                 constraintPlacementMode <-
                     match constraintPlacementMode with
                     | Some active when active = kind -> None
                     | _ -> Some kind
+                constraintPlacementCursor <- None
                 normalizeSketchUiState ()
                 withViewerInvalidation "state" (json ()))) |> ignore
 
@@ -448,6 +488,7 @@ module Program =
                     selectedTargets <- []
                     sketchToolPoints <- []
                     editingDimension <- None
+                    constraintPlacementDraft <- None
                     recompile ()
                     withViewerInvalidation "model" (json ())
                 | None ->
@@ -462,6 +503,7 @@ module Program =
                     selectedTargets <- []
                     sketchToolPoints <- []
                     editingDimension <- None
+                    constraintPlacementDraft <- None
                     recompile ()
                     withViewerInvalidation "model" (json ())
                 | None ->
@@ -479,7 +521,9 @@ module Program =
                         None
                 sketchTool <- "none"
                 sketchToolPoints <- []
+                constraintPlacementDraft <- None
                 constraintPlacementMode <- None
+                constraintPlacementCursor <- None
                 normalizeSketchUiState ()
                 withViewerInvalidation "state" (json ()))) |> ignore
 
@@ -495,13 +539,17 @@ module Program =
                         None
                 sketchTool <- "none"
                 sketchToolPoints <- []
+                constraintPlacementDraft <- None
                 constraintPlacementMode <- None
+                constraintPlacementCursor <- None
                 normalizeSketchUiState ()
                 viewerStateResult ())) |> ignore
 
         app.MapPost("/api/viewer/dimension-edit/cancel",
             Func<IResult>(fun () ->
                 editingDimension <- None
+                constraintPlacementDraft <- None
+                constraintPlacementCursor <- None
                 normalizeSketchUiState ()
                 viewerStateResult ())) |> ignore
 
@@ -513,6 +561,8 @@ module Program =
                 | Some current ->
                     let key = $"sketch.constraint.{current.ConstraintIndex}.{current.Key}"
                     editingDimension <- None
+                    constraintPlacementDraft <- None
+                    constraintPlacementCursor <- None
                     doc <- Document.patchParam current.SketchId key value doc
                     recompile ()
                     viewerStateResult ()
@@ -522,6 +572,8 @@ module Program =
         app.MapPost("/api/sketch-ui/dimension-edit/cancel",
             Func<IResult>(fun () ->
                 editingDimension <- None
+                constraintPlacementDraft <- None
+                constraintPlacementCursor <- None
                 normalizeSketchUiState ()
                 withViewerInvalidation "state" (json ()))) |> ignore
 
@@ -534,9 +586,21 @@ module Program =
                     let key = $"sketch.constraint.{current.ConstraintIndex}.{current.Key}"
                     let invalidation = viewerInvalidationForParam current.SketchId key
                     editingDimension <- None
+                    constraintPlacementDraft <- None
+                    constraintPlacementCursor <- None
                     withViewerInvalidation invalidation (mutate (Document.patchParam current.SketchId key value))
                 | None ->
                     withViewerInvalidation "state" (json ()))) |> ignore
+
+        app.MapPost("/api/viewer/dimension-click-target",
+            Func<IResult>(fun () ->
+                match constraintPlacementMode, SketchAuthoring.trySelectedSketch doc with
+                | Some kind, Some selected when sketchEditMode ->
+                    constraintPlacementDraft <-
+                        SketchAuthoring.updatePlacementDraft selected.Action.Id kind hoveredTarget constraintPlacementDraft
+                    viewerStateResult ()
+                | _ ->
+                    viewerStateResult ())) |> ignore
 
         app.MapPut("/api/viewer/sketch",
             Func<HttpContext, IResult>(fun ctx ->
@@ -585,6 +649,8 @@ module Program =
                             hoveredTarget <- None
                             selectedTargets <- []
                             editingDimension <- None
+                            constraintPlacementDraft <- None
+                            constraintPlacementCursor <- None
                             recompile ()
                             viewerStateResult ()
                         | None ->
@@ -600,16 +666,18 @@ module Program =
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
                 let x = body.GetProperty("x").GetDouble()
                 let y = body.GetProperty("y").GetDouble()
-                match constraintPlacementMode with
-                | Some kind ->
-                    match SketchAuthoring.placeConstraintFromSelection doc selectedTargets kind { X = x; Y = y } with
+                match (sketchUiState ()).PendingConstraintPlacement with
+                | Some pending ->
+                    match SketchAuthoring.placePendingConstraint doc pending { X = x; Y = y } with
                     | Some nextDoc ->
                         doc <- nextDoc
                         hoveredTarget <- None
                         selectedTargets <- []
                         sketchToolPoints <- []
                         editingDimension <- None
+                        constraintPlacementDraft <- None
                         constraintPlacementMode <- None
+                        constraintPlacementCursor <- None
                         recompile ()
                         viewerStateResult ()
                     | None ->

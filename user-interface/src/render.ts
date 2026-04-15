@@ -4,7 +4,7 @@
 
 import type { Document, Action, ActionKind, ActionError, SketchConstraint } from "./api";
 import { renderIcon, renderIconForKind } from "./icons";
-import { el, setupDraggable } from "./dom";
+import { el, kbdHint, setupDraggable } from "./dom";
 
 // ── Kind helpers ──────────────────────────────────────────────────────
 
@@ -106,6 +106,9 @@ export type OnParamChange = (actionId: string, key: string, value: number | stri
 export type OnParamRapid = (actionId: string, key: string, value: number | string | boolean) => void;
 export type OnAddAction = (kindCase: string) => void;
 export type OnOpenPalette = () => void;
+export type OnSaveDocument = () => void;
+export type OnLoadDocument = (file: File) => void;
+export type OnClearDocument = () => void;
 export type OnReorder = (ids: string[]) => void;
 export type OnToggleDisplay = (id: string) => void;
 export type OnDisplayChange = (id: string, key: string, value: number | number[]) => void;
@@ -124,6 +127,9 @@ export interface RenderCallbacks {
   onParamRapid: OnParamRapid;
   onAddAction: OnAddAction;
   onOpenPalette: OnOpenPalette;
+  onSaveDocument: OnSaveDocument;
+  onLoadDocument: OnLoadDocument;
+  onClearDocument: OnClearDocument;
   onReorder: OnReorder;
   onToggleDisplay: OnToggleDisplay;
   onDisplayChange: OnDisplayChange;
@@ -169,6 +175,66 @@ export function render(root: HTMLElement, doc: Document, cb: RenderCallbacks, op
   // ── Top bar
   const topbar = el("div", "topbar");
   topbar.appendChild(el("span", "topbar-logo", "pointer mk18"));
+  const fileMenu = el("div", "topbar-menu");
+  const fileBtn = el("button", "topbar-button", "File");
+  const fileDropdown = el("div", "topbar-dropdown");
+  fileDropdown.style.display = "none";
+  const fileInput = el("input", "") as HTMLInputElement;
+  fileInput.id = "topbar-file-input";
+  fileInput.type = "file";
+  fileInput.accept = "application/json,.json";
+  fileInput.style.display = "none";
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    fileDropdown.style.display = "none";
+    cb.onLoadDocument(file);
+    fileInput.value = "";
+  });
+
+  const modKey = navigator.platform.toLowerCase().includes("mac") ? "\u2318" : "Ctrl";
+
+  const makeDropdownItem = (label: string, shortcut?: string): HTMLButtonElement => {
+    const btn = el("button", "topbar-dropdown-item") as HTMLButtonElement;
+    btn.appendChild(el("span", "", label));
+    if (shortcut) btn.appendChild(kbdHint(shortcut));
+    return btn;
+  };
+
+  const saveBtn = makeDropdownItem("Save", `${modKey}S`);
+  saveBtn.addEventListener("click", () => {
+    fileDropdown.style.display = "none";
+    cb.onSaveDocument();
+  });
+
+  const loadBtn = makeDropdownItem("Load", `${modKey}O`);
+  loadBtn.addEventListener("click", () => {
+    fileDropdown.style.display = "none";
+    fileInput.click();
+  });
+
+  const clearBtn = makeDropdownItem("Clear");
+  clearBtn.addEventListener("click", () => {
+    fileDropdown.style.display = "none";
+    cb.onClearDocument();
+  });
+
+  fileBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    fileDropdown.style.display = fileDropdown.style.display === "none" ? "flex" : "none";
+  });
+
+  document.addEventListener("click", () => {
+    fileDropdown.style.display = "none";
+  });
+
+  fileDropdown.appendChild(saveBtn);
+  fileDropdown.appendChild(loadBtn);
+  fileDropdown.appendChild(clearBtn);
+  fileMenu.appendChild(fileBtn);
+  fileMenu.appendChild(fileDropdown);
+  fileMenu.appendChild(fileInput);
+  topbar.appendChild(fileMenu);
   topbar.appendChild(el("span", "topbar-spacer"));
   root.appendChild(topbar);
 

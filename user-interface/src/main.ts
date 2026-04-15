@@ -1,4 +1,4 @@
-import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, toggleDisplay, patchDisplay, toggleFieldSlice, patchFieldSlice, addAction, deleteCurrentSelection, reorderActions, toggleSketchEdit, setSketchTool, toggleConstraintPlacement, addConstraintFromSelection, deleteSketchConstraint, type Action, type Document, type ActionKind } from "./api";
+import { getDocument, exportModel, importModel, clearDocumentModel, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, toggleDisplay, patchDisplay, toggleFieldSlice, patchFieldSlice, addAction, deleteCurrentSelection, reorderActions, toggleSketchEdit, setSketchTool, toggleConstraintPlacement, addConstraintFromSelection, deleteSketchConstraint, type Action, type Document, type ActionKind } from "./api";
 import { render, type RenderCallbacks } from "./render";
 import * as palette from "./command-palette";
 
@@ -93,6 +93,35 @@ function openPalette() {
   }
 }
 
+async function saveDocumentModel(): Promise<void> {
+  const model = await exportModel();
+  const baseName =
+    (model.name ?? "").trim().toLowerCase() === "untitled" || !(model.name ?? "").trim()
+      ? "pointer-model"
+      : model.name.trim().replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "");
+  const blob = new Blob([JSON.stringify(model, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${baseName || "pointer-model"}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadDocumentModel(file: File): Promise<void> {
+  const text = await file.text();
+  const model = JSON.parse(text);
+  const result = await importModel(model);
+  refresh(result.document);
+  emitViewerInvalidation(result.viewerInvalidation);
+}
+
+async function resetDocumentModel(): Promise<void> {
+  const result = await clearDocumentModel();
+  refresh(result.document);
+  emitViewerInvalidation(result.viewerInvalidation);
+}
+
 const callbacks: RenderCallbacks = {
   onSelect: async (id) => {
     refresh(await selectAction(id));
@@ -113,6 +142,18 @@ const callbacks: RenderCallbacks = {
   },
 
   onOpenPalette: openPalette,
+
+  onSaveDocument: () => {
+    void saveDocumentModel();
+  },
+
+  onLoadDocument: (file) => {
+    void loadDocumentModel(file);
+  },
+
+  onClearDocument: () => {
+    void resetDocumentModel();
+  },
 
   onReorder: async (ids) => {
     refresh(await reorderActions(ids));
@@ -255,10 +296,23 @@ async function handleSketchShortcut(e: KeyboardEvent): Promise<boolean> {
 }
 
 document.addEventListener("keydown", async (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-    e.preventDefault();
-    openPalette();
-    return;
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+    const key = e.key.toLowerCase();
+    if (key === "k") {
+      e.preventDefault();
+      openPalette();
+      return;
+    }
+    if (key === "s") {
+      e.preventDefault();
+      void saveDocumentModel();
+      return;
+    }
+    if (key === "o") {
+      e.preventDefault();
+      document.getElementById("topbar-file-input")?.click?.();
+      return;
+    }
   }
 
   if (palette.isOpen()) return;

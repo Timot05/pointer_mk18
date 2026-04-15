@@ -44,6 +44,41 @@ export function zoom(camera: CameraState, deltaY: number): void {
   camera.distance = clamp(next, 6, 400);
 }
 
+function rayPlaneHit(
+  ray: { origin: Vec3; direction: Vec3 },
+  planeOrigin: Vec3,
+  planeNormal: Vec3,
+): Vec3 | null {
+  const denom = dot3(ray.direction, planeNormal);
+  if (Math.abs(denom) < 1e-6) return null;
+  const t = dot3(sub3(planeOrigin, ray.origin), planeNormal) / denom;
+  if (t <= 0) return null;
+  return add3(ray.origin, scale3(ray.direction, t));
+}
+
+export function zoomTowardsPointer(
+  camera: CameraState,
+  width: number,
+  height: number,
+  x: number,
+  y: number,
+  deltaY: number,
+): void {
+  const eyeBefore = cameraEye(camera);
+  const { forward: forwardBefore } = viewBasis(camera);
+  const targetBefore: Vec3 = [...camera.target];
+  const rayBefore = screenToRay(width, height, camera, x, y);
+  const hitBefore = rayPlaneHit(rayBefore, targetBefore, forwardBefore);
+
+  zoom(camera, deltaY);
+
+  if (!hitBefore) return;
+  const rayAfter = screenToRay(width, height, camera, x, y);
+  const hitAfter = rayPlaneHit(rayAfter, targetBefore, forwardBefore);
+  if (!hitAfter) return;
+  camera.target = add3(camera.target, sub3(hitBefore, hitAfter));
+}
+
 export function screenToRay(
   width: number,
   height: number,

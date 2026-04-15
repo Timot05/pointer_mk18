@@ -395,3 +395,14 @@ module Document =
                 Visible = true
                 Display = None
                 FieldSlice = None } ] }
+
+    let emptyDocument () : Document =
+        { Name = "untitled"
+          SelectedId = Some "origin"
+          Actions =
+            [ { Id = "origin"
+                Name = Some "origin"
+                Kind = Origin
+                Visible = true
+                Display = None
+                FieldSlice = None } ] }

@@ -144,6 +144,22 @@ let ``Move with Field child produces Field`` () =
     Assert.Equal(("s", FieldType.Field), inputOf "m" "child" typed)
     Assert.Equal(("o", FieldType.Frame), inputOf "m" "frame" typed)
 
+[<Fact>]
+let ``Clearing a document leaves only the origin action`` () =
+    let cleared = Document.emptyDocument ()
+
+    Assert.Equal("untitled", cleared.Name)
+    Assert.Equal(Some "origin", cleared.SelectedId)
+    Assert.Single(cleared.Actions) |> ignore
+    match cleared.Actions with
+    | [ origin ] ->
+        Assert.Equal("origin", origin.Id)
+        match origin.Kind with
+        | Origin -> ()
+        | other -> failwithf "Expected Origin action, got %A" other
+    | other ->
+        failwithf "Expected exactly one action after clear, got %A" other
+
 // ── Type converters ──────────────────────────────────────────────────────
 
 [<Fact>]

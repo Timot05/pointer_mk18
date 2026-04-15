@@ -116,6 +116,11 @@ export interface Document {
   errors: ActionError[];
 }
 
+export interface SerializedModel {
+  name: string;
+  actions: Action[];
+}
+
 export type SelectionTarget =
   | { case: "TargetPoint"; sketchId: string; entityId: string }
   | { case: "TargetLine"; sketchId: string; entityId: string }
@@ -168,6 +173,25 @@ async function requestDocumentMutation(url: string, opts?: RequestInit): Promise
 
 export async function getDocument(): Promise<Document> {
   return request("/document");
+}
+
+export async function exportModel(): Promise<SerializedModel> {
+  const res = await fetch(BASE + "/document/model");
+  if (!res.ok) throw new Error(`GET /document/model: ${res.status}`);
+  return res.json();
+}
+
+export async function importModel(model: SerializedModel): Promise<DocumentMutation> {
+  return requestDocumentMutation("/document/model", {
+    method: "PUT",
+    body: JSON.stringify(model),
+  });
+}
+
+export async function clearDocumentModel(): Promise<DocumentMutation> {
+  return requestDocumentMutation("/editor/clear-model", {
+    method: "POST",
+  });
 }
 
 export async function selectAction(id: string): Promise<Document> {

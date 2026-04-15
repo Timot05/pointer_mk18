@@ -9,6 +9,10 @@ open Microsoft.Extensions.DependencyInjection
 
 module Program =
 
+    type SerializedModel =
+        { Name: string
+          Actions: DocAction list }
+
     let jsonOpts =
         let o = JsonSerializerOptions(PropertyNamingPolicy = JsonNamingPolicy.CamelCase)
         o.Converters.Add(
@@ -241,6 +245,27 @@ module Program =
         editingDimension <- None
         constraintPlacementDraft <- None
         constraintPlacementCursor <- None
+
+    let serializedModelPayload () =
+        { Name = doc.Name
+          Actions = doc.Actions }
+
+    let loadSerializedModel (model: SerializedModel) =
+        let selectedId =
+            model.Actions
+            |> List.tryFind (fun action -> action.Id = "origin")
+            |> Option.map (fun action -> action.Id)
+            |> Option.orElseWith (fun () -> model.Actions |> List.tryHead |> Option.map (fun action -> action.Id))
+        doc <-
+            { Name = model.Name
+              Actions = model.Actions
+              SelectedId = selectedId }
+        paletteSession <- Palette.empty
+        clearEditorTransientState ()
+        sketchEditMode <- false
+        sketchTool <- "none"
+        constraintPlacementMode <- None
+        recompile ()
 
     let applyDeleteIntent () =
         if sketchEditMode then
@@ -515,6 +540,9 @@ module Program =
         app.UseCors() |> ignore
 
         app.MapGet("/api/document", Func<IResult>(fun () -> json ())) |> ignore
+        app.MapGet("/api/document/model",
+            Func<IResult>(fun () ->
+                Results.Content(JsonSerializer.Serialize(serializedModelPayload (), jsonOpts), "application/json"))) |> ignore
 
         // ── Viewer endpoints ──────────────────────────────────────────
         // /model: topology (rarely changes — structural mutations only).
@@ -649,6 +677,26 @@ module Program =
                 selectedTargets <- []
                 sketchToolPoints <- []
                 mutate (Document.select id))) |> ignore
+
+        app.MapPut("/api/document/model",
+            Func<HttpContext, IResult>(fun ctx ->
+                let model = readBody<SerializedModel> ctx
+                loadSerializedModel model
+                withViewerInvalidation "model" (json ()))) |> ignore
+
+        let clearModelCommand () =
+            let next = Document.emptyDocument ()
+            loadSerializedModel { Name = next.Name; Actions = next.Actions }
+            withViewerInvalidation "model" (json ())
+
+        app.MapPost("/api/editor/clear-model",
+            Func<IResult>(fun () ->
+                clearModelCommand ())) |> ignore
+
+        // Temporary compatibility alias while clients/backend are restarted independently.
+        app.MapPost("/api/document/model/clear",
+            Func<IResult>(fun () ->
+                clearModelCommand ())) |> ignore
 
         app.MapPost("/api/sketch-ui/edit/toggle",
             Func<IResult>(fun () ->

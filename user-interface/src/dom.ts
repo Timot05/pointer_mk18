@@ -9,6 +9,12 @@ export function el(tag: string, className: string, text?: string): HTMLElement {
   return e;
 }
 
+export function kbdHint(keys: string, tooltip?: string): HTMLElement {
+  const hint = el("kbd", "kbd-hint", keys);
+  if (tooltip) hint.title = tooltip;
+  return hint;
+}
+
 export function setupDraggable(
   elem: HTMLElement,
   initial: number,

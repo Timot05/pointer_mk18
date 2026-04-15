@@ -1,6 +1,6 @@
 import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postCancelEditingDimension, postCommitEditingDimension, postStartEditingDimension, postViewerDimensionClickTarget, postViewerHover, postViewerPick, postViewerPlacementCursor, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
-import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
+import { HALF_FOV, orbit, pan, viewBasis, zoomTowardsPointer, type CameraState } from "./camera";
 import type { Graph } from "./graph";
 import { solveGraphWithGpu, type SolverPin } from "./gpu-lm-solver";
 import { createGpuSolver, type GpuSolver } from "./gpu-solver";
@@ -842,7 +842,15 @@ export class ViewerApp {
     });
     this.canvas.addEventListener("wheel", (event) => {
       event.preventDefault();
-      zoom(this.camera, event.deltaY);
+      const rect = this.canvas.getBoundingClientRect();
+      zoomTowardsPointer(
+        this.camera,
+        rect.width,
+        rect.height,
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+        event.deltaY,
+      );
       this.queueRender();
     }, { passive: false });
     this.canvas.addEventListener("dblclick", (event) => {

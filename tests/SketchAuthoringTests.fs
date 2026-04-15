@@ -32,6 +32,39 @@ let arcDoc () =
         [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
           { Id = "sketchArc"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
 
+let tangentArcDoc () =
+    let sketch =
+        { Entities =
+            [ REPoint("c", 0.0, 0.0)
+              REPoint("s", 10.0, 0.0)
+              REPoint("e", 0.0, 10.0)
+              REPoint("l1", 10.0, 0.0)
+              REPoint("l2", 10.0, 8.0)
+              RELine("line1", "l1", "l2")
+              REArc("arc1", "s", "e", ArcCenter("c", false)) ]
+          Constraints = [] }
+    { Name = "tangent-arc"
+      SelectedId = Some "sketchT"
+      Actions =
+        [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
+          { Id = "sketchT"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
+
+let curveTangentDoc () =
+    let sketch =
+        { Entities =
+            [ REPoint("c0", 0.0, 0.0)
+              REPoint("c1", 20.0, 0.0)
+              REPoint("a0s", 10.0, 0.0)
+              REPoint("a1s", 26.0, 0.0)
+              RECircle("circle1", "c0", 10.0)
+              REArc("arc1", "a1s", "c1", ArcCenter("c1", false)) ]
+          Constraints = [] }
+    { Name = "curve-tangent"
+      SelectedId = Some "sketchCT"
+      Actions =
+        [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
+          { Id = "sketchCT"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
+
 [<Fact>]
 let ``Dimension placement buttons stay enabled in sketch edit mode`` () =
     let doc = Document.defaultDocument () |> Document.select "sketch1"
@@ -210,3 +243,36 @@ let ``Distance draft with one clicked arc yields diameter preview`` () =
             failwithf "Expected arc diameter preview, got %A" other
     | None ->
         failwith "Expected pending arc diameter placement"
+
+[<Fact>]
+let ``Tangent constraint can be built from one line and one arc`` () =
+    let doc = tangentArcDoc ()
+    let next =
+        SketchAuthoring.addConstraintFromSelection doc [ TargetLine("sketchT", "line1"); TargetArc("sketchT", "arc1") ] "Tangent"
+        |> Option.defaultWith (fun () -> failwith "Expected tangent constraint to be added")
+    let sketch =
+        match next.Actions |> List.find (fun a -> a.Id = "sketchT") with
+        | { Kind = Sketch(_, sketch) } -> sketch
+        | _ -> failwith "Expected sketchT to be a sketch"
+
+    match List.last sketch.Constraints with
+    | Tangent("l1", "l2", "c", "arc1", "line1", radius) ->
+        Assert.True(radius > 9.9 && radius < 10.1)
+    | other ->
+        failwithf "Expected line-arc Tangent, got %A" other
+
+[<Fact>]
+let ``Curve tangent can be built from one circle and one arc`` () =
+    let doc = curveTangentDoc ()
+    let next =
+        SketchAuthoring.addConstraintFromSelection doc [ TargetCircle("sketchCT", "circle1"); TargetArc("sketchCT", "arc1") ] "Tangent"
+        |> Option.defaultWith (fun () -> failwith "Expected curve tangent constraint to be added")
+    let sketch =
+        match next.Actions |> List.find (fun a -> a.Id = "sketchCT") with
+        | { Kind = Sketch(_, sketch) } -> sketch
+        | _ -> failwith "Expected sketchCT to be a sketch"
+
+    match List.last sketch.Constraints with
+    | CurveTangent("circle1", "c0", "arc1", "c1", false) -> ()
+    | other ->
+        failwithf "Expected circle-arc CurveTangent, got %A" other

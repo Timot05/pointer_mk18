@@ -39,6 +39,46 @@ type SketchCompileContext =
 
 module SketchCompile =
 
+    type private UnionFind() =
+        let parent = Dictionary<string, string>()
+
+        member _.Add(id: string) =
+            if not (parent.ContainsKey id) then parent[id] <- id
+
+        member this.Find(id: string) =
+            this.Add id
+            let mutable p = parent[id]
+            while p <> parent[p] do
+                p <- parent[p]
+            let root = p
+            let mutable cur = id
+            while parent[cur] <> root do
+                let next = parent[cur]
+                parent[cur] <- root
+                cur <- next
+            root
+
+        member this.Union(a: string, b: string) =
+            let ra = this.Find a
+            let rb = this.Find b
+            if ra <> rb then parent[rb] <- ra
+
+    let private coincidentGroups (sketch: ActionSketch) =
+        let uf = UnionFind()
+        for entity in sketch.Entities do
+            match entity with
+            | REPoint(id, _, _) -> uf.Add id
+            | _ -> ()
+        for constraint_ in sketch.Constraints do
+            match constraint_ with
+            | Coincident(a, b) -> uf.Union(a, b)
+            | _ -> ()
+        sketch.Entities
+        |> List.choose (function
+            | REPoint(id, _, _) -> Some(id, uf.Find id)
+            | _ -> None)
+        |> Map.ofList
+
     // ── Frame helpers ─────────────────────────────────────────────────────
 
     let parseFramePart (s: string) : FramePart option =
@@ -156,13 +196,14 @@ module SketchCompile =
                 let yNode = b.Param through.Y
                 tables.ArcThrough[id] <- { TxNode = xNode; TyNode = yNode; TxSlot = xSlot; TySlot = ySlot }
             | RELine _ -> ()
-            | REArc _  -> ()   // ArcCenter carries no numeric slots
+            | REArc _  -> ()
 
         let outputs = ResizeArray<int>()
         let mutable skipped = 0
 
         let tryPoint id = match tables.Points.TryGetValue id with true, p -> Some p | _ -> None
         let tryCircle id = match tables.Circles.TryGetValue id with true, c -> Some c | _ -> None
+        let coincidentGroups = coincidentGroups sketch
         let tryDiameterEntity id =
             match tryCircle id with
             | Some circle -> Some(circle.RadiusNode)
@@ -174,6 +215,23 @@ module SketchCompile =
                         let dx, dy = vecSub b centerP startP
                         Some(length b dx dy)
                     | _ -> None
+                | _ -> None
+        let tangentContactPoint curveId lineStartId lineEndId =
+            let groupOf id = Map.tryFind id coincidentGroups
+            let lineGroups =
+                [ lineStartId; lineEndId ]
+                |> List.choose groupOf
+                |> Set.ofList
+            if Set.isEmpty lineGroups then
+                None
+            else
+                match sketch.Entities |> List.tryFind (function | REArc(entityId, _, _, ArcCenter _) when entityId = curveId -> true | _ -> false) with
+                | Some(REArc(_, startId, endId, ArcCenter(_, _))) ->
+                    let startMatches = groupOf startId |> Option.exists (fun group -> Set.contains group lineGroups)
+                    let endMatches = groupOf endId |> Option.exists (fun group -> Set.contains group lineGroups)
+                    if startMatches then Some startId
+                    elif endMatches then Some endId
+                    else None
                 | _ -> None
 
         let emitDiff a cNode =
@@ -187,6 +245,17 @@ module SketchCompile =
             let node = b.Param value
             fixedInputSlots.Add slot |> ignore
             node
+
+        for e in sketch.Entities do
+            match e with
+            | REArc(_, startId, endId, ArcCenter(centerId, _)) ->
+                match tryPoint startId, tryPoint endId, tryPoint centerId with
+                | Some startP, Some endP, Some centerP ->
+                    let sdx, sdy = vecSub b centerP startP
+                    let edx, edy = vecSub b centerP endP
+                    outputs.Add(b.Sub(length b sdx sdy, length b edx edy))
+                | _ -> skipped <- skipped + 1
+            | _ -> ()
 
         for c in sketch.Constraints do
             match c with
@@ -280,16 +349,29 @@ module SketchCompile =
                     outputs.Add(dot b dxA dyA dxB dyB)
                 | _ -> skipped <- skipped + 1
 
-            // ── Tangent (line to circle): perpDist(center, line) = r ─
-            | Tangent(asId, aeId, centerId, _, _, radius) ->
+            // ── Tangent (line to curve) ───────────────────────────────
+            | Tangent(asId, aeId, centerId, curveId, _, radius) ->
                 match tryPoint asId, tryPoint aeId, tryPoint centerId with
                 | Some aS, Some aE, Some c ->
                     let dxL, dyL = vecSub b aS aE
-                    let dxC = b.Sub(c.XNode, aS.XNode)
-                    let dyC = b.Sub(c.YNode, aS.YNode)
-                    let cross = crossZ b dxL dyL dxC dyC
-                    let lineLen = length b dxL dyL
-                    outputs.Add(b.Sub(cross, b.Mul(constant b radius, lineLen)))
+                    match tangentContactPoint curveId asId aeId with
+                    | Some contactId ->
+                        match tryPoint contactId with
+                        | Some contact ->
+                            let rcx = b.Sub(contact.XNode, c.XNode)
+                            let rcy = b.Sub(contact.YNode, c.YNode)
+                            outputs.Add(dot b rcx rcy dxL dyL)
+                        | _ -> skipped <- skipped + 1
+                    | None ->
+                        let dxC = b.Sub(c.XNode, aS.XNode)
+                        let dyC = b.Sub(c.YNode, aS.YNode)
+                        let cross = crossZ b dxL dyL dxC dyC
+                        let lineLen = length b dxL dyL
+                        let radiusNode =
+                            match tryDiameterEntity curveId with
+                            | Some r -> r
+                            | None -> constant b radius
+                        outputs.Add(b.Sub(cross, b.Mul(radiusNode, lineLen)))
                 | _ -> skipped <- skipped + 1
 
             | CircleDiameter(circleId, _, diameter, _) ->
@@ -467,13 +549,13 @@ module SketchCompile =
                 | _ -> skipped <- skipped + 1
 
             | CurveTangent(entityAId, caId, entityBId, cbId, internalFlag) ->
-                match tryPoint caId, tryPoint cbId, tryCircle entityAId, tryCircle entityBId with
-                | Some pa, Some pb, Some crA, Some crB ->
+                match tryPoint caId, tryPoint cbId, tryDiameterEntity entityAId, tryDiameterEntity entityBId with
+                | Some pa, Some pb, Some radiusA, Some radiusB ->
                     let dx, dy = vecSub b pa pb
                     let centerDist = length b dx dy
                     let radiusCombo =
-                        if internalFlag then b.Sub(crA.RadiusNode, crB.RadiusNode)
-                        else b.Add(crA.RadiusNode, crB.RadiusNode)
+                        if internalFlag then b.Sub(radiusA, radiusB)
+                        else b.Add(radiusA, radiusB)
                     outputs.Add(b.Sub(centerDist, radiusCombo))
                 | _ -> skipped <- skipped + 1
 

@@ -257,6 +257,43 @@ let squareSketch : ActionSketch =
       Constraints = [] }
 
 [<Fact>]
+let ``SketchCompile supports tangent constraints on arcs`` () =
+    let sketch : ActionSketch =
+        { Entities =
+            [ REPoint("c", 0.0, 0.0)
+              REPoint("s", 10.0, 0.0)
+              REPoint("e", 0.0, 10.0)
+              REPoint("l1", 10.0, 0.0)
+              REPoint("l2", 10.0, 8.0)
+              RELine("line1", "l1", "l2")
+              REArc("arc1", "s", "e", ArcCenter("c", false)) ]
+          Constraints = [ Tangent("l1", "l2", "c", "arc1", "line1", 10.0) ] }
+
+    let graph =
+        SketchCompile.compile sketch
+            { SketchOrigin = RigidTransform.Identity
+              Frames = Map.empty }
+
+    Assert.True(graph.Outputs.Length > 0)
+
+[<Fact>]
+let ``SketchCompile keeps center arcs on a constant radius`` () =
+    let sketch : ActionSketch =
+        { Entities =
+            [ REPoint("c", 0.0, 0.0)
+              REPoint("s", 10.0, 0.0)
+              REPoint("e", 0.0, 8.0)
+              REArc("arc1", "s", "e", ArcCenter("c", false)) ]
+          Constraints = [] }
+
+    let graph =
+        SketchCompile.compile sketch
+            { SketchOrigin = RigidTransform.Identity
+              Frames = Map.empty }
+
+    Assert.True(graph.Outputs.Length > 0)
+
+[<Fact>]
 let ``FromSketch with SelectionLoop None compiles to FSketch with 4 line segments`` () =
     let r =
         pipeline [ action "sk" (Sketch(None, squareSketch))

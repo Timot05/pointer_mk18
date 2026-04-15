@@ -276,6 +276,9 @@ module SketchAuthoring =
                 | _ -> None
             | _ -> None
 
+    let private tryCurve (sketch: ActionSketch) id =
+        tryDiameterEntity sketch id
+
     let private dist (ax, ay) (bx, by) =
         let dx = bx - ax
         let dy = by - ay
@@ -490,11 +493,23 @@ module SketchAuthoring =
             | _, _, [ arcA; arcB ] -> Some(EqualRadius(arcA, arcB))
             | _ -> None
         | "Tangent" ->
-            match selection.Lines, selection.Circles with
-            | [ lineId ], [ circleId ] ->
-                match tryLine sketch lineId, tryCircle sketch circleId with
+            let curveIds : string list = selection.Circles @ selection.Arcs
+            match selection.Lines, curveIds with
+            | [ lineId ], [ curveId ] ->
+                match tryLine sketch lineId, tryCurve sketch curveId with
                 | Some(aStart, aEnd), Some(centerId, radius) ->
-                    Some(Tangent(aStart, aEnd, centerId, circleId, lineId, radius))
+                    Some(Tangent(aStart, aEnd, centerId, curveId, lineId, radius))
+                | _ -> None
+            | [], [ curveA; curveB ] ->
+                match tryCurve sketch curveA, tryCurve sketch curveB with
+                | Some(centerA, radiusA), Some(centerB, radiusB) ->
+                    match tryPoint sketch centerA, tryPoint sketch centerB with
+                    | Some pa, Some pb ->
+                        let centerDistance = dist pa pb
+                        let externalDistance = radiusA + radiusB
+                        let internalDistance = abs (radiusA - radiusB)
+                        Some(CurveTangent(curveA, centerA, curveB, centerB, abs (centerDistance - internalDistance) < abs (centerDistance - externalDistance)))
+                    | _ -> None
                 | _ -> None
             | _ -> None
         | "Concentric" ->

@@ -18,6 +18,20 @@ let angleDoc () =
         [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
           { Id = "sketchA"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
 
+let arcDoc () =
+    let sketch =
+        { Entities =
+            [ REPoint("c", 0.0, 0.0)
+              REPoint("s", 10.0, 0.0)
+              REPoint("e", 0.0, 10.0)
+              REArc("arc1", "s", "e", ArcCenter("c", false)) ]
+          Constraints = [] }
+    { Name = "arc"
+      SelectedId = Some "sketchArc"
+      Actions =
+        [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
+          { Id = "sketchArc"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
+
 [<Fact>]
 let ``Dimension placement buttons stay enabled in sketch edit mode`` () =
     let doc = Document.defaultDocument () |> Document.select "sketch1"
@@ -179,3 +193,20 @@ let ``Distance draft with one clicked line yields immediate endpoint distance pr
             failwithf "Expected immediate line length Distance preview, got %A" other
     | None ->
         failwith "Expected pending distance placement from one clicked line"
+
+[<Fact>]
+let ``Distance draft with one clicked arc yields diameter preview`` () =
+    let doc = arcDoc ()
+    let draft = Some { SketchId = "sketchArc"; Kind = "distance"; ClickedRefs = [ RefArc "arc1" ] }
+    let state =
+        SketchAuthoring.availabilityForSelection doc true "none" (Some "distance") [] (Some(6.0, 6.0)) draft None
+
+    match state.PendingConstraintPlacement with
+    | Some pending ->
+        match pending.Constraint with
+        | CircleDiameter("arc1", "c", diameter, None) ->
+            Assert.True(diameter > 19.9 && diameter < 20.1)
+        | other ->
+            failwithf "Expected arc diameter preview, got %A" other
+    | None ->
+        failwith "Expected pending arc diameter placement"

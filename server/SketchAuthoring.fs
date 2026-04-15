@@ -27,6 +27,7 @@ and ConstraintPlacementRef =
     | RefPoint of string
     | RefLine of string
     | RefCircle of string
+    | RefArc of string
 
 and ConstraintPlacementDraft =
     { SketchId: string
@@ -260,6 +261,20 @@ module SketchAuthoring =
         match entityMap sketch |> Map.tryFind id with
         | Some(REArc(_, _, _, ArcCenter(centerId, _))) -> Some centerId
         | _ -> None
+
+    let private tryDiameterEntity (sketch: ActionSketch) id =
+        match tryCircle sketch id with
+        | Some(centerId, radius) -> Some(centerId, radius)
+        | None ->
+            match entityMap sketch |> Map.tryFind id with
+            | Some(REArc(_, startId, _, ArcCenter(centerId, _))) ->
+                match tryPoint sketch centerId, tryPoint sketch startId with
+                | Some(cx, cy), Some(sx, sy) ->
+                    let dx = sx - cx
+                    let dy = sy - cy
+                    Some(centerId, sqrt (dx * dx + dy * dy))
+                | _ -> None
+            | _ -> None
 
     let private dist (ax, ay) (bx, by) =
         let dx = bx - ax
@@ -496,17 +511,21 @@ module SketchAuthoring =
                 |> Option.map (fun (x, y) -> Fixed(pointId, x, y))
             | _ -> None
         | "distance" ->
-            match selection.Points, selection.Lines, selection.Circles with
-            | [ a; b ], _, _ ->
+            match selection.Points, selection.Lines, selection.Circles, selection.Arcs with
+            | [ a; b ], _, _, _ ->
                 Option.map2 (fun pa pb -> Distance(a, b, dist pa pb, None)) (tryPoint sketch a) (tryPoint sketch b)
-            | _, [ lineA; lineB ], _ ->
+            | _, [ lineA; lineB ], _, _ ->
                 match tryLine sketch lineA, tryLine sketch lineB with
                 | Some(aStart, aEnd), Some(bStart, bEnd) ->
                     Some(LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, lineDistanceValue sketch lineA lineB, None))
                 | _ -> None
-            | _, _, [ circleId ] ->
-                match tryCircle sketch circleId with
+            | _, _, [ circleId ], [] ->
+                match tryDiameterEntity sketch circleId with
                 | Some(centerId, radius) -> Some(CircleDiameter(circleId, centerId, radius * 2.0, None))
+                | _ -> None
+            | _, _, [], [ arcId ] ->
+                match tryDiameterEntity sketch arcId with
+                | Some(centerId, radius) -> Some(CircleDiameter(arcId, centerId, radius * 2.0, None))
                 | _ -> None
             | _ -> None
         | "angle" ->
@@ -528,8 +547,12 @@ module SketchAuthoring =
             |> Option.bind (fun (a, b) ->
                 Option.map2 (fun pa pb -> Distance(a, b, dist pa pb, None)) (tryPoint sketch a) (tryPoint sketch b))
         | [ RefCircle circleId ], _ ->
-            match tryCircle sketch circleId with
+            match tryDiameterEntity sketch circleId with
             | Some(centerId, radius) -> Some(CircleDiameter(circleId, centerId, radius * 2.0, None))
+            | _ -> None
+        | [ RefArc arcId ], _ ->
+            match tryDiameterEntity sketch arcId with
+            | Some(centerId, radius) -> Some(CircleDiameter(arcId, centerId, radius * 2.0, None))
             | _ -> None
         | [ RefPoint a ], Some(RefPoint b) when a <> b ->
             Option.map2 (fun pa pb -> Distance(a, b, dist pa pb, None)) (tryPoint sketch a) (tryPoint sketch b)
@@ -561,6 +584,7 @@ module SketchAuthoring =
         | TargetPoint(id, entityId) when id = sketchId -> Some(RefPoint entityId)
         | TargetLine(id, entityId) when id = sketchId -> Some(RefLine entityId)
         | TargetCircle(id, entityId) when id = sketchId -> Some(RefCircle entityId)
+        | TargetArc(id, entityId) when id = sketchId -> Some(RefArc entityId)
         | _ -> None
 
     let updatePlacementDraft sketchId kind hoveredTarget draft =

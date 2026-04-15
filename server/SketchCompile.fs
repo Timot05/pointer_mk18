@@ -163,6 +163,18 @@ module SketchCompile =
 
         let tryPoint id = match tables.Points.TryGetValue id with true, p -> Some p | _ -> None
         let tryCircle id = match tables.Circles.TryGetValue id with true, c -> Some c | _ -> None
+        let tryDiameterEntity id =
+            match tryCircle id with
+            | Some circle -> Some(circle.RadiusNode)
+            | None ->
+                match sketch.Entities |> List.tryFind (function | REArc(entityId, _, _, ArcCenter _) when entityId = id -> true | _ -> false) with
+                | Some(REArc(_, startId, _, ArcCenter(centerId, _))) ->
+                    match tryPoint startId, tryPoint centerId with
+                    | Some startP, Some centerP ->
+                        let dx, dy = vecSub b centerP startP
+                        Some(length b dx dy)
+                    | _ -> None
+                | _ -> None
 
         let emitDiff a cNode =
             outputs.Add(b.Sub(a, cNode))
@@ -281,9 +293,9 @@ module SketchCompile =
                 | _ -> skipped <- skipped + 1
 
             | CircleDiameter(circleId, _, diameter, _) ->
-                match tryCircle circleId with
-                | Some cir ->
-                    let twoR = b.Mul(cir.RadiusNode, constant b 2.0)
+                match tryDiameterEntity circleId with
+                | Some radiusNode ->
+                    let twoR = b.Mul(radiusNode, constant b 2.0)
                     emitDiff twoR (fixedParam diameter)
                 | _ -> skipped <- skipped + 1
 

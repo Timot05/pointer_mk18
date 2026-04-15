@@ -2139,8 +2139,15 @@ function pushConstraintGeometry(
       if (!showDimensions) return;
       const center = pointMap.get(constraint.center);
       const circle = entityMap.get(constraint.circle);
-      if (!center || !circle || circle.case !== "RECircle") return;
-      const radius = resolveValue(`sketch.entity.${circle.id}.radius`, circle.radius);
+      if (!center || !circle) return;
+      let radius: number | null = null;
+      if (circle.case === "RECircle") {
+        radius = resolveValue(`sketch.entity.${circle.id}.radius`, circle.radius);
+      } else if (circle.case === "REArc" && circle.data.case === "ArcCenter") {
+        const start = pointMap.get(circle.startId);
+        if (start) radius = len2(sub2(start, center));
+      }
+      if (radius == null) return;
       const fallbackAnchor: Vec2 = [center[0], center[1] + radius + 2.4];
       const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
       dimensionAnchors.set(constraintIndex, anchor);
@@ -2563,19 +2570,21 @@ function buildToolPreviewBuffers(
   const pointInstances: PointInstance[] = [];
   const previewLine = [ACCENT[0], ACCENT[1], ACCENT[2], 0.72] as const;
   const previewPoint = [ACCENT[0], ACCENT[1], ACCENT[2], 0.92] as const;
-  const allPoints = cursor ? [...toolPoints, cursor] : [...toolPoints];
-  for (const point of allPoints) {
-    pointInstances.push({ x: point[0], y: point[1], radiusPx: 5.5, color: previewPoint });
-  }
 
   switch (tool) {
     case "line":
+      for (const point of (cursor ? [...toolPoints, cursor] : toolPoints)) {
+        pointInstances.push({ x: point[0], y: point[1], radiusPx: 5.5, color: previewPoint });
+      }
       if (toolPoints.length >= 1 && cursor) {
         lineVertices.push({ x: toolPoints[0][0], y: toolPoints[0][1], color: previewLine }, { x: cursor[0], y: cursor[1], color: previewLine });
       }
       break;
     case "rectangle":
     case "roundedRectangle":
+      for (const point of (cursor ? [...toolPoints, cursor] : toolPoints)) {
+        pointInstances.push({ x: point[0], y: point[1], radiusPx: 5.5, color: previewPoint });
+      }
       if (toolPoints.length >= 1 && cursor) {
         const [x0, y0] = toolPoints[0];
         const [x1, y1] = cursor;
@@ -2588,19 +2597,25 @@ function buildToolPreviewBuffers(
       }
       break;
     case "circle":
+      for (const point of (cursor ? [...toolPoints, cursor] : toolPoints)) {
+        pointInstances.push({ x: point[0], y: point[1], radiusPx: 5.5, color: previewPoint });
+      }
       if (toolPoints.length >= 1 && cursor) {
         const radius = Math.max(1e-6, len2(sub2(cursor, toolPoints[0])));
         pushCircle(lineVertices, toolPoints[0], radius, previewLine);
       }
       break;
     case "arc":
-      if (toolPoints.length >= 1 && cursor) {
-        pointInstances.push({ x: toolPoints[0][0], y: toolPoints[0][1], radiusPx: 6.5, color: previewPoint });
+      for (const point of toolPoints) {
+        pointInstances.push({ x: point[0], y: point[1], radiusPx: 5.5, color: previewPoint });
       }
       if (toolPoints.length >= 2 && cursor) {
+        const projectedCursor = projectPointToCircle(toolPoints[0], toolPoints[1], cursor);
+        pointInstances.push({ x: projectedCursor[0], y: projectedCursor[1], radiusPx: 5.5, color: previewPoint });
         const clockwise = cross2(sub2(toolPoints[1], toolPoints[0]), sub2(cursor, toolPoints[0])) < 0;
-        pushArc(lineVertices, [], toolPoints[1], cursor, toolPoints[0], clockwise, previewLine, undefined);
+        pushArc(lineVertices, [], toolPoints[1], projectedCursor, toolPoints[0], clockwise, previewLine, undefined);
       } else if (toolPoints.length >= 1 && cursor) {
+        pointInstances.push({ x: cursor[0], y: cursor[1], radiusPx: 5.5, color: previewPoint });
         lineVertices.push({ x: toolPoints[0][0], y: toolPoints[0][1], color: previewLine }, { x: cursor[0], y: cursor[1], color: previewLine });
       }
       break;
@@ -2982,6 +2997,15 @@ function pointerToSketchLocal(
   const hit = add3(eye, scale3(dir, t));
   const local = sub3(hit, frame.position);
   return [dot3(local, frame.xAxis), dot3(local, frame.yAxis)];
+}
+
+function projectPointToCircle(center: Vec2, start: Vec2, point: Vec2): Vec2 {
+  const radius = Math.max(1e-6, len2(sub2(start, center)));
+  const dir = sub2(point, center);
+  const dirLen = len2(dir);
+  if (dirLen <= 1e-6) return [center[0] + radius, center[1]];
+  const scale = radius / dirLen;
+  return [center[0] + dir[0] * scale, center[1] + dir[1] * scale];
 }
 
 function rotateByQuat(q: JsonRigidTransform["rot"], v: Vec3): Vec3 {

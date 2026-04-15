@@ -66,14 +66,11 @@ module Program =
         function
         | TargetFrameOrigin(frameId) ->
             Set.contains frameId (allowedFrameIds ())
-        | TargetFrameAxis(frameId, part) ->
-            Set.contains frameId (allowedFrameIds ()) && (part = "xAxis" || part = "yAxis" || part = "zAxis")
         | _ -> false
 
     let isValidSelectionTarget target =
         match target with
-        | TargetFrameOrigin _
-        | TargetFrameAxis _ -> isAllowedSketchEditFrameTarget target
+        | TargetFrameOrigin _ -> isAllowedSketchEditFrameTarget target
         | _ -> compiled.Pickables |> List.exists (Pickable.sameTarget target)
 
     let trySketchContext (sketchId: string) =
@@ -277,8 +274,10 @@ module Program =
             | TargetDimension(sketchId, _) ->
                 sketchEditMode && doc.SelectedId = Some sketchId
             | TargetFrameOrigin _
-            | TargetFrameAxis _ as target ->
+                as target ->
                 (activeSketchEditId ()).IsSome && isAllowedSketchEditFrameTarget target
+            | TargetFrameAxis _ ->
+                false
             | TargetSurface _ ->
                 true
 
@@ -638,6 +637,29 @@ module Program =
                     withViewerInvalidation "model" (json ())
                 | _ ->
                     withViewerInvalidation "state" (json ()))) |> ignore
+
+        app.MapPost("/api/delete-selection",
+            Func<IResult>(fun () ->
+                if sketchEditMode then
+                    match SketchAuthoring.trySelectedSketch doc with
+                    | Some ctx when not selectedTargets.IsEmpty ->
+                        doc <- SketchAuthoring.withUpdatedSketch doc ctx.Action.Id (SketchAuthoring.deleteTargets selectedTargets ctx.Sketch)
+                        hoveredTarget <- None
+                        selectedTargets <- []
+                        sketchToolPoints <- []
+                        editingDimension <- None
+                        constraintPlacementDraft <- None
+                        constraintPlacementCursor <- None
+                        recompile ()
+                        withViewerInvalidation "model" (json ())
+                    | _ ->
+                        withViewerInvalidation "state" (json ())
+                else
+                    match doc.SelectedId with
+                    | Some id when id <> "origin" ->
+                        withViewerInvalidation "model" (mutate (Document.removeAction id))
+                    | _ ->
+                        withViewerInvalidation "state" (json ()))) |> ignore
 
         app.MapPost("/api/sketch-ui/dimension-edit/start",
             Func<HttpContext, IResult>(fun ctx ->

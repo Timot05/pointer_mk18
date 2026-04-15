@@ -380,7 +380,7 @@ let ``Line and frame axis can build a frame parallel constraint`` () =
     | other -> failwithf "Expected FrameParallel, got %A" other
 
 [<Fact>]
-let ``Distance draft with clicked line and hovered frame axis yields frame origin line distance`` () =
+let ``Distance draft with clicked line and hovered frame origin yields frame origin line distance`` () =
     let doc = frameConstraintDoc ()
     let draft = Some { SketchId = "sketchF"; Kind = "distance"; ClickedRefs = [ RefLine "l1" ] }
     let state =
@@ -388,7 +388,7 @@ let ``Distance draft with clicked line and hovered frame axis yields frame origi
             doc true "none" (Some "distance") []
             None
             draft
-            (Some(TargetFrameAxis("f1", "xAxis")))
+            (Some(TargetFrameOrigin("f1")))
 
     match state.PendingConstraintPlacement with
     | Some pending ->
@@ -399,10 +399,10 @@ let ``Distance draft with clicked line and hovered frame axis yields frame origi
         failwith "Expected pending frame line distance placement"
 
 [<Fact>]
-let ``Distance from selection with line and frame axis uses frame origin`` () =
+let ``Distance from selection with line and frame origin uses frame origin`` () =
     let doc = frameConstraintDoc ()
     let next =
-        SketchAuthoring.addConstraintFromSelection doc [ TargetLine("sketchF", "l1"); TargetFrameAxis("f1", "xAxis") ] "distance"
+        SketchAuthoring.addConstraintFromSelection doc [ TargetLine("sketchF", "l1"); TargetFrameOrigin("f1") ] "distance"
         |> Option.defaultWith (fun () -> failwith "Expected frame line distance constraint to be added")
     let sketch =
         match next.Actions |> List.find (fun a -> a.Id = "sketchF") with

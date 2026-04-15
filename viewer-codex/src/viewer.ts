@@ -602,8 +602,7 @@ struct PickSample {
 @group(0) @binding(0) var<uniform> cam: Camera;
 @group(0) @binding(1) var<uniform> pick: PickState;
 @group(0) @binding(2) var<storage, read> origins: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read> axes: array<vec4<f32>>;
-@group(0) @binding(4) var<storage, read_write> samples: array<PickSample, ${PICK_SAMPLES}>;
+@group(0) @binding(3) var<storage, read_write> samples: array<PickSample, ${PICK_SAMPLES}>;
 
 fn project_world(pos: vec3<f32>) -> vec3<f32> {
   let rel = pos - cam.eye;
@@ -647,28 +646,6 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
       bestKind = 1u;
     }
   }
-
-  let axisCount = arrayLength(&axes) / 2u;
-  for (var i: u32 = 0u; i < axisCount; i = i + 1u) {
-    let a0 = axes[i * 2u];
-    let a1 = axes[i * 2u + 1u];
-    let start = project_world(a0.xyz);
-    if (start.z <= 0.0) { continue; }
-    let axis = a1.xyz;
-    let proj_axis = axis - dot(axis, cam.forward) * cam.forward;
-    let dx = dot(proj_axis, cam.right);
-    let dy = dot(proj_axis, cam.up);
-    let len = length(vec2<f32>(dx, dy));
-    if (len <= 1e-6) { continue; }
-    let endp = start.xy + vec2<f32>(dx / len, -dy / len) * a1.w;
-    let score = sdf_segment(pixel, start.xy, endp);
-    if (score <= 9.0 && score < bestScore) {
-      bestScore = score;
-      bestId = u32(a0.w + 0.5);
-      bestKind = 2u;
-    }
-  }
-
   samples[index].id = bestId;
   samples[index].kind = bestKind;
   samples[index].score = bestScore;
@@ -1659,37 +1636,18 @@ export class ViewerApp {
     );
 
     const originEntries = new Float32Array(frames.length * 4);
-    const axisEntries = new Float32Array(frames.length * 3 * 8);
     let oo = 0;
-    let ao = 0;
-    const pickIdFor = (frameId: string, part: "origin" | "xAxis" | "yAxis" | "zAxis") =>
-      pickables.find((candidate) =>
-        candidate.case === "PickFrameOrigin"
-          ? candidate.frameId === frameId && part === "origin"
-          : candidate.case === "PickFrameAxis" && candidate.frameId === frameId && candidate.part === part,
-      )?.pickId;
+    const pickIdFor = (frameId: string) =>
+      pickables.find((candidate) => candidate.case === "PickFrameOrigin" && candidate.frameId === frameId)?.pickId;
     for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
       const frame = frames[frameIndex];
       const t = toSketchFrame(frame.transform);
-      const originId = pickIdFor(frame.id, "origin");
+      const originId = pickIdFor(frame.id);
       if (originId == null) continue;
       originEntries[oo++] = t.position[0];
       originEntries[oo++] = t.position[1];
       originEntries[oo++] = t.position[2];
       originEntries[oo++] = originId;
-      const axisPx = frame.id === "origin" ? 64 : 52;
-      for (const [part, axis] of [["xAxis", t.xAxis], ["yAxis", t.yAxis], ["zAxis", t.zAxis]] as const) {
-        const axisId = pickIdFor(frame.id, part);
-        if (axisId == null) continue;
-        axisEntries[ao++] = t.position[0];
-        axisEntries[ao++] = t.position[1];
-        axisEntries[ao++] = t.position[2];
-        axisEntries[ao++] = axisId;
-        axisEntries[ao++] = axis[0];
-        axisEntries[ao++] = axis[1];
-        axisEntries[ao++] = axis[2];
-        axisEntries[ao++] = axisPx;
-      }
     }
 
     const originBuffer = device.createBuffer({
@@ -1697,19 +1655,13 @@ export class ViewerApp {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(originBuffer, 0, originEntries);
-    const axisBuffer = device.createBuffer({
-      size: Math.max(16, axisEntries.byteLength),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(axisBuffer, 0, axisEntries);
     const bindGroup = device.createBindGroup({
       layout: framePickBindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: cameraBuffer } },
         { binding: 1, resource: { buffer: pickStateBuffer } },
         { binding: 2, resource: { buffer: originBuffer } },
-        { binding: 3, resource: { buffer: axisBuffer } },
-        { binding: 4, resource: { buffer: pickResultBuffer } },
+        { binding: 3, resource: { buffer: pickResultBuffer } },
       ],
     });
     const encoder = device.createCommandEncoder();
@@ -1729,7 +1681,6 @@ export class ViewerApp {
     readBuffer.unmap();
     readBuffer.destroy();
     originBuffer.destroy();
-    axisBuffer.destroy();
     const view = new DataView(copy);
     const hits = new Map<number, PickCandidateHit>();
     for (let i = 0; i < PICK_SAMPLES; i++) {
@@ -1739,10 +1690,9 @@ export class ViewerApp {
       if (id === NO_HIT_ID || !Number.isFinite(score)) continue;
       const current = hits.get(id);
       if (!current || score < current.score) {
-        const kindOffset = pickables.find((candidate) => candidate.pickId === id)?.case === "PickFrameOrigin" ? 0 : 1;
         hits.set(id, {
           pickId: id,
-          kind: kindOffset === 0 ? "point" : "line",
+          kind: "point",
           score,
           sketchId: "",
         });
@@ -2053,8 +2003,7 @@ export class ViewerApp {
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
       ],
     });
     const framePickPipeline = device.createComputePipeline({
@@ -2314,40 +2263,7 @@ function pushConstraintGeometry(
       const a = pointMap.get(constraint.a);
       const b = pointMap.get(constraint.b);
       if (!a || !b) return;
-      const dir = norm2(sub2(b, a));
-      const n = perp(dir);
-      const mid = scale2(add2(a, b), 0.5);
-      const fallbackAnchor = add2(mid, scale2(n, 1.8));
-      const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
-      dimensionAnchors.set(constraintIndex, anchor);
-      const offsetAmount = dot2(sub2(anchor, mid), n);
-      const off = scale2(n, Math.abs(offsetAmount) < 0.5 ? 1.8 : offsetAmount);
-      const aa = add2(a, off);
-      const bb = add2(b, off);
-      const axis = norm2(sub2(bb, aa));
-      const projected = add2(aa, scale2(axis, dot2(sub2(anchor, aa), axis)));
-      const extentA = dot2(sub2(projected, aa), axis);
-      const extentB = dot2(sub2(projected, bb), axis);
-      lines.push({ x: a[0], y: a[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
-      lines.push({ x: b[0], y: b[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
-      lines.push({ x: aa[0], y: aa[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
-      if (extentA < 0) {
-        lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
-      } else if (extentB > 0) {
-        lines.push({ x: bb[0], y: bb[1], color: DIM_COLOR }, { x: projected[0], y: projected[1], color: DIM_COLOR });
-      }
-      lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: anchor[0], y: anchor[1], color: DIM_COLOR });
-      if (activeDimension) {
-        highlightLines.push({ x: a[0], y: a[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
-        highlightLines.push({ x: b[0], y: b[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
-        highlightLines.push({ x: aa[0], y: aa[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
-        if (extentA < 0) {
-          highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
-        } else if (extentB > 0) {
-          highlightLines.push({ x: bb[0], y: bb[1], color: DIM_HOVER }, { x: projected[0], y: projected[1], color: DIM_HOVER });
-        }
-        highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: anchor[0], y: anchor[1], color: DIM_HOVER });
-      }
+      const anchor = pushPointDistanceGeometry(lines, highlightLines, dimensionAnchors, constraintIndex, a, b, resolveLabelAnchor, activeDimension);
       labels.push({
         text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)),
         anchor,
@@ -2362,40 +2278,7 @@ function pushConstraintGeometry(
       const a = pointMap.get(constraint.point);
       const b = framePointMap.get(constraint.frame);
       if (!a || !b) return;
-      const dir = norm2(sub2(b, a));
-      const n = perp(dir);
-      const mid = scale2(add2(a, b), 0.5);
-      const fallbackAnchor = add2(mid, scale2(n, 1.8));
-      const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
-      dimensionAnchors.set(constraintIndex, anchor);
-      const offsetAmount = dot2(sub2(anchor, mid), n);
-      const off = scale2(n, Math.abs(offsetAmount) < 0.5 ? 1.8 : offsetAmount);
-      const aa = add2(a, off);
-      const bb = add2(b, off);
-      const axis = norm2(sub2(bb, aa));
-      const projected = add2(aa, scale2(axis, dot2(sub2(anchor, aa), axis)));
-      const extentA = dot2(sub2(projected, aa), axis);
-      const extentB = dot2(sub2(projected, bb), axis);
-      lines.push({ x: a[0], y: a[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
-      lines.push({ x: b[0], y: b[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
-      lines.push({ x: aa[0], y: aa[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
-      if (extentA < 0) {
-        lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
-      } else if (extentB > 0) {
-        lines.push({ x: bb[0], y: bb[1], color: DIM_COLOR }, { x: projected[0], y: projected[1], color: DIM_COLOR });
-      }
-      lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: anchor[0], y: anchor[1], color: DIM_COLOR });
-      if (activeDimension) {
-        highlightLines.push({ x: a[0], y: a[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
-        highlightLines.push({ x: b[0], y: b[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
-        highlightLines.push({ x: aa[0], y: aa[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
-        if (extentA < 0) {
-          highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
-        } else if (extentB > 0) {
-          highlightLines.push({ x: bb[0], y: bb[1], color: DIM_HOVER }, { x: projected[0], y: projected[1], color: DIM_HOVER });
-        }
-        highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: anchor[0], y: anchor[1], color: DIM_HOVER });
-      }
+      const anchor = pushPointDistanceGeometry(lines, highlightLines, dimensionAnchors, constraintIndex, a, b, resolveLabelAnchor, activeDimension);
       labels.push({
         text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)),
         anchor,
@@ -2449,15 +2332,7 @@ function pushConstraintGeometry(
       const framePoint = framePointMap.get(constraint.frame);
       if (!aStart || !aEnd || !framePoint) return;
       const projected = projectPointToInfiniteLine(framePoint, aStart, aEnd);
-      const mid = scale2(add2(projected, framePoint), 0.5);
-      const anchor = resolveLabelAnchor(constraintIndex, mid);
-      dimensionAnchors.set(constraintIndex, anchor);
-      lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: framePoint[0], y: framePoint[1], color: DIM_COLOR });
-      lines.push({ x: mid[0], y: mid[1], color: DIM_COLOR }, { x: anchor[0], y: anchor[1], color: DIM_COLOR });
-      if (activeDimension) {
-        highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: framePoint[0], y: framePoint[1], color: DIM_HOVER });
-        highlightLines.push({ x: mid[0], y: mid[1], color: DIM_HOVER }, { x: anchor[0], y: anchor[1], color: DIM_HOVER });
-      }
+      const anchor = pushPointDistanceGeometry(lines, highlightLines, dimensionAnchors, constraintIndex, projected, framePoint, resolveLabelAnchor, activeDimension);
       labels.push({
         text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)),
         anchor,
@@ -2559,6 +2434,53 @@ function pushConstraintGeometry(
     default:
       return;
   }
+}
+
+function pushPointDistanceGeometry(
+  lines: LineVertex[],
+  highlightLines: LineVertex[],
+  dimensionAnchors: Map<number, Vec2>,
+  constraintIndex: number,
+  a: Vec2,
+  b: Vec2,
+  resolveLabelAnchor: (index: number, fallback: Vec2) => Vec2,
+  activeDimension: boolean,
+): Vec2 {
+  const dir = norm2(sub2(b, a));
+  const n = perp(dir);
+  const mid = scale2(add2(a, b), 0.5);
+  const fallbackAnchor = add2(mid, scale2(n, 1.8));
+  const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
+  dimensionAnchors.set(constraintIndex, anchor);
+  const offsetAmount = dot2(sub2(anchor, mid), n);
+  const off = scale2(n, Math.abs(offsetAmount) < 0.5 ? 1.8 : offsetAmount);
+  const aa = add2(a, off);
+  const bb = add2(b, off);
+  const axis = norm2(sub2(bb, aa));
+  const projected = add2(aa, scale2(axis, dot2(sub2(anchor, aa), axis)));
+  const extentA = dot2(sub2(projected, aa), axis);
+  const extentB = dot2(sub2(projected, bb), axis);
+  lines.push({ x: a[0], y: a[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
+  lines.push({ x: b[0], y: b[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
+  lines.push({ x: aa[0], y: aa[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
+  if (extentA < 0) {
+    lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
+  } else if (extentB > 0) {
+    lines.push({ x: bb[0], y: bb[1], color: DIM_COLOR }, { x: projected[0], y: projected[1], color: DIM_COLOR });
+  }
+  lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: anchor[0], y: anchor[1], color: DIM_COLOR });
+  if (activeDimension) {
+    highlightLines.push({ x: a[0], y: a[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
+    highlightLines.push({ x: b[0], y: b[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
+    highlightLines.push({ x: aa[0], y: aa[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
+    if (extentA < 0) {
+      highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
+    } else if (extentB > 0) {
+      highlightLines.push({ x: bb[0], y: bb[1], color: DIM_HOVER }, { x: projected[0], y: projected[1], color: DIM_HOVER });
+    }
+    highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: anchor[0], y: anchor[1], color: DIM_HOVER });
+  }
+  return anchor;
 }
 
 function computeBounds(
@@ -3214,35 +3136,26 @@ function buildFrameLineData(
   for (const frame of frames) {
     const t = toSketchFrame(frame.transform);
     const axisPx = frame.id === "origin" ? 64 : 52;
-    const originActive =
-      frameTargetMatches(hoveredTarget, frame.id, "origin") ||
-      selectedTargets.some((target) => frameTargetMatches(target, frame.id, "origin"));
+    const frameActive =
+      frameTargetMatches(hoveredTarget, frame.id) ||
+      selectedTargets.some((target) => frameTargetMatches(target, frame.id));
     const frameSelected = selectedActionId === frame.id;
-    const axisColor = (
-      part: string,
-      base: readonly number[],
-    ): readonly number[] => {
-      const active =
-        originActive ||
-        frameTargetMatches(hoveredTarget, frame.id, part) ||
-        selectedTargets.some((target) => frameTargetMatches(target, frame.id, part));
-      const alpha = active || frameSelected ? 1.0 : 0.88;
-      return active ? [ACCENT[0], ACCENT[1], ACCENT[2], alpha] : [base[0], base[1], base[2], alpha];
+    const axisColor = (base: readonly number[]): readonly number[] => {
+      const alpha = frameActive || frameSelected ? 1.0 : 0.88;
+      return frameActive ? [ACCENT[0], ACCENT[1], ACCENT[2], alpha] : [base[0], base[1], base[2], alpha];
     };
-    pushFrameAxis(data, t.position, t.xAxis, axisPx, axisColor("xAxis", [0.88, 0.42, 0.42, 1]));
-    pushFrameAxis(data, t.position, t.yAxis, axisPx, axisColor("yAxis", [0.48, 0.78, 0.54, 1]));
-    pushFrameAxis(data, t.position, t.zAxis, axisPx, axisColor("zAxis", [0.45, 0.56, 0.92, 1]));
+    pushFrameAxis(data, t.position, t.xAxis, axisPx, axisColor([0.88, 0.42, 0.42, 1]));
+    pushFrameAxis(data, t.position, t.yAxis, axisPx, axisColor([0.48, 0.78, 0.54, 1]));
+    pushFrameAxis(data, t.position, t.zAxis, axisPx, axisColor([0.45, 0.56, 0.92, 1]));
   }
   return new Float32Array(data);
 }
 
-function frameTargetMatches(target: SelectionTarget | null, frameId: string, part: string): boolean {
+function frameTargetMatches(target: SelectionTarget | null, frameId: string): boolean {
   if (!target) return false;
   switch (target.case) {
     case "TargetFrameOrigin":
-      return target.frameId === frameId && part === "origin";
-    case "TargetFrameAxis":
-      return target.frameId === frameId && target.part === part;
+      return target.frameId === frameId;
     default:
       return false;
   }

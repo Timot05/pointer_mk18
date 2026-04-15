@@ -227,6 +227,12 @@ export async function deleteAction(id: string): Promise<Document> {
   return request(`/document/action/${id}`, { method: "DELETE" });
 }
 
+export async function deleteCurrentSelection(): Promise<DocumentMutation> {
+  return requestDocumentMutation("/delete-selection", {
+    method: "POST",
+  });
+}
+
 export async function reorderActions(ids: string[]): Promise<Document> {
   return request("/document/reorder", {
     method: "PUT",

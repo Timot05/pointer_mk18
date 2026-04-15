@@ -474,7 +474,6 @@ let ``Pickable list is stable across compiles of the same input`` () =
         | PickLoop(id, s, l, _) -> sprintf "loop|%d|%s|%s" id s l
         | PickDimension(id, s, i, _) -> sprintf "dim|%d|%s|%d" id s i
         | PickFrameOrigin(id, f) -> sprintf "frame-origin|%d|%s" id f
-        | PickFrameAxis(id, f, part) -> sprintf "frame-axis|%d|%s|%s" id f part
         | PickSurface(id, a) -> sprintf "surf|%d|%s" id a
     let k1 = r1.Pickables |> List.map key
     let k2 = r2.Pickables |> List.map key

@@ -6,6 +6,8 @@ import { solveGraphWithGpu, type SolverPin } from "./gpu-lm-solver";
 import { createGpuSolver, type GpuSolver } from "./gpu-solver";
 import { loadFontMetrics, loadMsdfAtlas, type FontMetrics } from "./msdf-atlas";
 import { add2, add3, cross3, dot2, dot3, len2, norm2, norm3, perp, scale2, scale3, sub2, sub3, type Vec2, type Vec3 } from "./math";
+import { createIsosurfacePipeline } from "./pipeline-isosurface";
+import { createFieldSlicePipeline } from "./pipeline-field-slice";
 import { createMsdfLabelPipeline, writeLabelUniform } from "./pipeline-msdf-label";
 
 type PickKind = "point" | "line" | "circle" | "arc" | "loop" | "dimension";
@@ -138,6 +140,7 @@ interface GpuContext {
   device: GPUDevice;
   context: GPUCanvasContext;
   format: GPUTextureFormat;
+  cameraLayout: GPUBindGroupLayout;
   cameraBuffer: GPUBuffer;
   cameraBindGroup: GPUBindGroup;
   gizmoPipeline: GPURenderPipeline;
@@ -153,12 +156,28 @@ interface GpuContext {
   labelPipeline: GPURenderPipeline | null;
   labelBindGroup: GPUBindGroup | null;
   labelUniformBuffer: GPUBuffer | null;
+  fieldSlotBindGroupLayout: GPUBindGroupLayout;
+  fieldSurfaceBindGroupLayout: GPUBindGroupLayout;
   pickPipeline: GPUComputePipeline;
   pickBindGroupLayout: GPUBindGroupLayout;
   framePickPipeline: GPUComputePipeline;
   framePickBindGroupLayout: GPUBindGroupLayout;
   pickStateBuffer: GPUBuffer;
   pickResultBuffer: GPUBuffer;
+}
+
+interface FieldPipelineState {
+  pipeline: GPURenderPipeline;
+  slotBuffer: GPUBuffer;
+  slotBindGroup: GPUBindGroup;
+  surfaceBuffer: GPUBuffer;
+  surfaceBindGroup: GPUBindGroup;
+}
+
+interface FieldSlicePipelineState {
+  pipeline: GPURenderPipeline;
+  vertexBuffer: GPUBuffer;
+  vertexCount: number;
 }
 
 export interface ViewerStartOptions {
@@ -670,6 +689,8 @@ export class ViewerApp {
   private stateTimer: number | null = null;
   private modelTimer: number | null = null;
   private startOptions: ViewerStartOptions = {};
+  private fieldPipeline: FieldPipelineState | null = null;
+  private fieldSlicePipeline: FieldSlicePipelineState | null = null;
   private renderQueued = false;
   private isPicking = false;
   private solveInFlight: Promise<void> | null = null;
@@ -729,6 +750,8 @@ export class ViewerApp {
     if (this.drag) return;
     this.destroySolverBindings();
     this.model = await getViewerModel();
+    this.rebuildFieldPipeline();
+    this.rebuildFieldSlicePipeline();
     this.slotLookup = new Map(this.model.slotIndex.map((entry) => [`${entry.actionId}:${entry.path}`, entry.slot]));
     await this.buildSolverBindings();
     this.rebuildRenderData();
@@ -739,6 +762,8 @@ export class ViewerApp {
   private async reloadState(): Promise<void> {
     if (this.drag) return;
     this.state = await getViewerState();
+    this.updateFieldBuffers();
+    this.updateFieldSliceBuffers();
     await this.solveSketches();
     this.rebuildRenderData();
     if (this.resetCameraPending) {
@@ -1169,6 +1194,7 @@ export class ViewerApp {
         frame,
         (constraintIndex) => this.constraintLabelPosition(sketch.id, constraintIndex),
         this.state!.visibleDimensionSketchIds.includes(sketch.id),
+        this.state!.sketchUi.editMode && this.state!.selectedId === sketch.id,
       );
       return {
         sketchId: sketch.id,
@@ -1301,6 +1327,21 @@ export class ViewerApp {
       }],
     });
     pass.setBindGroup(0, cameraBindGroup);
+
+    if (this.fieldPipeline) {
+      this.updateFieldBuffers();
+      pass.setPipeline(this.fieldPipeline.pipeline);
+      pass.setBindGroup(1, this.fieldPipeline.slotBindGroup);
+      pass.setBindGroup(2, this.fieldPipeline.surfaceBindGroup);
+      pass.draw(3);
+    }
+
+    if (this.fieldSlicePipeline && this.fieldPipeline && this.fieldSlicePipeline.vertexCount > 0) {
+      pass.setPipeline(this.fieldSlicePipeline.pipeline);
+      pass.setBindGroup(1, this.fieldPipeline.slotBindGroup);
+      pass.setVertexBuffer(0, this.fieldSlicePipeline.vertexBuffer);
+      pass.draw(this.fieldSlicePipeline.vertexCount);
+    }
 
     const frameLineData = this.state
       ? buildFrameLineData(
@@ -1813,6 +1854,112 @@ export class ViewerApp {
     return { sketchId: authored.model.id, x: local[0], y: local[1] };
   }
 
+  private rebuildFieldPipeline(): void {
+    this.fieldPipeline?.slotBuffer.destroy();
+    this.fieldPipeline?.surfaceBuffer.destroy();
+    this.fieldPipeline = null;
+    if (!this.gpu || !this.model?.fieldWgsl) return;
+    const { device, format, cameraLayout, fieldSlotBindGroupLayout, fieldSurfaceBindGroupLayout } = this.gpu;
+    const pipeline = createIsosurfacePipeline(
+      device,
+      format,
+      this.model.fieldWgsl,
+      cameraLayout,
+      fieldSlotBindGroupLayout,
+      fieldSurfaceBindGroupLayout,
+    );
+    const slotBuffer = device.createBuffer({
+      size: Math.max(16, Math.max(this.model.numSlots, 1) * 4),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    const slotBindGroup = device.createBindGroup({
+      layout: fieldSlotBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: slotBuffer } }],
+    });
+    const surfaceBuffer = device.createBuffer({
+      size: Math.max(32, Math.max(this.model.fieldSurfaceActionIds.length, 1) * 32),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    const surfaceBindGroup = device.createBindGroup({
+      layout: fieldSurfaceBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: surfaceBuffer } }],
+    });
+    this.fieldPipeline = { pipeline, slotBuffer, slotBindGroup, surfaceBuffer, surfaceBindGroup };
+    this.updateFieldBuffers();
+  }
+
+  private rebuildFieldSlicePipeline(): void {
+    this.fieldSlicePipeline?.vertexBuffer.destroy();
+    this.fieldSlicePipeline = null;
+    if (!this.gpu || !this.model?.fieldSliceWgsl) return;
+    const { device, format, cameraLayout, fieldSlotBindGroupLayout } = this.gpu;
+    const pipeline = createFieldSlicePipeline(
+      device,
+      format,
+      this.model.fieldSliceWgsl,
+      cameraLayout,
+      fieldSlotBindGroupLayout,
+    );
+    const vertexData = buildFieldSliceVertexData(this.state?.fieldSlices ?? [], this.camera, this.canvas);
+    const vertexBuffer = device.createBuffer({
+      size: Math.max(16, vertexData.byteLength),
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    if (vertexData.byteLength > 0) {
+      device.queue.writeBuffer(vertexBuffer, 0, vertexData);
+    }
+    this.fieldSlicePipeline = {
+      pipeline,
+      vertexBuffer,
+      vertexCount: vertexData.length / 7,
+    };
+  }
+
+  private updateFieldBuffers(): void {
+    if (!this.gpu || !this.model || !this.state || !this.fieldPipeline) return;
+    const { device } = this.gpu;
+    const { slotBuffer, surfaceBuffer } = this.fieldPipeline;
+    device.queue.writeBuffer(slotBuffer, 0, new Float32Array(this.state.params));
+
+    const surfaceState = new Float32Array(Math.max(this.model.fieldSurfaceActionIds.length, 1) * 8);
+    this.model.fieldSurfaceActionIds.forEach((actionId, index) => {
+      const base = index * 8;
+      const entry = this.state!.display[actionId] as { display?: { enabled?: boolean; color?: number[]; opacity?: number; isoValue?: number } } | undefined;
+      const raw = entry?.display;
+      const color = raw?.color ?? [0.522, 0.682, 0.784];
+      const opacity = raw?.opacity ?? 0.9;
+      const isoValue = raw?.isoValue ?? 0.0;
+      const enabled = (this.state!.visible[actionId] ?? true) && (raw?.enabled ?? false);
+      surfaceState[base + 0] = color[0] ?? 0.522;
+      surfaceState[base + 1] = color[1] ?? 0.682;
+      surfaceState[base + 2] = color[2] ?? 0.784;
+      surfaceState[base + 3] = opacity;
+      surfaceState[base + 4] = isoValue;
+      surfaceState[base + 5] = enabled ? 1 : 0;
+      surfaceState[base + 6] = 0;
+      surfaceState[base + 7] = 0;
+    });
+    device.queue.writeBuffer(surfaceBuffer, 0, surfaceState);
+  }
+
+  private updateFieldSliceBuffers(): void {
+    if (!this.gpu || !this.fieldSlicePipeline) return;
+    const vertexData = buildFieldSliceVertexData(this.state?.fieldSlices ?? [], this.camera, this.canvas);
+    this.fieldSlicePipeline.vertexBuffer.destroy();
+    const vertexBuffer = this.gpu.device.createBuffer({
+      size: Math.max(16, vertexData.byteLength),
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    if (vertexData.byteLength > 0) {
+      this.gpu.device.queue.writeBuffer(vertexBuffer, 0, vertexData);
+    }
+    this.fieldSlicePipeline = {
+      ...this.fieldSlicePipeline,
+      vertexBuffer,
+      vertexCount: vertexData.length / 7,
+    };
+  }
+
   private async initGpu(): Promise<GpuContext> {
     if (!navigator.gpu) throw new Error("WebGPU unavailable");
     const adapter = await navigator.gpu.requestAdapter();
@@ -1824,7 +1971,7 @@ export class ViewerApp {
     context.configure({ device, format, alphaMode: "opaque" });
 
     const cameraLayout = device.createBindGroupLayout({
-      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE, buffer: { type: "uniform" } }],
+      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: "uniform" } }],
     });
     const sketchFrameLayout = device.createBindGroupLayout({
       entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.COMPUTE, buffer: { type: "uniform" } }],
@@ -1986,6 +2133,17 @@ export class ViewerApp {
       labelUniformBuffer = null;
     }
 
+    const fieldSlotBindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      ],
+    });
+    const fieldSurfaceBindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+      ],
+    });
+
     const pickBindGroupLayout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
@@ -2021,6 +2179,7 @@ export class ViewerApp {
       device,
       context,
       format,
+      cameraLayout,
       cameraBuffer,
       cameraBindGroup,
       gizmoPipeline,
@@ -2036,6 +2195,8 @@ export class ViewerApp {
       labelPipeline,
       labelBindGroup,
       labelUniformBuffer,
+      fieldSlotBindGroupLayout,
+      fieldSurfaceBindGroupLayout,
       pickPipeline,
       pickBindGroupLayout,
       framePickPipeline,
@@ -2062,6 +2223,7 @@ function buildSketchBuffers(
   sketchFrame?: SketchFrame,
   stateLabelPosition?: (constraintIndex: number) => Vec2 | null,
   showDimensions?: boolean,
+  showGrid?: boolean,
 ): { buffers: RenderBuffers; loops: ResolvedLoopGeometry[]; dimensionAnchors: Map<number, Vec2> } {
   const entityMap = new Map(viewerSketch.sketch.entities.map((entity) => [entity.id, entity]));
   const pointMap = new Map<string, Vec2>();
@@ -2116,7 +2278,9 @@ function buildSketchBuffers(
   }
 
   const [minPoint, maxPoint] = computeBounds(viewerSketch.sketch, pointMap, resolveValue);
-  pushGrid(lineVertices, minPoint, maxPoint);
+  if (showGrid) {
+    pushGrid(lineVertices, minPoint, maxPoint);
+  }
 
   for (const entity of viewerSketch.sketch.entities) {
     if (entity.case === "REPoint") {
@@ -2597,21 +2761,19 @@ function pushAngleArc(
 }
 
 function pushGrid(lines: LineVertex[], min: Vec2, max: Vec2): void {
-  const pad = 8;
-  const loX = Math.floor((min[0] - pad) / 5) * 5;
-  const hiX = Math.ceil((max[0] + pad) / 5) * 5;
-  const loY = Math.floor((min[1] - pad) / 5) * 5;
-  const hiY = Math.ceil((max[1] + pad) / 5) * 5;
-  for (let x = loX; x <= hiX; x += 1) {
-    const color = x % 5 === 0 ? GRID_MAJOR : GRID_MINOR;
-    lines.push({ x, y: loY, color }, { x, y: hiY, color });
+  const pad = 10;
+  const reach = Math.max(
+    10,
+    Math.ceil((Math.max(Math.abs(min[0]), Math.abs(max[0]), Math.abs(min[1]), Math.abs(max[1])) + pad) / 5) * 5,
+  );
+  for (let x = -reach; x <= reach; x += 5) {
+    lines.push({ x, y: -reach, color: GRID_MAJOR }, { x, y: reach, color: GRID_MAJOR });
   }
-  for (let y = loY; y <= hiY; y += 1) {
-    const color = y % 5 === 0 ? GRID_MAJOR : GRID_MINOR;
-    lines.push({ x: loX, y, color }, { x: hiX, y, color });
+  for (let y = -reach; y <= reach; y += 5) {
+    lines.push({ x: -reach, y, color: GRID_MAJOR }, { x: reach, y, color: GRID_MAJOR });
   }
-  lines.push({ x: loX, y: 0, color: AXIS }, { x: hiX, y: 0, color: AXIS });
-  lines.push({ x: 0, y: loY, color: AXIS }, { x: 0, y: hiY, color: AXIS });
+  lines.push({ x: -reach, y: 0, color: AXIS }, { x: reach, y: 0, color: AXIS });
+  lines.push({ x: 0, y: -reach, color: AXIS }, { x: 0, y: reach, color: AXIS });
 }
 
 function resolveLoopGeometry(
@@ -3154,6 +3316,68 @@ function buildFrameLineData(
     pushFrameAxis(data, t.position, t.zAxis, axisPx, axisColor([0.45, 0.56, 0.92, 1]));
   }
   return new Float32Array(data);
+}
+
+function buildFieldSliceVertexData(slices: Array<{
+  surfaceIndex: number;
+  planeOrigin: { x: number; y: number; z: number };
+  planeX: { x: number; y: number; z: number };
+  planeY: { x: number; y: number; z: number };
+  extent: number;
+}>, camera: CameraState, canvas: HTMLCanvasElement): Float32Array {
+  const verts: number[] = [];
+  for (const slice of slices) {
+    const o: Vec3 = [slice.planeOrigin.x, slice.planeOrigin.y, slice.planeOrigin.z];
+    const x: Vec3 = [slice.planeX.x, slice.planeX.y, slice.planeX.z];
+    const y: Vec3 = [slice.planeY.x, slice.planeY.y, slice.planeY.z];
+    const e = adaptiveFieldSliceExtent(o, x, y, slice.extent, camera, canvas);
+    const p00 = sub3(sub3(o, scale3(x, e)), scale3(y, e));
+    const p10 = add3(sub3(o, scale3(y, e)), scale3(x, e));
+    const p01 = add3(sub3(o, scale3(x, e)), scale3(y, e));
+    const p11 = add3(add3(o, scale3(x, e)), scale3(y, e));
+    const push = (p: Vec3, u: number, v: number) => verts.push(p[0], p[1], p[2], slice.surfaceIndex, u, v, 0);
+    push(p00, -1, -1); push(p10, 1, -1); push(p01, -1, 1);
+    push(p10, 1, -1); push(p11, 1, 1); push(p01, -1, 1);
+  }
+  return new Float32Array(verts);
+}
+
+function adaptiveFieldSliceExtent(
+  origin: Vec3,
+  planeX: Vec3,
+  planeY: Vec3,
+  baseExtent: number,
+  camera: CameraState,
+  canvas: HTMLCanvasElement,
+): number {
+  const xAxis = norm3(planeX);
+  const yAxis = norm3(planeY);
+  const normal = norm3(cross3(xAxis, yAxis));
+  const { eye, forward, right, up } = viewBasis(camera);
+  const aspect = canvas.width / Math.max(canvas.height, 1);
+  const tan = Math.tan(HALF_FOV);
+
+  let maxAbs = 0;
+  const corners: Vec2[] = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+  for (const [nx, ny] of corners) {
+    const rd = norm3(add3(forward, add3(scale3(right, nx * aspect * tan), scale3(up, ny * tan))));
+    const denom = dot3(rd, normal);
+    if (Math.abs(denom) < 1e-5) continue;
+    const t = dot3(sub3(origin, eye), normal) / denom;
+    if (t <= 0) continue;
+    const hit = add3(eye, scale3(rd, t));
+    const rel = sub3(hit, origin);
+    maxAbs = Math.max(maxAbs, Math.abs(dot3(rel, xAxis)), Math.abs(dot3(rel, yAxis)));
+  }
+
+  if (maxAbs > 0) {
+    return Math.max(baseExtent, maxAbs * 1.1);
+  }
+
+  const centerDist = Math.max(0.1, len3(sub3(origin, eye)));
+  const facing = Math.max(0.2, Math.abs(dot3(forward, normal)));
+  const fallback = centerDist * tan * Math.max(1, aspect) / facing;
+  return Math.max(baseExtent, fallback * 1.2);
 }
 
 function frameTargetMatches(target: SelectionTarget | null, frameId: string): boolean {

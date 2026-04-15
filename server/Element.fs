@@ -41,7 +41,6 @@ type Element =
         sketchActionId: ActionId *    // the source Sketch action
         sketch: ActionSketch *
         selection: FromSketchSelection *
-        closed: bool *
         flip: bool
 
 type BuildResult =
@@ -179,7 +178,7 @@ module Element =
                 let childElem, state = resolveChild child state
                 EShell(id, childElem, t), state
 
-            | FromSketch(child, closed, flip, selection) ->
+            | FromSketch(child, flip, selection) ->
                 // Look up the source Sketch action to snapshot its entities
                 // and its origin frame chain.
                 match child with
@@ -197,7 +196,7 @@ module Element =
                                     c, (built, frames')
                                 | None -> [], state
                             let core =
-                                EFromSketch(id, sketchId, sketch, selection, closed, flip)
+                                EFromSketch(id, sketchId, sketch, selection, flip)
                             applyFrame frameChain' core, state
                         | _ -> EEmpty, state
                     | None -> EEmpty, state

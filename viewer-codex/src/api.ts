@@ -63,6 +63,9 @@ export interface Pickable {
 
 export interface ViewerModel {
   surfaces: unknown[];
+  fieldWgsl: string | null;
+  fieldSliceWgsl: string | null;
+  fieldSurfaceActionIds: string[];
   sketches: ViewerSketch[];
   numSlots: number;
   slotIndex: SlotIndexEntry[];
@@ -90,6 +93,13 @@ export interface ViewerState {
   frames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchEditFrames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchFrames: Array<{ id: string; transform: JsonRigidTransform }>;
+  fieldSlices: Array<{
+    surfaceIndex: number;
+    planeOrigin: JsonVec3;
+    planeX: JsonVec3;
+    planeY: JsonVec3;
+    extent: number;
+  }>;
   visible: Record<string, boolean>;
   constraintLabelPositions: Array<{ sketchId: string; constraintIndex: number; position: { x: number; y: number } }>;
   display: Record<string, unknown>;

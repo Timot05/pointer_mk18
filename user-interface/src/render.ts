@@ -38,6 +38,15 @@ function kindSubtitle(kind: ActionKind): string {
   }
 }
 
+function fromSketchLoopOptions(doc: Document, childId: string | null): Array<{ value: string; label: string }> {
+  if (!childId) return [];
+  const loops = doc.sketchLoops[childId] ?? [];
+  return loops.map((loop, index) => ({
+    value: loop.id,
+    label: `loop ${index + 1}`,
+  }));
+}
+
 // ── Param fields for each kind ────────────────────────────────────────
 
 interface ParamField {
@@ -93,7 +102,7 @@ function paramFields(kind: ActionKind): ParamField[] {
 
 export type OnSelect = (id: string) => void;
 export type OnToggleVisible = (id: string) => void;
-export type OnParamChange = (actionId: string, key: string, value: number | string | boolean) => void;
+export type OnParamChange = (actionId: string, key: string, value: number | string | boolean | object) => void;
 export type OnParamRapid = (actionId: string, key: string, value: number | string | boolean) => void;
 export type OnAddAction = (kindCase: string) => void;
 export type OnOpenPalette = () => void;
@@ -674,10 +683,8 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
 
     case "FromSketch":
       strip.appendChild(controlRef("sketch", kind.child, refOptsFor("child"), selected.id, "child", cb));
-      strip.appendChild(controlCheck("closed", kind.closed, selected.id, "closed", cb));
-      if (kind.closed) {
-        strip.appendChild(controlCheck("flip", kind.flip, selected.id, "flip", cb));
-      }
+      strip.appendChild(controlCheck("flip", kind.flip, selected.id, "flip", cb));
+      strip.appendChild(controlFromSketchLoop(doc, kind, selected.id, cb));
       break;
 
     case "Thicken":
@@ -756,16 +763,17 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
       const colorRow = el("div", "control-row color-row");
       colorRow.appendChild(el("span", "control-name", "color"));
       const swatches = el("div", "color-swatches");
+      // Roadrunner + Coyote-Roadrunner cartoon palette
       const colors: [string, number[]][] = [
-        ["#85AEC8", [0.522, 0.682, 0.784]],
-        ["#C88585", [0.784, 0.522, 0.522]],
-        ["#85C8A3", [0.522, 0.784, 0.639]],
-        ["#C8B885", [0.784, 0.722, 0.522]],
-        ["#A385C8", [0.639, 0.522, 0.784]],
-        ["#C885B8", [0.784, 0.522, 0.722]],
-        ["#85C8C8", [0.522, 0.784, 0.784]],
-        ["#B8C885", [0.722, 0.784, 0.522]],
-        ["#AAAAAA", [0.667, 0.667, 0.667]],
+        ["#85AEC8", [0x85 / 255, 0xAE / 255, 0xC8 / 255]], // Urban Sky Blue
+        ["#341D7C", [0x34 / 255, 0x1D / 255, 0x7C / 255]], // Supreme Indigo
+        ["#F1BA23", [0xF1 / 255, 0xBA / 255, 0x23 / 255]], // Egg Yolk
+        ["#FFFFFF", [1.0, 1.0, 1.0]],                       // Full White
+        ["#AC6614", [0xAC / 255, 0x66 / 255, 0x14 / 255]], // Reno Sand
+        ["#E4D6AF", [0xE4 / 255, 0xD6 / 255, 0xAF / 255]], // Hampton
+        ["#7D6400", [0x7D / 255, 0x64 / 255, 0x00 / 255]], // Yukon Gold
+        ["#FFFFAA", [1.0, 1.0, 0xAA / 255]],                // Pale Yellow
+        ["#D10005", [0xD1 / 255, 0x00 / 255, 0x05 / 255]], // Russian Red
       ];
       for (const [hex, rgb] of colors) {
         const swatch = el("button", "color-swatch");
@@ -839,6 +847,17 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
         );
         sliceOffsetRow.appendChild(sliceOffsetVal);
         controls.appendChild(sliceOffsetRow);
+
+        const sliceExtentRow = el("div", "control-row");
+        sliceExtentRow.appendChild(el("span", "control-name", "extent"));
+        const sliceExtentVal = el("span", "control-value", fs.extent.toFixed(1));
+        setupDraggable(
+          sliceExtentVal, fs.extent,
+          () => {},
+          (v) => cb.onFieldSliceChange(selected.id, "extent", Math.max(0.1, v))
+        );
+        sliceExtentRow.appendChild(sliceExtentVal);
+        controls.appendChild(sliceExtentRow);
       }
     }
 
@@ -932,5 +951,39 @@ function controlCheck(
   });
   row.appendChild(input);
   row.appendChild(el("label", "", label));
+  return row;
+}
+
+function controlFromSketchLoop(
+  doc: Document,
+  kind: Extract<ActionKind, { case: "FromSketch" }>,
+  actionId: string,
+  cb: RenderCallbacks,
+): HTMLElement {
+  const row = el("div", "control-row");
+  row.appendChild(el("span", "control-name", "loop"));
+  const select = document.createElement("select");
+  select.className = "control-select";
+  const auto = document.createElement("option");
+  auto.value = "";
+  auto.textContent = "first (auto)";
+  select.appendChild(auto);
+  const currentSelection = kind.selection.case === "SelectionLoop" ? (kind.selection.loopId ?? "") : "";
+  const options = fromSketchLoopOptions(doc, kind.child);
+  for (const option of options) {
+    const o = document.createElement("option");
+    o.value = option.value;
+    o.textContent = option.label;
+    if (option.value === currentSelection) o.selected = true;
+    select.appendChild(o);
+  }
+  select.disabled = !kind.child || options.length === 0;
+  select.addEventListener("change", () => {
+    cb.onParamChange(actionId, "selection", {
+      case: "SelectionLoop",
+      loopId: select.value || null,
+    });
+  });
+  row.appendChild(select);
   return row;
 }

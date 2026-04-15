@@ -337,7 +337,7 @@ let ``SketchCompile supports frame line distance to projected frame origin`` () 
 let ``FromSketch with SelectionLoop None compiles to FSketch with 4 line segments`` () =
     let r =
         pipeline [ action "sk" (Sketch(None, squareSketch))
-                   action "f" (FromSketch(Some "sk", true, false, SelectionLoop None)) ]
+                   action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
     let f = surfaceFor "f" r.Surfaces
     match f.Field with
     | FSketch { Primitives = prims; Closed = true; Flip = false } ->
@@ -356,18 +356,17 @@ let ``FromSketch with SelectionElements compiles lines in the given order`` () =
                    action "f" (FromSketch(
                        Some "sk",
                        false,
-                       false,
                        SelectionElements [ "l_bottom"; "l_right" ])) ]
     let f = surfaceFor "f" r.Surfaces
     match f.Field with
-    | FSketch { Primitives = [ SpLineSegment _; SpLineSegment _ ]; Closed = false } -> ()
+    | FSketch { Primitives = [ SpLineSegment _; SpLineSegment _ ]; Closed = true } -> ()
     | other -> failwithf "Expected two-line FSketch, got %A" other
 
 [<Fact>]
 let ``FSketch primitive slots match the sketch's pre-allocated point slots`` () =
     let r =
         pipeline [ action "sk" (Sketch(None, squareSketch))
-                   action "f" (FromSketch(Some "sk", true, false, SelectionLoop None)) ]
+                   action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
     let f = surfaceFor "f" r.Surfaces
     // Grab the first segment and verify its start-point slots coincide
     // with sketch "sk"'s authored point slots for one of the corners.
@@ -388,7 +387,7 @@ let ``FromSketch with a Sketch origin wraps FSketch in FTranslate`` () =
         pipeline [ action "o" Origin
                    action "tf" (Translate(Some "o", 5.0, 0.0, 0.0))
                    action "sk" (Sketch(Some "tf", squareSketch))
-                   action "f" (FromSketch(Some "sk", true, false, SelectionLoop None)) ]
+                   action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
     let f = surfaceFor "f" r.Surfaces
     match f.Field with
     | FTranslate(xSlot, _, _, FSketch _) ->

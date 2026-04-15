@@ -150,7 +150,7 @@ let ``Move with Field child produces Field`` () =
 let ``FromSketch converts Sketch to Field`` () =
     let typed =
         [ action "sk" (Sketch(None, ActionSketch.empty))
-          action "fs" (FromSketch(Some "sk", true, false, FromSketchSelection.defaults)) ]
+          action "fs" (FromSketch(Some "sk", false, FromSketchSelection.defaults)) ]
         |> TypeCheck.typecheck |> ok
     Assert.Equal(FieldType.Field, outputOf "fs" typed)
     Assert.Equal(("sk", FieldType.Sketch), inputOf "fs" "child" typed)
@@ -253,7 +253,7 @@ let ``Union with Sketch input produces TypeMismatch`` () =
 let ``FromSketch with Field input produces TypeMismatch`` () =
     let errs =
         [ action "s" (Sphere 5.0)
-          action "fs" (FromSketch(Some "s", true, false, FromSketchSelection.defaults)) ]
+          action "fs" (FromSketch(Some "s", false, FromSketchSelection.defaults)) ]
         |> TypeCheck.typecheck |> errors
     match errs with
     | [ TypeMismatch(id, key, expected, got) ] ->

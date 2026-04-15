@@ -193,7 +193,7 @@ module FieldCompile =
             compileElement b child
             |> Option.map (fun fc -> FFieldOp(OpShell, slot id "thickness" t, fc))
 
-        | EFromSketch(_, sketchActionId, sketch, selection, closed, flip) ->
+        | EFromSketch(_, sketchActionId, sketch, selection, flip) ->
             let entityMap =
                 sketch.Entities
                 |> List.map (fun e -> entityId e, e)
@@ -205,7 +205,7 @@ module FieldCompile =
                     Map.tryFind eid entityMap
                     |> Option.bind (entityToPrimitive b sketchActionId entityMap))
             if prims.IsEmpty then None
-            else Some (FSketch { Primitives = prims; Closed = closed; Flip = flip })
+            else Some (FSketch { Primitives = prims; Closed = true; Flip = flip })
 
     /// Compile each visible action's element tree into a FieldSurface.
     /// Slots are allocated into the provided builder. Skipped (None) if the
@@ -213,8 +213,6 @@ module FieldCompile =
     let compile (actions: DocAction list) (elements: Map<ActionId, Element>) (b: SlotTable.Builder) : FieldSurface list =
         actions
         |> List.choose (fun action ->
-            if not action.Visible then None
-            else
-                Map.tryFind action.Id elements
-                |> Option.bind (compileElement b)
-                |> Option.map (fun field -> { ActionId = action.Id; Field = field }))
+            Map.tryFind action.Id elements
+            |> Option.bind (compileElement b)
+            |> Option.map (fun field -> { ActionId = action.Id; Field = field }))

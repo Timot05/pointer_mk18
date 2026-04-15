@@ -115,6 +115,57 @@ module Program =
         let dy = by - ay
         sqrt (dx * dx + dy * dy)
 
+    let slotValue (slot: Slot) =
+        compiled.Slots.Values.[slot]
+
+    let localSliceBasis plane =
+        match plane with
+        | "X" -> { X = 0.0; Y = 1.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }, { X = 1.0; Y = 0.0; Z = 0.0 }
+        | "Y" -> { X = 1.0; Y = 0.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }, { X = 0.0; Y = 1.0; Z = 0.0 }
+        | _ -> { X = 1.0; Y = 0.0; Z = 0.0 }, { X = 0.0; Y = 1.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }
+
+    let rec leadingFieldTransform (field: FieldNode) (acc: RigidTransform) =
+        match field with
+        | FTranslate(x, y, z, child) ->
+            let step = RigidTransform.translate { X = slotValue x; Y = slotValue y; Z = slotValue z }
+            leadingFieldTransform child (acc * step)
+        | FRotate(ax, ay, az, angle, child) ->
+            let step =
+                RigidTransform.fromAxisAngle
+                    { X = slotValue ax; Y = slotValue ay; Z = slotValue az }
+                    (slotValue angle)
+            leadingFieldTransform child (acc * step)
+        | FFieldOp(_, _, child) ->
+            leadingFieldTransform child acc
+        | _ ->
+            acc
+
+    let activeFieldSlices () =
+        let surfaceIndexByAction =
+            compiled.Surfaces
+            |> List.mapi (fun index surface -> surface.ActionId, (index, surface.Field))
+            |> Map.ofList
+
+        doc.Actions
+        |> List.choose (fun action ->
+            let fs = action.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
+            if not action.Visible || not fs.Enabled then None else
+            match Map.tryFind action.Id surfaceIndexByAction with
+            | None -> None
+            | Some(surfaceIndex, field) ->
+                let frame = leadingFieldTransform field RigidTransform.Identity
+                let localX, localY, localN = localSliceBasis fs.Plane
+                let planeX = frame.Rot.Rotate(localX)
+                let planeY = frame.Rot.Rotate(localY)
+                let planeN = frame.Rot.Rotate(localN)
+                let origin = frame.Trans + fs.Offset * planeN
+                Some
+                    {| SurfaceIndex = surfaceIndex
+                       PlaneOrigin = origin
+                       PlaneX = planeX
+                       PlaneY = planeY
+                       Extent = fs.Extent |})
+
     let withResolvedPendingConstraintValue (state: SketchUiState) =
         let resolved =
             state.PendingConstraintPlacement
@@ -254,10 +305,24 @@ module Program =
                 | _ ->
                     { a with Display = None; FieldSlice = None })
 
+        let sketchLoops =
+            actions
+            |> List.choose (fun a ->
+                match a.Kind with
+                | Sketch(_, sketch) ->
+                    let loops =
+                        SketchLoops.detectLoops sketch.Entities
+                        |> List.map (fun loop -> {| Id = loop.Id; EntityIds = loop.EntityIds |})
+                    Some (a.Id, loops)
+                | _ -> None)
+            |> Map.ofList
+
         {| Name = doc.Name; Actions = actions; SelectedId = doc.SelectedId
            SelectedTargets = selectedTargets
            SketchUi = sketchUiState ()
-           RefOptions = refOptions; Errors = errors |}
+           RefOptions = refOptions
+           SketchLoops = sketchLoops
+           Errors = errors |}
 
     let json () =
         Results.Content(JsonSerializer.Serialize(json_payload (), jsonOpts), "application/json")
@@ -402,6 +467,7 @@ module Program =
            Frames = frames
            SketchEditFrames = sketchEditFrames
            SketchFrames = sketchFrames
+           FieldSlices = activeFieldSlices ()
            Visible = visibleByAction
            ConstraintLabelPositions = constraintLabelPositions
            Display = displayByAction
@@ -480,6 +546,9 @@ module Program =
                         | _ -> None)
                 let payload =
                     {| Surfaces = compiled.Surfaces
+                       FieldWgsl = GpuIsosurface.combinedIsosurfaceWgsl compiled.Surfaces
+                       FieldSliceWgsl = GpuFieldSlice.combinedFieldSliceWgsl compiled.Surfaces
+                       FieldSurfaceActionIds = compiled.Surfaces |> List.map (fun s -> s.ActionId)
                        Sketches = sketches
                        NumSlots = compiled.Slots.Values.Length
                        SlotIndex = indexList

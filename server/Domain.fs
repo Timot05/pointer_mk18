@@ -1,5 +1,6 @@
 namespace Server
 
+open System.Text.Json
 open System.Text.Json.Serialization
 
 // ---------------------------------------------------------------------------
@@ -21,7 +22,7 @@ type ActionKind =
     | Subtract of a: ActionId option * b: ActionId option * radius: float
     | Intersect of a: ActionId option * b: ActionId option * radius: float
     | Sketch of origin: ActionId option * sketch: ActionSketch
-    | FromSketch of child: ActionId option * closed: bool * flip: bool * selection: FromSketchSelection
+    | FromSketch of child: ActionId option * flip: bool * selection: FromSketchSelection
     | Thicken of child: ActionId option * amount: float
     | Shell of child: ActionId option * thickness: float
     | Mesh of child: ActionId option * size: float * resolution: int
@@ -50,7 +51,7 @@ module FieldSliceSettings =
         { Enabled = false
           Plane = "Z"
           Offset = 0.0
-          Extent = 0.5 }
+          Extent = 20.0 }
 
 type DocAction =
     { Id: ActionId
@@ -284,12 +285,32 @@ module Document =
                                     (if key.StartsWith("sketch.entity.") then patchSketchEntityParam key value s
                                      elif key.StartsWith("sketch.constraint.") then patchSketchConstraintParam key value s
                                      else s))
-                            | FromSketch(c, closed, flip, sel) ->
+                            | FromSketch(c, flip, sel) ->
+                                let selection =
+                                    if key = "selection" then
+                                        let mutable caseEl = Unchecked.defaultof<JsonElement>
+                                        if value.TryGetProperty("case", &caseEl) then
+                                            match caseEl.GetString() with
+                                            | "SelectionElements" ->
+                                                let mutable lineIdsEl = Unchecked.defaultof<JsonElement>
+                                                let lineIds =
+                                                    if value.TryGetProperty("lineIds", &lineIdsEl) then
+                                                        lineIdsEl.EnumerateArray() |> Seq.map (fun item -> item.GetString()) |> Seq.toList
+                                                    else []
+                                                SelectionElements lineIds
+                                            | _ ->
+                                                let mutable loopIdEl = Unchecked.defaultof<JsonElement>
+                                                let loopId =
+                                                    if value.TryGetProperty("loopId", &loopIdEl) then
+                                                        if loopIdEl.ValueKind = JsonValueKind.Null then None else Some (loopIdEl.GetString())
+                                                    else None
+                                                SelectionLoop loopId
+                                        else sel
+                                    else sel
                                 FromSketch(
                                     (if key = "child" then optStr value else c),
-                                    (if key = "closed" then value.GetBoolean() else closed),
                                     (if key = "flip" then value.GetBoolean() else flip),
-                                    sel)
+                                    selection)
                             | Thicken(c, amt) ->
                                 Thicken(
                                     (if key = "child" then optStr value else c),
@@ -369,7 +390,6 @@ module Document =
                 Name = Some "from-sketch"
                 Kind = FromSketch(
                     child = Some "sketch1",
-                    closed = true,
                     flip = false,
                     selection = SelectionLoop None)
                 Visible = true

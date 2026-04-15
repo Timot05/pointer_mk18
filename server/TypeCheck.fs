@@ -161,7 +161,7 @@ module TypeCheck =
                 emit id FieldType.Field (addInput "child" resolved Map.empty) types typed errors
 
             // ── Type converters ──────────────────────────────────────
-            | FromSketch(child, _, _, _) ->
+            | FromSketch(child, _, _) ->
                 let resolved, errors = resolveTyped id "child" child [ FieldType.Sketch ] seen types index errors
                 emit id FieldType.Field (addInput "child" resolved Map.empty) types typed errors
 

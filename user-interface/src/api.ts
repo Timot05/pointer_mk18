@@ -94,7 +94,7 @@ export type ActionKind =
   | { case: "Subtract"; a: string | null; b: string | null; radius: number }
   | { case: "Intersect"; a: string | null; b: string | null; radius: number }
   | { case: "Sketch"; origin: string | null; sketch: ActionSketch }
-  | { case: "FromSketch"; child: string | null; closed: boolean; flip: boolean; selection: FromSketchSelection }
+  | { case: "FromSketch"; child: string | null; flip: boolean; selection: FromSketchSelection }
   | { case: "Thicken"; child: string | null; amount: number }
   | { case: "Shell"; child: string | null; thickness: number }
   | { case: "Mesh"; child: string | null; size: number; resolution: number };
@@ -112,6 +112,7 @@ export interface Document {
   selectedTargets: SelectionTarget[];
   sketchUi: SketchUiState;
   refOptions: Record<string, string[]>;
+  sketchLoops: Record<string, Array<{ id: string; entityIds: string[] }>>;
   errors: ActionError[];
 }
 
@@ -173,7 +174,7 @@ export async function selectAction(id: string): Promise<Document> {
   return request(`/document/select/${id}`, { method: "PUT" });
 }
 
-export async function patchActionParam(id: string, key: string, value: number | string | boolean): Promise<DocumentMutation> {
+export async function patchActionParam(id: string, key: string, value: number | string | boolean | object): Promise<DocumentMutation> {
   return requestDocumentMutation(`/document/action/${id}/param`, {
     method: "PATCH",
     body: JSON.stringify({ key, value }),

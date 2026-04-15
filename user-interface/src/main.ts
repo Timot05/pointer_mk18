@@ -23,7 +23,7 @@ function defaultKind(kindCase: string): ActionKind | null {
     case "Subtract": return { case: "Subtract", a: null, b: null, radius: 0 };
     case "Intersect": return { case: "Intersect", a: null, b: null, radius: 0 };
     case "Sketch": return { case: "Sketch", origin: null, sketch: { entities: [], constraints: [] } };
-    case "FromSketch": return { case: "FromSketch", child: null, closed: true, flip: false, selection: { case: "SelectionLoop", loopId: null } };
+    case "FromSketch": return { case: "FromSketch", child: null, flip: false, selection: { case: "SelectionLoop", loopId: null } };
     case "Thicken": return { case: "Thicken", child: null, amount: 2 };
     case "Shell": return { case: "Shell", child: null, thickness: 1 };
     case "Mesh": return { case: "Mesh", child: null, size: 0.2, resolution: 96 };

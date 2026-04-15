@@ -2,6 +2,7 @@ namespace Server
 
 open System
 open System.Text.Json
+open System.Text.Json.Nodes
 open System.Text.Json.Serialization
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Http
@@ -99,6 +100,24 @@ module Program =
         match target with
         | TargetFrameOrigin _ -> isAllowedSketchEditFrameTarget target
         | _ -> compiled.Pickables |> List.exists (Pickable.sameTarget target)
+
+    let actionSelectionForTarget target actionId =
+        match sketchEditMode, activeSketchEditId () with
+        | true, Some sketchId ->
+            match target with
+            | TargetPoint(targetSketchId, _)
+            | TargetLine(targetSketchId, _)
+            | TargetCircle(targetSketchId, _)
+            | TargetArc(targetSketchId, _)
+            | TargetLoop(targetSketchId, _)
+            | TargetDimension(targetSketchId, _) when targetSketchId = sketchId ->
+                Some sketchId
+            | TargetFrameOrigin _ when isAllowedSketchEditFrameTarget target ->
+                Some sketchId
+            | _ ->
+                actionId
+        | _ ->
+            actionId
 
     let trySketchContext (sketchId: string) =
         doc.Actions
@@ -542,6 +561,28 @@ module Program =
         let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
         JsonSerializer.Deserialize<'T>(body.GetRawText(), jsonOpts)
 
+    let deserializeSerializedModel (rawText: string) =
+        let root = JsonNode.Parse(rawText).AsObject()
+        match root["actions"] with
+        | :? JsonArray as actions ->
+            for actionNode in actions do
+                match actionNode with
+                | :? JsonObject as actionObj ->
+                    match actionObj["kind"] with
+                    | :? JsonObject as kindObj when kindObj["case"] <> null && kindObj["case"].GetValue<string>() = "Sketch" ->
+                        match kindObj["plane"] with
+                        | :? JsonValue as planeValue ->
+                            let mutable plane = ""
+                            if planeValue.TryGetValue<string>(&plane) then
+                                let planeObj = JsonObject()
+                                planeObj["case"] <- JsonValue.Create(plane)
+                                kindObj["plane"] <- planeObj
+                        | _ -> ()
+                    | _ -> ()
+                | _ -> ()
+        | _ -> ()
+        JsonSerializer.Deserialize<SerializedModel>(root.ToJsonString(), jsonOpts)
+
     [<EntryPoint>]
     let main args =
         let builder = WebApplication.CreateBuilder(args)
@@ -582,7 +623,7 @@ module Program =
                             let loops =
                                 SketchLoops.detectLoops sk.Entities
                                 |> List.map (fun l -> {| Id = l.Id; EntityIds = l.EntityIds |})
-                            Some {| Id = a.Id; Origin = origin; Sketch = sk; Graph = graph; Loops = loops |}
+                            Some {| Id = a.Id; Origin = origin; Transform = sketchOrigin; Sketch = sk; Graph = graph; Loops = loops |}
                         | _ -> None)
                 let payload =
                     {| Surfaces = compiled.Surfaces
@@ -673,7 +714,7 @@ module Program =
                 | Some(target, _score, actionId) ->
                     hoveredTarget <- Some target
                     selectedTargets <- applySelectionIntent intent target selectedTargets
-                    match actionId with
+                    match actionSelectionForTarget target actionId with
                     | Some id -> doc <- Document.select id doc
                     | None -> ()
                     recompile ()
@@ -692,7 +733,8 @@ module Program =
 
         app.MapPut("/api/document/model",
             Func<HttpContext, IResult>(fun ctx ->
-                let model = readBody<SerializedModel> ctx
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let model = deserializeSerializedModel (body.GetRawText())
                 loadSerializedModel model
                 withViewerInvalidation "model" (json ()))) |> ignore
 

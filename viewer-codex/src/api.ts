@@ -43,6 +43,7 @@ export interface SketchLoop {
 export interface ViewerSketch {
   id: string;
   origin: string | null;
+  transform: JsonRigidTransform;
   sketch: ActionSketch;
   graph: Graph;
   loops: SketchLoop[];

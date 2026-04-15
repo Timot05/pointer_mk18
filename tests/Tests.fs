@@ -2,6 +2,7 @@ module TypeCheckTests
 
 open Xunit
 open Server
+open Server.Program
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -176,6 +177,38 @@ let ``Adding a sketch without origin ties it to origin on the backend`` () =
     match next.Actions |> List.find (fun action -> action.Id = "sketch_new") with
     | { Kind = Sketch(Some "origin", XY, _) } -> ()
     | other -> failwithf "Expected backend to attach sketch origin automatically, got %A" other
+
+[<Fact>]
+let ``Serialized model import accepts plain string sketch plane`` () =
+    let model =
+        deserializeSerializedModel """
+        {
+          "name": "demo",
+          "actions": [
+            { "id": "origin", "name": null, "kind": { "case": "Origin" }, "visible": true, "display": null, "fieldSlice": null },
+            {
+              "id": "sketch1",
+              "name": null,
+              "kind": {
+                "case": "Sketch",
+                "origin": "origin",
+                "plane": "XZ",
+                "sketch": { "entities": [], "constraints": [] }
+              },
+              "visible": true,
+              "display": null,
+              "fieldSlice": null
+            }
+          ]
+        }
+        """
+
+    match model.Actions |> List.find (fun action -> action.Id = "sketch1") with
+    | { Kind = Sketch(Some "origin", XZ, sketch) } ->
+        Assert.Empty(sketch.Entities)
+        Assert.Empty(sketch.Constraints)
+    | other ->
+        failwithf "Expected imported sketch plane to deserialize from plain string, got %A" other
 
 // ── Type converters ──────────────────────────────────────────────────────
 

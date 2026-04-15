@@ -956,7 +956,7 @@ export class ViewerApp {
     if (!sketchId) return null;
     const model = this.model.sketches.find((candidate) => candidate.id === sketchId);
     if (!model) return null;
-    return { model, frame: this.sketchFrameFor(sketchId) };
+    return { model, frame: toSketchFrame(model.transform) };
   }
 
   private currentToolPreview(): { frame: SketchFrame; lineData: Float32Array; pointData: Float32Array } | null {
@@ -1162,7 +1162,7 @@ export class ViewerApp {
     }
     for (const sketch of this.model.sketches) {
       if (!this.isVisible(sketch.id)) continue;
-      const frame = this.sketchFrameFor(sketch.id);
+      const frame = toSketchFrame(sketch.transform);
       const points = sketch.sketch.entities.filter((entity): entity is Extract<RenderEntity, { case: "REPoint" }> => entity.case === "REPoint");
       for (const p of points) {
         const local: Vec2 = [p.x, p.y];
@@ -1192,38 +1192,32 @@ export class ViewerApp {
     this.renderSketches = this.model.sketches
       .filter((sketch) => this.isVisible(sketch.id))
       .map((sketch) => {
-      const frame = this.sketchFrameFor(sketch.id);
-      const built = buildSketchBuffers(
-        sketch,
-        this.model!.pickables,
-        this.slotLookup,
-        this.state!.params,
-        this.state!.frames,
-        this.state!.highlightedTarget,
-        this.state.highlightedTargets,
-        this.fontMetrics,
-        this.solverBindings.get(sketch.id),
-        this.solvedSketchParams.get(sketch.id),
-        this.drag,
-        frame,
-        (constraintIndex) => this.constraintLabelPosition(sketch.id, constraintIndex),
-        this.state!.visibleDimensionSketchIds.includes(sketch.id),
-        this.state!.sketchUi.editMode && this.state!.selectedId === sketch.id,
-      );
-      return {
-        sketchId: sketch.id,
-        frame,
-        buffers: built.buffers,
-        loops: built.loops,
-        dimensionAnchors: built.dimensionAnchors,
-      };
-    });
-  }
-
-  private sketchFrameFor(sketchId: string): SketchFrame {
-    const live = this.state?.sketchFrames.find((candidate) => candidate.id === sketchId);
-    if (live) return toSketchFrame(live.transform);
-    throw new Error(`Missing sketch frame for ${sketchId}`);
+        const frame = toSketchFrame(sketch.transform);
+        const built = buildSketchBuffers(
+          sketch,
+          this.model!.pickables,
+          this.slotLookup,
+          this.state!.params,
+          this.state!.frames,
+          this.state!.highlightedTarget,
+          this.state.highlightedTargets,
+          this.fontMetrics,
+          this.solverBindings.get(sketch.id),
+          this.solvedSketchParams.get(sketch.id),
+          this.drag,
+          frame,
+          (constraintIndex) => this.constraintLabelPosition(sketch.id, constraintIndex),
+          this.state!.visibleDimensionSketchIds.includes(sketch.id),
+          this.state!.sketchUi.editMode && this.state!.selectedId === sketch.id,
+        );
+        return {
+          sketchId: sketch.id,
+          frame,
+          buffers: built.buffers,
+          loops: built.loops,
+          dimensionAnchors: built.dimensionAnchors,
+        };
+      });
   }
 
   private isVisible(actionId: string): boolean {

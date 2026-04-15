@@ -93,7 +93,7 @@ export type ActionKind =
   | { case: "Union"; a: string | null; b: string | null; radius: number }
   | { case: "Subtract"; a: string | null; b: string | null; radius: number }
   | { case: "Intersect"; a: string | null; b: string | null; radius: number }
-  | { case: "Sketch"; origin: string | null; sketch: ActionSketch }
+  | { case: "Sketch"; origin: string | null; plane: string; sketch: ActionSketch }
   | { case: "FromSketch"; child: string | null; flip: boolean; selection: FromSketchSelection }
   | { case: "Thicken"; child: string | null; amount: number }
   | { case: "Shell"; child: string | null; thickness: number }
@@ -144,13 +144,46 @@ export interface SketchUiState {
   dimensionPlacementAvailability: Record<string, boolean>;
 }
 
+function normalizeSketchPlane(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && "case" in value && typeof (value as { case?: unknown }).case === "string") {
+    return (value as { case: string }).case;
+  }
+  return "XY";
+}
+
+function normalizeAction(action: Action): Action {
+  if (action.kind.case !== "Sketch") return action;
+  return {
+    ...action,
+    kind: {
+      ...action.kind,
+      plane: normalizeSketchPlane((action.kind as ActionKind & { plane?: unknown }).plane),
+    },
+  };
+}
+
+function normalizeDocument(document: Document): Document {
+  return {
+    ...document,
+    actions: document.actions.map(normalizeAction),
+  };
+}
+
+function normalizeSerializedModel(model: SerializedModel): SerializedModel {
+  return {
+    ...model,
+    actions: model.actions.map(normalizeAction),
+  };
+}
+
 async function request(url: string, opts?: RequestInit): Promise<Document> {
   const res = await fetch(BASE + url, {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });
   if (!res.ok) throw new Error(`${opts?.method ?? "GET"} ${url}: ${res.status}`);
-  return res.json();
+  return normalizeDocument(await res.json());
 }
 
 export interface DocumentMutation {
@@ -166,7 +199,7 @@ async function requestDocumentMutation(url: string, opts?: RequestInit): Promise
   if (!res.ok) throw new Error(`${opts?.method ?? "GET"} ${url}: ${res.status}`);
   const viewerInvalidation = (res.headers.get("X-Viewer-Invalidation") === "model" ? "model" : "state");
   return {
-    document: await res.json(),
+    document: normalizeDocument(await res.json()),
     viewerInvalidation,
   };
 }
@@ -178,7 +211,7 @@ export async function getDocument(): Promise<Document> {
 export async function exportModel(): Promise<SerializedModel> {
   const res = await fetch(BASE + "/document/model");
   if (!res.ok) throw new Error(`GET /document/model: ${res.status}`);
-  return res.json();
+  return normalizeSerializedModel(await res.json());
 }
 
 export async function importModel(model: SerializedModel): Promise<DocumentMutation> {

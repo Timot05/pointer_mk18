@@ -187,7 +187,7 @@ module Element =
                     match Map.tryFind sketchId actionMap with
                     | Some sketchAction ->
                         match sketchAction.Kind with
-                        | Sketch(originId, sketch) ->
+                        | Sketch(originId, plane, sketch) ->
                             let frameChain', state =
                                 match originId with
                                 | Some fid ->
@@ -197,7 +197,13 @@ module Element =
                                 | None -> [], state
                             let core =
                                 EFromSketch(id, sketchId, sketch, selection, flip)
-                            applyFrame frameChain' core, state
+                            let withOrigin = applyFrame frameChain' core
+                            let withPlane =
+                                match plane with
+                                | XY -> withOrigin
+                                | XZ -> ERotate($"{id}_plane", 1.0, 0.0, 0.0, -90.0, withOrigin)
+                                | YZ -> ERotate($"{id}_plane_z", 0.0, 0.0, 1.0, 90.0, ERotate($"{id}_plane_x", 1.0, 0.0, 0.0, -90.0, withOrigin))
+                            withPlane, state
                         | _ -> EEmpty, state
                     | None -> EEmpty, state
 

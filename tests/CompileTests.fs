@@ -336,7 +336,7 @@ let ``SketchCompile supports frame line distance to projected frame origin`` () 
 [<Fact>]
 let ``FromSketch with SelectionLoop None compiles to FSketch with 4 line segments`` () =
     let r =
-        pipeline [ action "sk" (Sketch(None, squareSketch))
+        pipeline [ action "sk" (Sketch(None, XY, squareSketch))
                    action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
     let f = surfaceFor "f" r.Surfaces
     match f.Field with
@@ -352,7 +352,7 @@ let ``FromSketch with SelectionLoop None compiles to FSketch with 4 line segment
 [<Fact>]
 let ``FromSketch with SelectionElements compiles lines in the given order`` () =
     let r =
-        pipeline [ action "sk" (Sketch(None, squareSketch))
+        pipeline [ action "sk" (Sketch(None, XY, squareSketch))
                    action "f" (FromSketch(
                        Some "sk",
                        false,
@@ -365,7 +365,7 @@ let ``FromSketch with SelectionElements compiles lines in the given order`` () =
 [<Fact>]
 let ``FSketch primitive slots match the sketch's pre-allocated point slots`` () =
     let r =
-        pipeline [ action "sk" (Sketch(None, squareSketch))
+        pipeline [ action "sk" (Sketch(None, XY, squareSketch))
                    action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
     let f = surfaceFor "f" r.Surfaces
     // Grab the first segment and verify its start-point slots coincide
@@ -386,13 +386,25 @@ let ``FromSketch with a Sketch origin wraps FSketch in FTranslate`` () =
     let r =
         pipeline [ action "o" Origin
                    action "tf" (Translate(Some "o", 5.0, 0.0, 0.0))
-                   action "sk" (Sketch(Some "tf", squareSketch))
+                   action "sk" (Sketch(Some "tf", XY, squareSketch))
                    action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
     let f = surfaceFor "f" r.Surfaces
     match f.Field with
     | FTranslate(xSlot, _, _, FSketch _) ->
         Assert.Equal(5.0, r.Slots.Values.[xSlot])
     | other -> failwithf "Expected FTranslate wrapping FSketch, got %A" other
+
+[<Fact>]
+let ``FromSketch on YZ sketch plane applies plane rotations`` () =
+    let elements =
+        buildElements
+            [ action "o" Origin
+              action "sk" (Sketch(Some "o", YZ, squareSketch))
+              action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
+        |> fun result -> result.Elements
+    match Map.find "f" elements with
+    | ERotate(_, 0.0, 0.0, 1.0, 90.0, ERotate(_, 1.0, 0.0, 0.0, -90.0, EFromSketch("f", "sk", _, _, false))) -> ()
+    | other -> failwithf "Expected YZ plane rotations wrapping EFromSketch, got %A" other
 
 [<Fact>]
 let ``Default document now includes the from1 FSketch surface`` () =
@@ -447,7 +459,7 @@ let ``PickLoop.entityIds matches detectLoops output`` () =
     let sketch =
         actions
         |> List.pick (fun a ->
-            match a.Kind with Sketch(_, s) -> Some s | _ -> None)
+            match a.Kind with Sketch(_, _, s) -> Some s | _ -> None)
     let detectedIds =
         (SketchLoops.detectLoops sketch.Entities |> List.head).EntityIds
     let pickLoopIds =

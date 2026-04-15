@@ -61,7 +61,7 @@ module SketchAuthoring =
             |> List.tryFind (fun action -> action.Id = id)
             |> Option.bind (fun action ->
                 match action.Kind with
-                | Sketch(_, sketch) -> Some { Action = action; Sketch = sketch }
+                | Sketch(_, _, sketch) -> Some { Action = action; Sketch = sketch }
                 | _ -> None)
 
     let withUpdatedSketch (doc: Document) (actionId: string) (nextSketch: ActionSketch) =
@@ -71,7 +71,7 @@ module SketchAuthoring =
                 { action with
                     Kind =
                         match action.Kind with
-                        | Sketch(origin, _) -> Sketch(origin, nextSketch)
+                        | Sketch(origin, plane, _) -> Sketch(origin, plane, nextSketch)
                         | other -> other }
             Document.updateAction actionId nextAction doc
         | None ->

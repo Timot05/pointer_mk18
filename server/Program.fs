@@ -37,6 +37,29 @@ module Program =
     let mutable constraintPlacementDraft : ConstraintPlacementDraft option = None
     let mutable constraintPlacementCursor : (string * LabelPos) option = None
 
+    let sketchPlaneTransform (originFrame: RigidTransform) (plane: SketchPlane) =
+        let localRotation =
+            match plane with
+            | XY -> Quat.Identity
+            | XZ ->
+                Quat.fromBasis
+                    { X = 1.0; Y = 0.0; Z = 0.0 }
+                    { X = 0.0; Y = 0.0; Z = 1.0 }
+                    { X = 0.0; Y = -1.0; Z = 0.0 }
+            | YZ ->
+                Quat.fromBasis
+                    { X = 0.0; Y = 1.0; Z = 0.0 }
+                    { X = 0.0; Y = 0.0; Z = 1.0 }
+                    { X = 1.0; Y = 0.0; Z = 0.0 }
+        originFrame * { Rot = localRotation; Trans = Vec3.Zero }
+
+    let resolveSketchTransform (origin: string option) (plane: SketchPlane) =
+        let originFrame =
+            origin
+            |> Option.bind (fun id -> Map.tryFind id compiled.Frames)
+            |> Option.defaultValue RigidTransform.Identity
+        sketchPlaneTransform originFrame plane
+
     let effectivePlacementTargets () =
         match hoveredTarget with
         | Some target when selectedTargets |> List.contains target |> not -> selectedTargets @ [ target ]
@@ -82,12 +105,8 @@ module Program =
         |> List.tryFind (fun action -> action.Id = sketchId)
         |> Option.bind (fun action ->
             match action.Kind with
-            | Sketch(origin, sketch) ->
-                let sketchOrigin =
-                    origin
-                    |> Option.bind (fun id -> Map.tryFind id compiled.Frames)
-                    |> Option.defaultValue RigidTransform.Identity
-                Some(sketch, sketchOrigin)
+            | Sketch(origin, plane, sketch) ->
+                Some(sketch, resolveSketchTransform origin plane)
             | _ -> None)
 
     let tryPoint2 (sketch: ActionSketch) (pointId: string) =
@@ -334,7 +353,7 @@ module Program =
             actions
             |> List.choose (fun a ->
                 match a.Kind with
-                | Sketch(_, sketch) ->
+                | Sketch(_, _, sketch) ->
                     let loops =
                         SketchLoops.detectLoops sketch.Entities
                         |> List.map (fun loop -> {| Id = loop.Id; EntityIds = loop.EntityIds |})
@@ -441,12 +460,8 @@ module Program =
             doc.Actions
             |> List.choose (fun a ->
                 match a.Kind with
-                | Sketch(origin, _sk) ->
-                    let sketchOrigin =
-                        origin
-                        |> Option.bind (fun id -> Map.tryFind id compiled.Frames)
-                        |> Option.defaultValue RigidTransform.Identity
-                    Some {| Id = a.Id; Transform = sketchOrigin |}
+                | Sketch(origin, plane, _sk) ->
+                    Some {| Id = a.Id; Transform = resolveSketchTransform origin plane |}
                 | _ -> None)
 
         let visibleByAction =
@@ -458,7 +473,7 @@ module Program =
             doc.Actions
             |> List.choose (fun a ->
                 match a.Kind with
-                | Sketch(_, sk) ->
+                | Sketch(_, _, sk) ->
                     sk.Constraints
                     |> List.mapi (fun i c ->
                         let lp =
@@ -559,11 +574,8 @@ module Program =
                     doc.Actions
                     |> List.choose (fun a ->
                         match a.Kind with
-                        | Sketch(origin, sk) ->
-                            let sketchOrigin =
-                                origin
-                                |> Option.bind (fun id -> Map.tryFind id compiled.Frames)
-                                |> Option.defaultValue RigidTransform.Identity
+                        | Sketch(origin, plane, sk) ->
+                            let sketchOrigin = resolveSketchTransform origin plane
                             let ctx : SketchCompileContext =
                                 { SketchOrigin = sketchOrigin; Frames = compiled.Frames }
                             let graph = SketchCompile.compile sk ctx
@@ -878,7 +890,7 @@ module Program =
                 let actionId = body.GetProperty("actionId").GetString()
                 let sketch = JsonSerializer.Deserialize<ActionSketch>(body.GetProperty("sketch").GetRawText(), jsonOpts)
                 match doc.Actions |> List.tryFind (fun action -> action.Id = actionId) with
-                | Some { Kind = Sketch(_, _) } ->
+                | Some { Kind = Sketch(_, _, _) } ->
                     doc <- SketchAuthoring.withUpdatedSketch doc actionId sketch
                     hoveredTarget <- None
                     selectedTargets <- []

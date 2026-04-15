@@ -166,8 +166,8 @@ export async function createGpuSolver(g: Graph, maxBatch = 1): Promise<GpuSolver
   const shapeBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(shapeBuf, 0, new Uint32Array([nNodes, nParams, nVars, nRes]));
 
-  const nodesBuf = device.createBuffer({ size: packed.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  device.queue.writeBuffer(nodesBuf, 0, packed);
+  const nodesBuf = device.createBuffer({ size: Math.max(packed.byteLength, 4), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  if (packed.byteLength > 0) device.queue.writeBuffer(nodesBuf, 0, packed);
 
   const constsBuf = device.createBuffer({ size: Math.max(consts.byteLength, 4), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   if (consts.byteLength > 0) device.queue.writeBuffer(constsBuf, 0, consts);

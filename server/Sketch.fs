@@ -66,6 +66,14 @@ type ActionSketch =
 module ActionSketch =
     let empty : ActionSketch = { Entities = []; Constraints = [] }
 
+type SketchPlane =
+    | XY
+    | XZ
+    | YZ
+
+module SketchPlane =
+    let defaults = XY
+
 /// How FromSketch selects geometry from its parent Sketch.
 /// Loop: closed face identified by sorted entity ids.
 /// Elements: specific lines/arcs to trace.

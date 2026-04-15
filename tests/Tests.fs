@@ -63,7 +63,7 @@ let ``HalfPlane produces Field`` () =
 [<Fact>]
 let ``Sketch produces Sketch`` () =
     let typed =
-        [ action "s" (Sketch(None, ActionSketch.empty)) ]
+        [ action "s" (Sketch(None, XY, ActionSketch.empty)) ]
         |> TypeCheck.typecheck |> ok
     Assert.Equal(FieldType.Sketch, outputOf "s" typed)
 
@@ -160,12 +160,29 @@ let ``Clearing a document leaves only the origin action`` () =
     | other ->
         failwithf "Expected exactly one action after clear, got %A" other
 
+[<Fact>]
+let ``Adding a sketch without origin ties it to origin on the backend`` () =
+    let doc = Document.emptyDocument ()
+    let sketchAction =
+        { Id = "sketch_new"
+          Name = None
+          Kind = Sketch(None, XY, ActionSketch.empty)
+          Visible = true
+          Display = None
+          FieldSlice = None }
+
+    let next = Document.addAction sketchAction doc
+
+    match next.Actions |> List.find (fun action -> action.Id = "sketch_new") with
+    | { Kind = Sketch(Some "origin", XY, _) } -> ()
+    | other -> failwithf "Expected backend to attach sketch origin automatically, got %A" other
+
 // ── Type converters ──────────────────────────────────────────────────────
 
 [<Fact>]
 let ``FromSketch converts Sketch to Field`` () =
     let typed =
-        [ action "sk" (Sketch(None, ActionSketch.empty))
+        [ action "sk" (Sketch(None, XY, ActionSketch.empty))
           action "fs" (FromSketch(Some "sk", false, FromSketchSelection.defaults)) ]
         |> TypeCheck.typecheck |> ok
     Assert.Equal(FieldType.Field, outputOf "fs" typed)
@@ -253,7 +270,7 @@ let ``Forward reference produces ForwardRef`` () =
 [<Fact>]
 let ``Union with Sketch input produces TypeMismatch`` () =
     let errs =
-        [ action "sk" (Sketch(None, ActionSketch.empty))
+        [ action "sk" (Sketch(None, XY, ActionSketch.empty))
           action "s" (Sphere 5.0)
           action "u" (Union(Some "sk", Some "s", 0.0)) ]
         |> TypeCheck.typecheck |> errors
@@ -282,7 +299,7 @@ let ``FromSketch with Field input produces TypeMismatch`` () =
 [<Fact>]
 let ``Mesh with Sketch input produces TypeMismatch`` () =
     let errs =
-        [ action "sk" (Sketch(None, ActionSketch.empty))
+        [ action "sk" (Sketch(None, XY, ActionSketch.empty))
           action "m" (Mesh(Some "sk", 0.2, 96)) ]
         |> TypeCheck.typecheck |> errors
     match errs with

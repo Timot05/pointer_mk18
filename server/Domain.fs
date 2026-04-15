@@ -21,7 +21,7 @@ type ActionKind =
     | Union of a: ActionId option * b: ActionId option * radius: float
     | Subtract of a: ActionId option * b: ActionId option * radius: float
     | Intersect of a: ActionId option * b: ActionId option * radius: float
-    | Sketch of origin: ActionId option * sketch: ActionSketch
+    | Sketch of origin: ActionId option * plane: SketchPlane * sketch: ActionSketch
     | FromSketch of child: ActionId option * flip: bool * selection: FromSketchSelection
     | Thicken of child: ActionId option * amount: float
     | Shell of child: ActionId option * thickness: float
@@ -72,7 +72,19 @@ module Document =
     let select (id: string) (doc: Document) : Document =
         { doc with SelectedId = Some id }
 
+    let private normalizeNewAction (doc: Document) (action: DocAction) : DocAction =
+        let hasOrigin =
+            doc.Actions |> List.exists (fun existing -> existing.Id = "origin")
+        let kind =
+            match action.Kind with
+            | Sketch(None, plane, sketch) when hasOrigin ->
+                Sketch(Some "origin", plane, sketch)
+            | other ->
+                other
+        { action with Kind = kind }
+
     let addAction (action: DocAction) (doc: Document) : Document =
+        let action = normalizeNewAction doc action
         { doc with Actions = doc.Actions @ [ action ]; SelectedId = Some action.Id }
 
     let updateAction (id: string) (updated: DocAction) (doc: Document) : Document =
@@ -279,9 +291,15 @@ module Document =
                                     (if key = "a" then optStr value else a),
                                     (if key = "b" then optStr value else b),
                                     (if key = "radius" then value.GetDouble() else r))
-                            | Sketch(origin, s) ->
+                            | Sketch(origin, plane, s) ->
                                 Sketch(
                                     (if key = "origin" then optStr value else origin),
+                                    (if key = "plane" then
+                                        match value.GetString() with
+                                        | "XZ" -> XZ
+                                        | "YZ" -> YZ
+                                        | _ -> XY
+                                     else plane),
                                     (if key.StartsWith("sketch.entity.") then patchSketchEntityParam key value s
                                      elif key.StartsWith("sketch.constraint.") then patchSketchConstraintParam key value s
                                      else s))
@@ -359,6 +377,7 @@ module Document =
                 Name = Some "square"
                 Kind = Sketch(
                     origin = Some "origin",
+                    plane = XY,
                     sketch =
                         { Entities =
                             [ REPoint("p_bl",  0.0,  0.0)

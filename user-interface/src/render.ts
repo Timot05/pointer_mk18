@@ -745,6 +745,7 @@ function renderParamsPanel(doc: Document, cb: RenderCallbacks): HTMLElement {
 
     case "Sketch":
       strip.appendChild(controlRef("origin", kind.origin, refOptsFor("origin"), selected.id, "origin", cb));
+      strip.appendChild(controlSelect("plane", kind.plane, ["XY", "XZ", "YZ"], selected.id, "plane", cb));
       break;
 
     case "FromSketch":

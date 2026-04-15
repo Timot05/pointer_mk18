@@ -179,7 +179,7 @@ module Pipeline =
                 [ PickFrameOrigin(nextId(), action.Id) ]
             | Some FieldType.Sketch ->
                 match action.Kind with
-                | Sketch(_, sk) -> buildSketchPickables b counter action.Id sk
+                | Sketch(_, _, sk) -> buildSketchPickables b counter action.Id sk
                 | _ -> []
             | _ -> [])
 
@@ -204,7 +204,7 @@ module Pipeline =
                 allocFieldSliceSlots b action
             | Some FieldType.Sketch ->
                 match action.Kind with
-                | Sketch(_, s) -> allocSketchSlots b action.Id s
+                | Sketch(_, _, s) -> allocSketchSlots b action.Id s
                 | _ -> ()
             | _ -> ()
 

@@ -16,7 +16,7 @@ let angleDoc () =
       SelectedId = Some "sketchA"
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
-          { Id = "sketchA"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
+          { Id = "sketchA"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visible = true; Display = None; FieldSlice = None } ] }
 
 let arcDoc () =
     let sketch =
@@ -30,7 +30,7 @@ let arcDoc () =
       SelectedId = Some "sketchArc"
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
-          { Id = "sketchArc"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
+          { Id = "sketchArc"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visible = true; Display = None; FieldSlice = None } ] }
 
 let tangentArcDoc () =
     let sketch =
@@ -47,7 +47,7 @@ let tangentArcDoc () =
       SelectedId = Some "sketchT"
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
-          { Id = "sketchT"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
+          { Id = "sketchT"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visible = true; Display = None; FieldSlice = None } ] }
 
 let curveTangentDoc () =
     let sketch =
@@ -63,7 +63,7 @@ let curveTangentDoc () =
       SelectedId = Some "sketchCT"
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
-          { Id = "sketchCT"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
+          { Id = "sketchCT"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visible = true; Display = None; FieldSlice = None } ] }
 
 let frameConstraintDoc () =
     let sketch =
@@ -77,7 +77,7 @@ let frameConstraintDoc () =
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
           { Id = "f1"; Name = None; Kind = Translate(Some "origin", 5.0, 0.0, 0.0); Visible = true; Display = None; FieldSlice = None }
-          { Id = "sketchF"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
+          { Id = "sketchF"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visible = true; Display = None; FieldSlice = None } ] }
 
 [<Fact>]
 let ``Dimension placement buttons stay enabled in sketch edit mode`` () =
@@ -189,7 +189,7 @@ let ``Deleting a selected sketch line removes dependent constraints`` () =
     let doc = Document.defaultDocument () |> Document.select "sketch1"
     let sketch =
         match doc.Actions |> List.find (fun a -> a.Id = "sketch1") with
-        | { Kind = Sketch(_, sketch) } -> sketch
+        | { Kind = Sketch(_, _, sketch) } -> sketch
         | _ -> failwith "Expected sketch1 to be a sketch"
 
     let next = SketchAuthoring.deleteTargets [ TargetLine("sketch1", "l_bottom") ] sketch
@@ -211,7 +211,7 @@ let ``Deleting two sketch lines also removes their now-unused endpoint points`` 
     let doc = Document.defaultDocument () |> Document.select "sketch1"
     let sketch =
         match doc.Actions |> List.find (fun a -> a.Id = "sketch1") with
-        | { Kind = Sketch(_, sketch) } -> sketch
+        | { Kind = Sketch(_, _, sketch) } -> sketch
         | _ -> failwith "Expected sketch1 to be a sketch"
 
     let next = SketchAuthoring.deleteTargets [ TargetLine("sketch1", "l_bottom"); TargetLine("sketch1", "l_left") ] sketch
@@ -266,7 +266,7 @@ let ``Tangent constraint can be built from one line and one arc`` () =
         |> Option.defaultWith (fun () -> failwith "Expected tangent constraint to be added")
     let sketch =
         match next.Actions |> List.find (fun a -> a.Id = "sketchT") with
-        | { Kind = Sketch(_, sketch) } -> sketch
+        | { Kind = Sketch(_, _, sketch) } -> sketch
         | _ -> failwith "Expected sketchT to be a sketch"
 
     match List.last sketch.Constraints with
@@ -283,7 +283,7 @@ let ``Curve tangent can be built from one circle and one arc`` () =
         |> Option.defaultWith (fun () -> failwith "Expected curve tangent constraint to be added")
     let sketch =
         match next.Actions |> List.find (fun a -> a.Id = "sketchCT") with
-        | { Kind = Sketch(_, sketch) } -> sketch
+        | { Kind = Sketch(_, _, sketch) } -> sketch
         | _ -> failwith "Expected sketchCT to be a sketch"
 
     match List.last sketch.Constraints with
@@ -357,7 +357,7 @@ let ``Point and frame origin can build a frame coincident constraint`` () =
         |> Option.defaultWith (fun () -> failwith "Expected frame coincident constraint to be added")
     let sketch =
         match next.Actions |> List.find (fun a -> a.Id = "sketchF") with
-        | { Kind = Sketch(_, sketch) } -> sketch
+        | { Kind = Sketch(_, _, sketch) } -> sketch
         | _ -> failwith "Expected sketchF to be a sketch"
 
     match List.last sketch.Constraints with
@@ -372,7 +372,7 @@ let ``Line and frame axis can build a frame parallel constraint`` () =
         |> Option.defaultWith (fun () -> failwith "Expected frame parallel constraint to be added")
     let sketch =
         match next.Actions |> List.find (fun a -> a.Id = "sketchF") with
-        | { Kind = Sketch(_, sketch) } -> sketch
+        | { Kind = Sketch(_, _, sketch) } -> sketch
         | _ -> failwith "Expected sketchF to be a sketch"
 
     match List.last sketch.Constraints with
@@ -406,7 +406,7 @@ let ``Distance from selection with line and frame origin uses frame origin`` () 
         |> Option.defaultWith (fun () -> failwith "Expected frame line distance constraint to be added")
     let sketch =
         match next.Actions |> List.find (fun a -> a.Id = "sketchF") with
-        | { Kind = Sketch(_, sketch) } -> sketch
+        | { Kind = Sketch(_, _, sketch) } -> sketch
         | _ -> failwith "Expected sketchF to be a sketch"
 
     match List.last sketch.Constraints with

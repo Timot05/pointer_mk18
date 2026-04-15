@@ -169,6 +169,7 @@ interface GpuContext {
 interface FieldPipelineState {
   pipeline: GPURenderPipeline;
   slotBuffer: GPUBuffer;
+  slotCapacity: number;
   slotBindGroup: GPUBindGroup;
   surfaceBuffer: GPUBuffer;
   surfaceBindGroup: GPUBindGroup;
@@ -761,7 +762,12 @@ export class ViewerApp {
 
   private async reloadState(): Promise<void> {
     if (this.drag) return;
-    this.state = await getViewerState();
+    let nextState = await getViewerState();
+    if (this.model && nextState.params.length !== this.model.numSlots) {
+      await this.reloadModel(false);
+      nextState = await getViewerState();
+    }
+    this.state = nextState;
     this.updateFieldBuffers();
     this.updateFieldSliceBuffers();
     await this.solveSketches();
@@ -1876,8 +1882,9 @@ export class ViewerApp {
       fieldSlotBindGroupLayout,
       fieldSurfaceBindGroupLayout,
     );
+    const slotCapacity = Math.max(this.model.numSlots, 1);
     const slotBuffer = device.createBuffer({
-      size: Math.max(16, Math.max(this.model.numSlots, 1) * 4),
+      size: Math.max(16, slotCapacity * 4),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     const slotBindGroup = device.createBindGroup({
@@ -1892,8 +1899,10 @@ export class ViewerApp {
       layout: fieldSurfaceBindGroupLayout,
       entries: [{ binding: 0, resource: { buffer: surfaceBuffer } }],
     });
-    this.fieldPipeline = { pipeline, slotBuffer, slotBindGroup, surfaceBuffer, surfaceBindGroup };
-    this.updateFieldBuffers();
+    this.fieldPipeline = { pipeline, slotBuffer, slotCapacity, slotBindGroup, surfaceBuffer, surfaceBindGroup };
+    if (this.state && this.state.params.length <= slotCapacity) {
+      this.updateFieldBuffers();
+    }
   }
 
   private rebuildFieldSlicePipeline(): void {
@@ -1926,6 +1935,10 @@ export class ViewerApp {
   private updateFieldBuffers(): void {
     if (!this.gpu || !this.model || !this.state || !this.fieldPipeline) return;
     const { device } = this.gpu;
+    if (this.state.params.length > this.fieldPipeline.slotCapacity) {
+      this.rebuildFieldPipeline();
+      return;
+    }
     const { slotBuffer, surfaceBuffer } = this.fieldPipeline;
     device.queue.writeBuffer(slotBuffer, 0, new Float32Array(this.state.params));
 

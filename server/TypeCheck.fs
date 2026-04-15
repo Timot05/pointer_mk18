@@ -123,7 +123,7 @@ module TypeCheck =
             | Sphere _ | Cylinder _ | Box _ | HalfPlane _ ->
                 emit id FieldType.Field Map.empty types typed errors
 
-            | Sketch(origin, _) ->
+            | Sketch(origin, _, _) ->
                 // origin is an optional Frame reference; type-check if present
                 let resolved, errors =
                     match origin with

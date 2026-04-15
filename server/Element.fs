@@ -16,7 +16,7 @@ type FrameStep =
     | FrameTranslate of actionId: ActionId * x: float * y: float * z: float
     | FrameRotate of actionId: ActionId * ax: float * ay: float * az: float * angle: float
 
-type FrameChain = FrameStep list   // outermost first (applied last)
+type FrameChain = FrameStep list   // child/local step first, outer result built by left-fold
 
 /// Scene element — a recursive tree of geometry operations for Field-typed
 /// actions. Each node carries its source ActionId for slot allocation.
@@ -51,7 +51,7 @@ type BuildResult =
 module Element =
 
     /// Wrap a field child with a frame's transform chain.
-    /// The outermost step in the list is applied last (outermost in the tree).
+    /// Steps are ordered from child/local to parent/world.
     let rec applyFrame (chain: FrameChain) (child: Element) : Element =
         match chain with
         | [] -> child
@@ -70,7 +70,9 @@ module Element =
             | Some FieldType.Field -> true
             | _ -> false
 
-        // Frame chain resolution — for Frame-typed actions only
+        // Frame chain resolution — for Frame-typed actions only.
+        // Child/local step first, so Origin -> Translate -> Rotate becomes
+        // [Translate; Rotate], which composes to T * R.
         let rec frameChain (id: ActionId) (cache: Map<ActionId, FrameChain>) : FrameChain * Map<ActionId, FrameChain> =
             match Map.tryFind id cache with
             | Some c -> c, cache
@@ -86,13 +88,13 @@ module Element =
                                 match child with
                                 | Some cid -> frameChain cid cache
                                 | None -> [], cache
-                            FrameTranslate(action.Id, x, y, z) :: base', cache
+                            base' @ [ FrameTranslate(action.Id, x, y, z) ], cache
                         | Rotate(child, ax, ay, az, angle) ->
                             let base', cache =
                                 match child with
                                 | Some cid -> frameChain cid cache
                                 | None -> [], cache
-                            FrameRotate(action.Id, ax, ay, az, angle) :: base', cache
+                            base' @ [ FrameRotate(action.Id, ax, ay, az, angle) ], cache
                         | _ -> [], cache
                     chain, Map.add id chain cache
 

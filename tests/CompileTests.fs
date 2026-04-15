@@ -66,6 +66,24 @@ let ``Rotate of Origin is a frame chain (no Field element)`` () =
     Assert.Equal<FrameChain>([ FrameRotate("r", 0.0, 0.0, 1.0, 90.0) ], Map.find "r" bres.Frames)
 
 [<Fact>]
+let ``Translate then rotate frame chain preserves translated origin`` () =
+    let actions =
+        [ action "o" Origin
+          action "t" (Translate(Some "o", 5.0, 0.0, 0.0))
+          action "r" (Rotate(Some "t", 0.0, 0.0, 1.0, 90.0)) ]
+    let bres = buildElements actions
+    Assert.Equal<FrameChain>(
+        [ FrameTranslate("t", 5.0, 0.0, 0.0)
+          FrameRotate("r", 0.0, 0.0, 1.0, 90.0) ],
+        Map.find "r" bres.Frames)
+
+    let pipelineResult = pipeline actions
+    let frame = Map.find "r" pipelineResult.Frames
+    Assert.Equal(5.0, frame.Trans.X, 6)
+    Assert.Equal(0.0, frame.Trans.Y, 6)
+    Assert.Equal(0.0, frame.Trans.Z, 6)
+
+[<Fact>]
 let ``Union builds EUnion with both children`` () =
     let actions = [ action "a" (Sphere 5.0); action "b" (Sphere 3.0); action "u" (Union(Some "a", Some "b", 0.5)) ]
     let elements = (buildElements actions).Elements

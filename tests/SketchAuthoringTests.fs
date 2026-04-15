@@ -276,3 +276,61 @@ let ``Curve tangent can be built from one circle and one arc`` () =
     | CurveTangent("circle1", "c0", "arc1", "c1", false) -> ()
     | other ->
         failwithf "Expected circle-arc CurveTangent, got %A" other
+
+[<Fact>]
+let ``Rectangle tool adds orthogonal constraints`` () =
+    let sketch = ActionSketch.empty
+    let next =
+        SketchAuthoring.applyToolClick "rectangle" [ { X = 0.0; Y = 0.0 }; { X = 10.0; Y = 5.0 } ] sketch
+        |> Option.defaultWith (fun () -> failwith "Expected rectangle to be created")
+
+    let lineCount =
+        next.Entities
+        |> List.filter (function | RELine _ -> true | _ -> false)
+        |> List.length
+    let horizontalCount =
+        next.Constraints
+        |> List.filter (function | Horizontal _ -> true | _ -> false)
+        |> List.length
+    let verticalCount =
+        next.Constraints
+        |> List.filter (function | Vertical _ -> true | _ -> false)
+        |> List.length
+    let perpendicularCount =
+        next.Constraints
+        |> List.filter (function | Perpendicular _ -> true | _ -> false)
+        |> List.length
+
+    Assert.Equal(4, lineCount)
+    Assert.Equal(2, horizontalCount)
+    Assert.Equal(2, verticalCount)
+    Assert.Equal(4, perpendicularCount)
+
+[<Fact>]
+let ``Rounded rectangle tool creates arcs and tangent constraints`` () =
+    let sketch = ActionSketch.empty
+    let next =
+        SketchAuthoring.applyToolClick "roundedRectangle" [ { X = 0.0; Y = 0.0 }; { X = 10.0; Y = 5.0 } ] sketch
+        |> Option.defaultWith (fun () -> failwith "Expected rounded rectangle to be created")
+
+    let arcCount =
+        next.Entities
+        |> List.filter (function | REArc _ -> true | _ -> false)
+        |> List.length
+    let lineCount =
+        next.Entities
+        |> List.filter (function | RELine _ -> true | _ -> false)
+        |> List.length
+    let tangentCount =
+        next.Constraints
+        |> List.filter (function | Tangent _ -> true | _ -> false)
+        |> List.length
+    let equalRadiusCount =
+        next.Constraints
+        |> List.filter (function | EqualRadius _ -> true | _ -> false)
+        |> List.length
+
+    Assert.Equal(4, arcCount)
+    Assert.Equal(4, lineCount)
+    Assert.Equal(8, tangentCount)
+    Assert.Equal(3, equalRadiusCount)

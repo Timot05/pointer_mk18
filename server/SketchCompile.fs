@@ -313,12 +313,10 @@ module SketchCompile =
                 | _ -> skipped <- skipped + 1
 
             | EqualRadius(aId, bId) ->
-                match tryCircle aId, tryCircle bId with
-                | Some cA, Some cB ->
-                    outputs.Add(b.Sub(cA.RadiusNode, cB.RadiusNode))
+                match tryDiameterEntity aId, tryDiameterEntity bId with
+                | Some rA, Some rB ->
+                    outputs.Add(b.Sub(rA, rB))
                 | _ ->
-                    // Arcs: EqualRadius involving arcs would compare implicit
-                    // radii (|start − center|). Skip for v0.
                     skipped <- skipped + 1
 
             // ── Midpoint: p = (a + b) / 2 ────────────────────────────

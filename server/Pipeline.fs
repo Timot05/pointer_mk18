@@ -210,7 +210,7 @@ module Pipeline =
         let pickables = buildPickables b actions typeMap
 
         // Fold each FrameChain into a concrete RigidTransform. Chain is
-        // outermost-first, so left-fold with `*` gives world-from-local.
+        // child/local-first, so left-fold with `*` gives world-from-local.
         let foldChain (chain: FrameChain) : RigidTransform =
             chain
             |> List.fold (fun acc step ->

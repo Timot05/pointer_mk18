@@ -739,7 +739,137 @@ module SketchAuthoring =
 
     let private addLineEntity (sketch: ActionSketch) startId endId =
         let lineId = nextEntityId sketch "l"
-        { sketch with Entities = sketch.Entities @ [ RELine(lineId, startId, endId) ] }
+        { sketch with Entities = sketch.Entities @ [ RELine(lineId, startId, endId) ] }, lineId
+
+    let private addRectangleToSketch (sketch: ActionSketch) (cornerA: float * float) (cornerB: float * float) =
+        let minX = min (fst cornerA) (fst cornerB)
+        let maxX = max (fst cornerA) (fst cornerB)
+        let minY = min (snd cornerA) (snd cornerB)
+        let maxY = max (snd cornerA) (snd cornerB)
+        if abs (maxX - minX) < 1e-9 || abs (maxY - minY) < 1e-9 then
+            None
+        else
+            let mutable next = sketch
+            let next1, p1 = addPoint next (minX, minY)
+            next <- next1
+            let next2, p2 = addPoint next (maxX, minY)
+            next <- next2
+            let next3, p3 = addPoint next (maxX, maxY)
+            next <- next3
+            let next4, p4 = addPoint next (minX, maxY)
+            next <- next4
+
+            let next5, l1 = addLineEntity next p1 p2
+            next <- next5
+            let next6, l2 = addLineEntity next p2 p3
+            next <- next6
+            let next7, l3 = addLineEntity next p3 p4
+            next <- next7
+            let next8, l4 = addLineEntity next p4 p1
+            next <- next8
+
+            let constraints =
+                [ Horizontal(p1, p2)
+                  Vertical(p2, p3)
+                  Horizontal(p4, p3)
+                  Vertical(p1, p4)
+                  Perpendicular(p1, p2, p2, p3, l1, l2)
+                  Perpendicular(p2, p3, p3, p4, l2, l3)
+                  Perpendicular(p3, p4, p4, p1, l3, l4)
+                  Perpendicular(p4, p1, p1, p2, l4, l1) ]
+
+            Some { next with Constraints = next.Constraints @ constraints }
+
+    let private roundedRectRadius (minX: float) (maxX: float) (minY: float) (maxY: float) =
+        let width = maxX - minX
+        let height = maxY - minY
+        (min width height * 0.2)
+            |> max 0.002
+            |> min (width * 0.5 - 1e-6)
+            |> min (height * 0.5 - 1e-6)
+
+    let private addRoundedRectangleToSketch (sketch: ActionSketch) (cornerA: float * float) (cornerB: float * float) =
+        let minX = min (fst cornerA) (fst cornerB)
+        let maxX = max (fst cornerA) (fst cornerB)
+        let minY = min (snd cornerA) (snd cornerB)
+        let maxY = max (snd cornerA) (snd cornerB)
+        let width = maxX - minX
+        let height = maxY - minY
+        if abs width < 1e-9 || abs height < 1e-9 then
+            None
+        else
+            let radius = roundedRectRadius minX maxX minY maxY
+            if radius <= 1e-6 then
+                addRectangleToSketch sketch cornerA cornerB
+            else
+                let mutable next = sketch
+                let addP x y =
+                    let updated, pointId = addPoint next (x, y)
+                    next <- updated
+                    pointId
+
+                let topLeftStart = addP (minX + radius) maxY
+                let topRightStart = addP (maxX - radius) maxY
+                let rightTopStart = addP maxX (maxY - radius)
+                let rightBottomStart = addP maxX (minY + radius)
+                let bottomRightStart = addP (maxX - radius) minY
+                let bottomLeftStart = addP (minX + radius) minY
+                let leftBottomStart = addP minX (minY + radius)
+                let leftTopStart = addP minX (maxY - radius)
+
+                let next1, topLine = addLineEntity next topLeftStart topRightStart
+                next <- next1
+                let next2, rightLine = addLineEntity next rightTopStart rightBottomStart
+                next <- next2
+                let next3, bottomLine = addLineEntity next bottomRightStart bottomLeftStart
+                next <- next3
+                let next4, leftLine = addLineEntity next leftBottomStart leftTopStart
+                next <- next4
+
+                let tlCenter = addP (minX + radius) (maxY - radius)
+                let trCenter = addP (maxX - radius) (maxY - radius)
+                let brCenter = addP (maxX - radius) (minY + radius)
+                let blCenter = addP (minX + radius) (minY + radius)
+
+                let trArcId = nextEntityId next "a"
+                next <- { next with Entities = next.Entities @ [ REArc(trArcId, topRightStart, rightTopStart, ArcCenter(trCenter, true)) ] }
+                let brArcId = nextEntityId next "a"
+                next <- { next with Entities = next.Entities @ [ REArc(brArcId, rightBottomStart, bottomRightStart, ArcCenter(brCenter, true)) ] }
+                let blArcId = nextEntityId next "a"
+                next <- { next with Entities = next.Entities @ [ REArc(blArcId, bottomLeftStart, leftBottomStart, ArcCenter(blCenter, true)) ] }
+                let tlArcId = nextEntityId next "a"
+                next <- { next with Entities = next.Entities @ [ REArc(tlArcId, leftTopStart, topLeftStart, ArcCenter(tlCenter, true)) ] }
+
+                let constraints =
+                    [ Horizontal(topLeftStart, topRightStart)
+                      Vertical(rightTopStart, rightBottomStart)
+                      Horizontal(bottomLeftStart, bottomRightStart)
+                      Vertical(leftBottomStart, leftTopStart)
+                      Perpendicular(topLeftStart, topRightStart, rightTopStart, rightBottomStart, topLine, rightLine)
+                      Perpendicular(rightTopStart, rightBottomStart, bottomRightStart, bottomLeftStart, rightLine, bottomLine)
+                      Perpendicular(bottomRightStart, bottomLeftStart, leftBottomStart, leftTopStart, bottomLine, leftLine)
+                      Perpendicular(leftBottomStart, leftTopStart, topLeftStart, topRightStart, leftLine, topLine)
+                      Vertical(trCenter, topRightStart)
+                      Horizontal(trCenter, rightTopStart)
+                      Horizontal(brCenter, rightBottomStart)
+                      Vertical(brCenter, bottomRightStart)
+                      Vertical(blCenter, bottomLeftStart)
+                      Horizontal(blCenter, leftBottomStart)
+                      Horizontal(tlCenter, leftTopStart)
+                      Vertical(tlCenter, topLeftStart)
+                      EqualRadius(trArcId, brArcId)
+                      EqualRadius(brArcId, blArcId)
+                      EqualRadius(blArcId, tlArcId)
+                      Tangent(topLeftStart, topRightStart, trCenter, trArcId, topLine, radius)
+                      Tangent(topLeftStart, topRightStart, tlCenter, tlArcId, topLine, radius)
+                      Tangent(rightTopStart, rightBottomStart, trCenter, trArcId, rightLine, radius)
+                      Tangent(rightTopStart, rightBottomStart, brCenter, brArcId, rightLine, radius)
+                      Tangent(bottomRightStart, bottomLeftStart, brCenter, brArcId, bottomLine, radius)
+                      Tangent(bottomRightStart, bottomLeftStart, blCenter, blArcId, bottomLine, radius)
+                      Tangent(leftBottomStart, leftTopStart, blCenter, blArcId, leftLine, radius)
+                      Tangent(leftBottomStart, leftTopStart, tlCenter, tlArcId, leftLine, radius) ]
+
+                Some { next with Constraints = next.Constraints @ constraints }
 
     let private projectPointToCircle (cx, cy) (sx, sy) (px, py) =
         let radius = max 1e-6 (dist (cx, cy) (sx, sy))
@@ -755,21 +885,12 @@ module SketchAuthoring =
         | "line", [ startPoint; endPoint ] ->
             let next, startId = addPoint sketch startPoint
             let next, endId = addPoint next endPoint
-            Some(addLineEntity next startId endId)
-        | "rectangle", [ (x0, y0); (x1, y1) ]
+            let next, _ = addLineEntity next startId endId
+            Some next
+        | "rectangle", [ (x0, y0); (x1, y1) ] ->
+            addRectangleToSketch sketch (x0, y0) (x1, y1)
         | "roundedRectangle", [ (x0, y0); (x1, y1) ] ->
-            let corners = [ (x0, y0); (x1, y0); (x1, y1); (x0, y1) ]
-            let mutable next = sketch
-            let ids =
-                corners
-                |> List.map (fun corner ->
-                    let updated, pointId = addPoint next corner
-                    next <- updated
-                    pointId)
-            next <- addLineEntity next ids.[0] ids.[1]
-            next <- addLineEntity next ids.[1] ids.[2]
-            next <- addLineEntity next ids.[2] ids.[3]
-            Some(addLineEntity next ids.[3] ids.[0])
+            addRoundedRectangleToSketch sketch (x0, y0) (x1, y1)
         | "circle", [ centerPoint; radiusPoint ] ->
             let next, centerId = addPoint sketch centerPoint
             let circleId = nextEntityId next "c"

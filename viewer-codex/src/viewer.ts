@@ -2581,7 +2581,6 @@ function buildToolPreviewBuffers(
       }
       break;
     case "rectangle":
-    case "roundedRectangle":
       for (const point of (cursor ? [...toolPoints, cursor] : toolPoints)) {
         pointInstances.push({ x: point[0], y: point[1], radiusPx: 5.5, color: previewPoint });
       }
@@ -2593,6 +2592,59 @@ function buildToolPreviewBuffers(
           const a = corners[i];
           const b = corners[(i + 1) % 4];
           lineVertices.push({ x: a[0], y: a[1], color: previewLine }, { x: b[0], y: b[1], color: previewLine });
+        }
+      }
+      break;
+    case "roundedRectangle":
+      for (const point of (cursor ? [...toolPoints, cursor] : toolPoints)) {
+        pointInstances.push({ x: point[0], y: point[1], radiusPx: 5.5, color: previewPoint });
+      }
+      if (toolPoints.length >= 1 && cursor) {
+        const [x0, y0] = toolPoints[0];
+        const [x1, y1] = cursor;
+        const minX = Math.min(x0, x1);
+        const maxX = Math.max(x0, x1);
+        const minY = Math.min(y0, y1);
+        const maxY = Math.max(y0, y1);
+        const width = maxX - minX;
+        const height = maxY - minY;
+        if (width > 1e-9 && height > 1e-9) {
+          const radius = roundedRectRadius(minX, maxX, minY, maxY);
+          if (radius <= 1e-6) {
+            const corners: Vec2[] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+            for (let i = 0; i < 4; i++) {
+              const a = corners[i];
+              const b = corners[(i + 1) % 4];
+              lineVertices.push({ x: a[0], y: a[1], color: previewLine }, { x: b[0], y: b[1], color: previewLine });
+            }
+          } else {
+            const topLeftStart: Vec2 = [minX + radius, maxY];
+            const topRightStart: Vec2 = [maxX - radius, maxY];
+            const rightTopStart: Vec2 = [maxX, maxY - radius];
+            const rightBottomStart: Vec2 = [maxX, minY + radius];
+            const bottomRightStart: Vec2 = [maxX - radius, minY];
+            const bottomLeftStart: Vec2 = [minX + radius, minY];
+            const leftBottomStart: Vec2 = [minX, minY + radius];
+            const leftTopStart: Vec2 = [minX, maxY - radius];
+            const tlCenter: Vec2 = [minX + radius, maxY - radius];
+            const trCenter: Vec2 = [maxX - radius, maxY - radius];
+            const brCenter: Vec2 = [maxX - radius, minY + radius];
+            const blCenter: Vec2 = [minX + radius, minY + radius];
+
+            const lineSegments: Array<[Vec2, Vec2]> = [
+              [topLeftStart, topRightStart],
+              [rightTopStart, rightBottomStart],
+              [bottomRightStart, bottomLeftStart],
+              [leftBottomStart, leftTopStart],
+            ];
+            for (const [a, b] of lineSegments) {
+              lineVertices.push({ x: a[0], y: a[1], color: previewLine }, { x: b[0], y: b[1], color: previewLine });
+            }
+            pushArc(lineVertices, [], topRightStart, rightTopStart, trCenter, true, previewLine, undefined);
+            pushArc(lineVertices, [], rightBottomStart, bottomRightStart, brCenter, true, previewLine, undefined);
+            pushArc(lineVertices, [], bottomLeftStart, leftBottomStart, blCenter, true, previewLine, undefined);
+            pushArc(lineVertices, [], leftTopStart, topLeftStart, tlCenter, true, previewLine, undefined);
+          }
         }
       }
       break;
@@ -3006,6 +3058,12 @@ function projectPointToCircle(center: Vec2, start: Vec2, point: Vec2): Vec2 {
   if (dirLen <= 1e-6) return [center[0] + radius, center[1]];
   const scale = radius / dirLen;
   return [center[0] + dir[0] * scale, center[1] + dir[1] * scale];
+}
+
+function roundedRectRadius(minX: number, maxX: number, minY: number, maxY: number): number {
+  const width = maxX - minX;
+  const height = maxY - minY;
+  return Math.min(Math.min(Math.max(Math.min(width, height) * 0.2, 0.002), width * 0.5 - 1e-6), height * 0.5 - 1e-6);
 }
 
 function rotateByQuat(q: JsonRigidTransform["rot"], v: Vec3): Vec3 {

@@ -264,6 +264,12 @@ export async function deleteSketchConstraint(index: number): Promise<DocumentMut
   });
 }
 
+export async function deleteSketchSelection(): Promise<DocumentMutation> {
+  return requestDocumentMutation("/sketch-ui/delete-selection", {
+    method: "POST",
+  });
+}
+
 // ── Palette ───────────────────────────────────────────────────────────
 
 export interface PaletteItem {

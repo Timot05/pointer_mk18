@@ -81,17 +81,165 @@ module SketchAuthoring =
                 |> List.mapi (fun i constraint_ -> i, constraint_)
                 |> List.choose (fun (i, constraint_) -> if i = index then None else Some constraint_) }
 
+    let private entityIdOf =
+        function
+        | REPoint(id, _, _)
+        | RELine(id, _, _)
+        | RECircle(id, _, _)
+        | REArc(id, _, _, _) -> id
+
     let private entityMap (sketch: ActionSketch) =
         sketch.Entities
         |> List.map (fun entity ->
-            let id =
-                match entity with
-                | REPoint(id, _, _)
-                | RELine(id, _, _)
-                | RECircle(id, _, _)
-                | REArc(id, _, _, _) -> id
+            let id = entityIdOf entity
             id, entity)
         |> Map.ofList
+
+    let private entityRefsEntity entityId =
+        function
+        | RELine(_, startId, endId) -> startId = entityId || endId = entityId
+        | RECircle(_, centerId, _) -> centerId = entityId
+        | REArc(_, startId, endId, ArcCenter(centerId, _)) -> startId = entityId || endId = entityId || centerId = entityId
+        | REArc(_, startId, endId, ArcThreePoint _) -> startId = entityId || endId = entityId
+        | _ -> false
+
+    let private entityReferencedPointIds =
+        function
+        | RELine(_, startId, endId) -> [ startId; endId ]
+        | RECircle(_, centerId, _) -> [ centerId ]
+        | REArc(_, startId, endId, ArcCenter(centerId, _)) -> [ startId; endId; centerId ]
+        | REArc(_, startId, endId, ArcThreePoint _) -> [ startId; endId ]
+        | REPoint _ -> []
+
+    let private normalizePair a b = if a < b then (a, b) else (b, a)
+
+    let private constraintRefsAnyEntity deletedEntityIds deletedLinePairs =
+        let hasEntity id = Set.contains id deletedEntityIds
+        let hasLinePair a b = Set.contains (normalizePair a b) deletedLinePairs
+        function
+        | Fixed(point, _, _) -> hasEntity point
+        | EqualRadius(entityA, entityB) -> hasEntity entityA || hasEntity entityB
+        | Coincident(a, b)
+        | Horizontal(a, b)
+        | Vertical(a, b) -> hasEntity a || hasEntity b || hasLinePair a b
+        | FrameCoincident(point, _, _)
+        | FrameDistance(point, _, _, _, _) -> hasEntity point
+        | Concentric(entityA, entityB, centerA, centerB) ->
+            hasEntity entityA || hasEntity entityB || hasEntity centerA || hasEntity centerB
+        | Distance(a, b, _, _) -> hasEntity a || hasEntity b || hasLinePair a b
+        | Equal(aStart, aEnd, bStart, bEnd, lineA, lineB)
+        | Parallel(aStart, aEnd, bStart, bEnd, lineA, lineB)
+        | Perpendicular(aStart, aEnd, bStart, bEnd, lineA, lineB)
+        | LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, _, _) ->
+            [ aStart; aEnd; bStart; bEnd; lineA; lineB ] |> List.exists hasEntity
+        | Midpoint(point, lineA, aStart, aEnd) ->
+            [ point; lineA; aStart; aEnd ] |> List.exists hasEntity
+        | FrameParallel(aStart, aEnd, lineA, _, _)
+        | FramePerpendicular(aStart, aEnd, lineA, _, _)
+        | FrameLineDistance(lineA, aStart, aEnd, _, _, _, _) ->
+            [ lineA; aStart; aEnd ] |> List.exists hasEntity
+        | Tangent(aStart, aEnd, center, circle, lineA, _) ->
+            [ aStart; aEnd; center; circle; lineA ] |> List.exists hasEntity
+        | CurveTangent(entityA, centerA, entityB, centerB, _) ->
+            [ entityA; centerA; entityB; centerB ] |> List.exists hasEntity
+        | CircleDiameter(circle, center, _, _) -> hasEntity circle || hasEntity center
+        | PointLineDistance(point, lineA, aStart, aEnd, _, _) ->
+            [ point; lineA; aStart; aEnd ] |> List.exists hasEntity
+        | FramePointLineDistance(point, _, _, _, _) -> hasEntity point
+        | PointCircleDistance(point, circle, center, _, _) ->
+            [ point; circle; center ] |> List.exists hasEntity
+        | LineCircleDistance(lineA, aStart, aEnd, circle, center, _, _) ->
+            [ lineA; aStart; aEnd; circle; center ] |> List.exists hasEntity
+        | CircleCircleDistance(circleA, centerA, circleB, centerB, _, _, _) ->
+            [ circleA; centerA; circleB; centerB ] |> List.exists hasEntity
+        | Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, _, _, _, _, _) ->
+            [ aStart; aEnd; bStart; bEnd; lineA; lineB ] |> List.exists hasEntity
+
+    let deleteTargets (targets: SelectionTarget list) (sketch: ActionSketch) =
+        let constraintIndicesToDelete =
+            targets
+            |> List.choose (function
+                | TargetDimension(_, index) -> Some index
+                | _ -> None)
+            |> Set.ofList
+
+        let directlyDeletedEntityIds =
+            targets
+            |> List.choose (function
+                | TargetPoint(_, entityId)
+                | TargetLine(_, entityId)
+                | TargetCircle(_, entityId)
+                | TargetArc(_, entityId) -> Some entityId
+                | _ -> None)
+            |> Set.ofList
+
+        let candidatePointIds =
+            directlyDeletedEntityIds
+            |> Set.toList
+            |> List.choose (fun entityId -> sketch.Entities |> List.tryFind (fun entity -> entityIdOf entity = entityId))
+            |> List.collect entityReferencedPointIds
+            |> Set.ofList
+
+        let deletedLinePairs =
+            targets
+            |> List.choose (function
+                | TargetLine(_, entityId) ->
+                    match sketch.Entities |> List.tryFind (fun entity -> entityIdOf entity = entityId) with
+                    | Some(RELine(_, a, b)) -> Some(normalizePair a b)
+                    | _ -> None
+                | _ -> None)
+            |> Set.ofList
+
+        let rec expand deleted =
+            let next =
+                sketch.Entities
+                |> List.filter (fun entity ->
+                    let id = entityIdOf entity
+                    Set.contains id deleted |> not && entityRefsEntityAny deleted entity)
+                |> List.map entityIdOf
+                |> Set.ofList
+            let combined = Set.union deleted next
+            if combined.Count = deleted.Count then deleted else expand combined
+
+        and entityRefsEntityAny deleted entity =
+            deleted |> Set.exists (fun id -> entityRefsEntity id entity)
+
+        let deletedEntityIds = expand directlyDeletedEntityIds
+        let afterDirectDelete =
+            { sketch with
+                Entities =
+                    sketch.Entities
+                    |> List.filter (fun entity -> Set.contains (entityIdOf entity) deletedEntityIds |> not)
+                Constraints =
+                    sketch.Constraints
+                    |> List.mapi (fun i constraint_ -> i, constraint_)
+                    |> List.choose (fun (i, constraint_) ->
+                        if Set.contains i constraintIndicesToDelete || constraintRefsAnyEntity deletedEntityIds deletedLinePairs constraint_ then None
+                        else Some constraint_) }
+
+        let remainingReferencedPointIds =
+            afterDirectDelete.Entities
+            |> List.collect entityReferencedPointIds
+            |> Set.ofList
+
+        let orphanCandidatePointIds =
+            candidatePointIds
+            |> Set.filter (fun pointId -> Set.contains pointId remainingReferencedPointIds |> not)
+
+        if Set.isEmpty orphanCandidatePointIds then
+            afterDirectDelete
+        else
+            { afterDirectDelete with
+                Entities =
+                    afterDirectDelete.Entities
+                    |> List.filter (fun entity ->
+                        match entity with
+                        | REPoint(id, _, _) -> Set.contains id orphanCandidatePointIds |> not
+                        | _ -> true)
+                Constraints =
+                    afterDirectDelete.Constraints
+                    |> List.filter (fun constraint_ ->
+                        constraintRefsAnyEntity orphanCandidatePointIds Set.empty constraint_ |> not) }
 
     let private tryPoint (sketch: ActionSketch) id =
         match entityMap sketch |> Map.tryFind id with

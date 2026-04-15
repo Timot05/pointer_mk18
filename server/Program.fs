@@ -509,6 +509,22 @@ module Program =
                 | None ->
                     withViewerInvalidation "state" (json ()))) |> ignore
 
+        app.MapPost("/api/sketch-ui/delete-selection",
+            Func<IResult>(fun () ->
+                match SketchAuthoring.trySelectedSketch doc with
+                | Some ctx when sketchEditMode ->
+                    doc <- SketchAuthoring.withUpdatedSketch doc ctx.Action.Id (SketchAuthoring.deleteTargets selectedTargets ctx.Sketch)
+                    hoveredTarget <- None
+                    selectedTargets <- []
+                    sketchToolPoints <- []
+                    editingDimension <- None
+                    constraintPlacementDraft <- None
+                    constraintPlacementCursor <- None
+                    recompile ()
+                    withViewerInvalidation "model" (json ())
+                | _ ->
+                    withViewerInvalidation "state" (json ()))) |> ignore
+
         app.MapPost("/api/sketch-ui/dimension-edit/start",
             Func<HttpContext, IResult>(fun ctx ->
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result

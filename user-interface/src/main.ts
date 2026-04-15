@@ -1,4 +1,4 @@
-import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, toggleDisplay, patchDisplay, toggleFieldSlice, patchFieldSlice, addAction, deleteAction, reorderActions, toggleSketchEdit, setSketchTool, toggleConstraintPlacement, addConstraintFromSelection, deleteSketchConstraint, type Action, type Document, type ActionKind } from "./api";
+import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, toggleDisplay, patchDisplay, toggleFieldSlice, patchFieldSlice, addAction, deleteAction, reorderActions, toggleSketchEdit, setSketchTool, toggleConstraintPlacement, addConstraintFromSelection, deleteSketchConstraint, deleteSketchSelection, type Action, type Document, type ActionKind } from "./api";
 import { render, type RenderCallbacks } from "./render";
 import * as palette from "./command-palette";
 
@@ -266,6 +266,13 @@ document.addEventListener("keydown", async (e) => {
   if (await handleSketchShortcut(e)) return;
 
   if (e.key === "Delete" || e.key === "Backspace") {
+    if (doc.sketchUi.editMode && doc.selectedTargets.length > 0) {
+      e.preventDefault();
+      const result = await deleteSketchSelection();
+      refresh(result.document);
+      emitViewerInvalidation(result.viewerInvalidation);
+      return;
+    }
     const sel = doc.actions.find((a) => a.id === doc!.selectedId);
     if (sel && sel.kind.case !== "Origin") {
       e.preventDefault();

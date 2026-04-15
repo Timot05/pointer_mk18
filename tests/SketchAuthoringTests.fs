@@ -124,6 +124,44 @@ let ``Angle draft chooses acute or obtuse value based on cursor quadrant`` () =
     Assert.True(obtuse > 90.0)
 
 [<Fact>]
+let ``Deleting a selected sketch line removes dependent constraints`` () =
+    let doc = Document.defaultDocument () |> Document.select "sketch1"
+    let sketch =
+        match doc.Actions |> List.find (fun a -> a.Id = "sketch1") with
+        | { Kind = Sketch(_, sketch) } -> sketch
+        | _ -> failwith "Expected sketch1 to be a sketch"
+
+    let next = SketchAuthoring.deleteTargets [ TargetLine("sketch1", "l_bottom") ] sketch
+
+    Assert.False(
+        next.Entities
+        |> List.exists (function
+            | RELine("l_bottom", _, _) -> true
+            | _ -> false))
+    Assert.False(
+        next.Constraints
+        |> List.exists (function
+            | Distance("p_bl", "p_br", _, _) -> true
+            | Horizontal("p_bl", "p_br") -> true
+            | _ -> false))
+
+[<Fact>]
+let ``Deleting two sketch lines also removes their now-unused endpoint points`` () =
+    let doc = Document.defaultDocument () |> Document.select "sketch1"
+    let sketch =
+        match doc.Actions |> List.find (fun a -> a.Id = "sketch1") with
+        | { Kind = Sketch(_, sketch) } -> sketch
+        | _ -> failwith "Expected sketch1 to be a sketch"
+
+    let next = SketchAuthoring.deleteTargets [ TargetLine("sketch1", "l_bottom"); TargetLine("sketch1", "l_left") ] sketch
+
+    Assert.False(
+        next.Entities
+        |> List.exists (function
+            | REPoint("p_bl", _, _) -> true
+            | _ -> false))
+
+[<Fact>]
 let ``Distance draft with one clicked line yields immediate endpoint distance preview`` () =
     let doc = Document.defaultDocument () |> Document.select "sketch1"
     let draft = Some { SketchId = "sketch1"; Kind = "distance"; ClickedRefs = [ RefLine "l_bottom" ] }

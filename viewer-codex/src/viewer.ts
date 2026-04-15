@@ -1481,6 +1481,19 @@ export class ViewerApp {
     this.isPicking = true;
     try {
       const candidates = await this.pickAcrossSketches();
+      if (candidates.length === 0) {
+        if (this.state) {
+          this.state = {
+            ...this.state,
+            hoveredTarget: null,
+            highlightedTarget: null,
+            dragTarget: null,
+          };
+          this.rebuildRenderData();
+          this.queueRender();
+        }
+        return;
+      }
       if (event) {
         const intent = event.shiftKey ? "toggle" : "replace";
         this.state = await postViewerPick(toPickRequest(candidates), intent);

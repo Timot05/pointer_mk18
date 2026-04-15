@@ -1,4 +1,4 @@
-import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, toggleDisplay, patchDisplay, toggleFieldSlice, patchFieldSlice, addAction, deleteAction, reorderActions, toggleSketchEdit, setSketchTool, toggleConstraintPlacement, addConstraintFromSelection, deleteSketchConstraint, startEditingDimension, cancelEditingDimension, commitEditingDimension, type Action, type Document, type ActionKind } from "./api";
+import { getDocument, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, toggleDisplay, patchDisplay, toggleFieldSlice, patchFieldSlice, addAction, deleteAction, reorderActions, toggleSketchEdit, setSketchTool, toggleConstraintPlacement, addConstraintFromSelection, deleteSketchConstraint, type Action, type Document, type ActionKind } from "./api";
 import { render, type RenderCallbacks } from "./render";
 import * as palette from "./command-palette";
 
@@ -183,24 +183,6 @@ const callbacks: RenderCallbacks = {
     refresh(result.document);
     emitViewerInvalidation(result.viewerInvalidation);
   },
-
-  onStartEditingDimension: async (index) => {
-    const result = await startEditingDimension(index);
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
-  },
-
-  onCancelEditingDimension: async () => {
-    const result = await cancelEditingDimension();
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
-  },
-
-  onCommitEditingDimension: async (value) => {
-    const result = await commitEditingDimension(value);
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
-  },
 };
 
 function isEditable(el: EventTarget | null): boolean {
@@ -224,12 +206,6 @@ async function handleSketchShortcut(e: KeyboardEvent): Promise<boolean> {
 
   if (e.key === "Escape") {
     e.preventDefault();
-    if (doc.sketchUi.editingDimension) {
-      const result = await cancelEditingDimension();
-      refresh(result.document);
-      emitViewerInvalidation(result.viewerInvalidation);
-      return true;
-    }
     if (doc.sketchUi.constraintPlacementMode) {
       const result = await toggleConstraintPlacement(doc.sketchUi.constraintPlacementMode);
       refresh(result.document);

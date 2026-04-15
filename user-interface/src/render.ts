@@ -107,9 +107,6 @@ export type OnSetSketchTool = (tool: string) => void;
 export type OnToggleConstraintPlacement = (kind: string) => void;
 export type OnAddConstraintFromSelection = (kind: string) => void;
 export type OnDeleteSketchConstraint = (index: number) => void;
-export type OnStartEditingDimension = (index: number) => void;
-export type OnCancelEditingDimension = () => void;
-export type OnCommitEditingDimension = (value: number) => void;
 
 export interface RenderCallbacks {
   onSelect: OnSelect;
@@ -128,9 +125,6 @@ export interface RenderCallbacks {
   onToggleConstraintPlacement: OnToggleConstraintPlacement;
   onAddConstraintFromSelection: OnAddConstraintFromSelection;
   onDeleteSketchConstraint: OnDeleteSketchConstraint;
-  onStartEditingDimension: OnStartEditingDimension;
-  onCancelEditingDimension: OnCancelEditingDimension;
-  onCommitEditingDimension: OnCommitEditingDimension;
   getSketchEditMode: () => boolean;
 }
 
@@ -416,6 +410,10 @@ function renderConstraintSection(
   }
   section.appendChild(row);
 
+  if (title === "Dimensions") {
+    return section;
+  }
+
   const sketch = selected.kind.sketch;
   const constraints = itemizedConstraints(sketch.constraints, title === "Dimensions");
   if (constraints.length === 0) {
@@ -431,29 +429,6 @@ function renderConstraintSection(
     rowEl.appendChild(el("span", "sym", constraintSymbol(entry.constraint.case)));
     rowEl.appendChild(el("span", "constraint-kind", constraintLabel(entry.constraint.case)));
     rowEl.appendChild(el("span", "constraint-summary", constraintSummary(entry.constraint)));
-    const valueKey = numericKeyForConstraint(entry.constraint.case);
-    if (valueKey) {
-      const value = numericValueForConstraint(entry.constraint);
-      if (value != null) {
-        const editing = doc.sketchUi.editingDimension;
-        const isEditing = editing?.sketchId === selected.id && editing.constraintIndex === entry.index;
-        if (isEditing) {
-          rowEl.appendChild(renderConstraintEditInput(editing.value, cb));
-        } else {
-          const val = el("span", "constraint-value", value.toFixed(1));
-          setupDraggable(
-            val,
-            value,
-            (next) => cb.onParamRapid(selected.id, `sketch.constraint.${entry.index}.${valueKey}`, next),
-            (next) => cb.onParamChange(selected.id, `sketch.constraint.${entry.index}.${valueKey}`, next),
-          );
-          rowEl.appendChild(val);
-          if (title === "Dimensions") {
-            rowEl.addEventListener("dblclick", () => cb.onStartEditingDimension(entry.index));
-          }
-        }
-      }
-    }
     const del = el("button", "constraint-delete", "×");
     (del as HTMLButtonElement).type = "button";
     del.addEventListener("click", () => cb.onDeleteSketchConstraint(entry.index));
@@ -462,37 +437,6 @@ function renderConstraintSection(
   }
   section.appendChild(list);
   return section;
-}
-
-function renderConstraintEditInput(value: number, cb: RenderCallbacks): HTMLElement {
-  const input = document.createElement("input");
-  input.className = "constraint-edit-input";
-  input.type = "number";
-  input.step = "any";
-  input.value = String(value);
-  let cancelled = false;
-  const commit = () => {
-    if (cancelled) return;
-    const next = Number.parseFloat(input.value);
-    if (Number.isFinite(next)) cb.onCommitEditingDimension(next);
-    else cb.onCancelEditingDimension();
-  };
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      commit();
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      cancelled = true;
-      cb.onCancelEditingDimension();
-    }
-  });
-  input.addEventListener("blur", commit);
-  requestAnimationFrame(() => {
-    input.focus();
-    input.select();
-  });
-  return input;
 }
 
 function itemizedConstraints(constraints: SketchConstraint[], dimensions: boolean) {
@@ -566,47 +510,6 @@ function constraintSummary(constraint: SketchConstraint): string {
   }
 }
 
-function numericKeyForConstraint(kind: string): string | null {
-  switch (kind) {
-    case "Distance":
-    case "FrameDistance":
-    case "LineDistance":
-    case "FrameLineDistance":
-    case "PointLineDistance":
-    case "FramePointLineDistance":
-    case "PointCircleDistance":
-    case "LineCircleDistance":
-    case "CircleCircleDistance":
-      return "distance";
-    case "CircleDiameter":
-      return "diameter";
-    case "Angle":
-      return "angleDegrees";
-    default:
-      return null;
-  }
-}
-
-function numericValueForConstraint(constraint: SketchConstraint): number | null {
-  switch (constraint.case) {
-    case "Distance":
-    case "FrameDistance":
-    case "LineDistance":
-    case "FrameLineDistance":
-    case "PointLineDistance":
-    case "FramePointLineDistance":
-    case "PointCircleDistance":
-    case "LineCircleDistance":
-    case "CircleCircleDistance":
-      return constraint.distance;
-    case "CircleDiameter":
-      return constraint.diameter;
-    case "Angle":
-      return constraint.angleDegrees;
-    default:
-      return null;
-  }
-}
 
 function renderActionRow(
   action: Action,

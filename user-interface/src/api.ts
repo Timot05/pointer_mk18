@@ -262,26 +262,6 @@ export async function deleteSketchConstraint(index: number): Promise<DocumentMut
   });
 }
 
-export async function startEditingDimension(constraintIndex: number): Promise<DocumentMutation> {
-  return requestDocumentMutation("/sketch-ui/dimension-edit/start", {
-    method: "POST",
-    body: JSON.stringify({ constraintIndex }),
-  });
-}
-
-export async function cancelEditingDimension(): Promise<DocumentMutation> {
-  return requestDocumentMutation("/sketch-ui/dimension-edit/cancel", {
-    method: "POST",
-  });
-}
-
-export async function commitEditingDimension(value: number): Promise<DocumentMutation> {
-  return requestDocumentMutation("/sketch-ui/dimension-edit/commit", {
-    method: "POST",
-    body: JSON.stringify({ value }),
-  });
-}
-
 // ── Palette ───────────────────────────────────────────────────────────
 
 export interface PaletteItem {

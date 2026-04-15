@@ -499,6 +499,26 @@ module Program =
                 normalizeSketchUiState ()
                 viewerStateResult ())) |> ignore
 
+        app.MapPost("/api/viewer/dimension-edit/cancel",
+            Func<IResult>(fun () ->
+                editingDimension <- None
+                normalizeSketchUiState ()
+                viewerStateResult ())) |> ignore
+
+        app.MapPost("/api/viewer/dimension-edit/commit",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let value = body.GetProperty("value")
+                match editingDimension with
+                | Some current ->
+                    let key = $"sketch.constraint.{current.ConstraintIndex}.{current.Key}"
+                    editingDimension <- None
+                    doc <- Document.patchParam current.SketchId key value doc
+                    recompile ()
+                    viewerStateResult ()
+                | None ->
+                    viewerStateResult ())) |> ignore
+
         app.MapPost("/api/sketch-ui/dimension-edit/cancel",
             Func<IResult>(fun () ->
                 editingDimension <- None

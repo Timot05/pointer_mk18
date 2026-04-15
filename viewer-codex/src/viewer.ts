@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postStartEditingDimension, postViewerHover, postViewerPick, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postCancelEditingDimension, postCommitEditingDimension, postStartEditingDimension, postViewerHover, postViewerPick, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -79,6 +79,7 @@ interface RenderSketch {
   frame: SketchFrame;
   buffers: RenderBuffers;
   loops: ResolvedLoopGeometry[];
+  dimensionAnchors: Map<number, Vec2>;
 }
 
 interface ConstraintLabel {
@@ -585,6 +586,8 @@ export class ViewerApp {
   private solverBindings = new Map<string, SketchSolverBinding>();
   private solvedSketchParams = new Map<string, Float32Array>();
   private renderSketches: RenderSketch[] = [];
+  private dimensionEditInput: HTMLInputElement | null = null;
+  private dimensionEditKey: string | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private stateTimer: number | null = null;
   private modelTimer: number | null = null;
@@ -610,6 +613,7 @@ export class ViewerApp {
 
   constructor(root: HTMLElement) {
     this.root = root;
+    this.root.classList.add("viewer-root");
     this.canvas = document.createElement("canvas");
     this.canvas.className = "viewer-canvas";
     root.replaceChildren(this.canvas);
@@ -683,6 +687,7 @@ export class ViewerApp {
     });
     this.canvas.addEventListener("pointermove", (event) => {
       this.pointer = this.eventPos(event);
+      if (this.state?.sketchUi.editingDimension) return;
       if (this.drag?.pointerId === event.pointerId) {
         void this.updateDragFrame();
         return;
@@ -708,6 +713,7 @@ export class ViewerApp {
       void this.pickAtPointer(false);
     });
     this.canvas.addEventListener("pointerup", (event) => {
+      if (this.state?.sketchUi.editingDimension) return;
       if (this.drag?.pointerId === event.pointerId) {
         this.pointer = this.eventPos(event);
         this.canvas.releasePointerCapture(event.pointerId);
@@ -803,6 +809,24 @@ export class ViewerApp {
     const target = this.state.hoveredTarget;
     if (!target || target.case !== "TargetDimension") return;
     this.state = await postStartEditingDimension(target.constraintIndex);
+    this.rebuildRenderData();
+    this.queueRender();
+  }
+
+  private async cancelDimensionEdit(): Promise<void> {
+    this.state = await postCancelEditingDimension();
+    this.rebuildRenderData();
+    this.queueRender();
+  }
+
+  private async commitDimensionEdit(raw: string): Promise<void> {
+    const value = Number.parseFloat(raw);
+    if (!Number.isFinite(value)) {
+      await this.cancelDimensionEdit();
+      return;
+    }
+    this.state = await postCommitEditingDimension(value);
+    await this.solveSketches();
     this.rebuildRenderData();
     this.queueRender();
     this.startOptions.onDocumentDirty?.();
@@ -994,6 +1018,7 @@ export class ViewerApp {
         frame,
         buffers: built.buffers,
         loops: built.loops,
+        dimensionAnchors: built.dimensionAnchors,
       };
     });
   }
@@ -1277,6 +1302,78 @@ export class ViewerApp {
 
     pass.end();
     device.queue.submit([encoder.finish()]);
+    this.syncDimensionEditor();
+  }
+
+  private syncDimensionEditor(): void {
+    const editing = this.state?.sketchUi.editingDimension;
+    if (!editing) {
+      this.dimensionEditInput?.remove();
+      this.dimensionEditInput = null;
+      this.dimensionEditKey = null;
+      return;
+    }
+    const sketch = this.renderSketches.find((candidate) => candidate.sketchId === editing.sketchId);
+    const anchor = sketch?.dimensionAnchors.get(editing.constraintIndex);
+    if (!sketch || !anchor) {
+      this.dimensionEditInput?.remove();
+      this.dimensionEditInput = null;
+      this.dimensionEditKey = null;
+      return;
+    }
+    const screen = projectSketchLocalToScreen(anchor, sketch.frame, this.canvas, this.camera);
+    if (!screen) {
+      if (this.dimensionEditInput) this.dimensionEditInput.style.display = "none";
+      return;
+    }
+
+    const key = `${editing.sketchId}:${editing.constraintIndex}`;
+    let input = this.dimensionEditInput;
+    if (!input || this.dimensionEditKey !== key) {
+      input?.remove();
+      input = document.createElement("input");
+      let closing = false;
+      input.type = "number";
+      input.step = "any";
+      input.className = "viewer-dimension-edit";
+      input.addEventListener("pointerdown", (event) => event.stopPropagation());
+      input.addEventListener("dblclick", (event) => event.stopPropagation());
+      input.addEventListener("keydown", (event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") {
+          event.preventDefault();
+          closing = true;
+          void this.commitDimensionEdit(input!.value);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          closing = true;
+          void this.cancelDimensionEdit();
+        }
+      });
+      input.addEventListener("blur", () => {
+        if (closing) return;
+        requestAnimationFrame(() => {
+          if (this.state?.sketchUi.editingDimension && this.dimensionEditInput === input) {
+            input.focus();
+            input.select();
+          }
+        });
+      });
+      this.root.appendChild(input);
+      this.dimensionEditInput = input;
+      this.dimensionEditKey = key;
+      input.value = String(editing.value);
+      requestAnimationFrame(() => {
+        input!.focus();
+        input!.select();
+      });
+    } else if ((this.root.getRootNode() instanceof ShadowRoot ? this.root.getRootNode().activeElement : document.activeElement) !== input) {
+      input.value = String(editing.value);
+    }
+
+    input.style.display = "";
+    input.style.left = `${screen.x}px`;
+    input.style.top = `${screen.y}px`;
   }
 
   private async pickAtPointer(event?: PointerEvent): Promise<void> {
@@ -1638,7 +1735,7 @@ function buildSketchBuffers(
   drag?: DragState | null,
   stateLabelPosition?: (constraintIndex: number) => Vec2 | null,
   showDimensions?: boolean,
-): { buffers: RenderBuffers; loops: ResolvedLoopGeometry[] } {
+): { buffers: RenderBuffers; loops: ResolvedLoopGeometry[]; dimensionAnchors: Map<number, Vec2> } {
   const entityMap = new Map(viewerSketch.sketch.entities.map((entity) => [entity.id, entity]));
   const pointMap = new Map<string, Vec2>();
   const triVertices: LineVertex[] = [];
@@ -1653,6 +1750,7 @@ function buildSketchBuffers(
   const pickMap = buildPickIndex(pickables, viewerSketch.id);
   const labels: ConstraintLabel[] = [];
   const highlightLabels: ConstraintLabel[] = [];
+  const dimensionAnchors = new Map<number, Vec2>();
   const isHovered = (kind: PickKind, id: string | number): boolean =>
     selectionMatches(hoveredTarget, viewerSketch.id, kind, id);
   const isSelected = (kind: PickKind, id: string | number): boolean =>
@@ -1745,6 +1843,7 @@ function buildSketchBuffers(
       highlightLineVertices,
       labels,
       highlightLabels,
+      dimensionAnchors,
       pointMap,
       entityMap,
       resolveValue,
@@ -1775,6 +1874,7 @@ function buildSketchBuffers(
       highlightLabelData: fontMetrics ? buildLabelVertices(highlightLabels, fontMetrics) : new Float32Array(),
     },
     loops: resolvedLoops,
+    dimensionAnchors,
   };
 }
 
@@ -1783,6 +1883,7 @@ function pushConstraintGeometry(
   highlightLines: LineVertex[],
   labels: ConstraintLabel[],
   highlightLabels: ConstraintLabel[],
+  dimensionAnchors: Map<number, Vec2>,
   pointMap: Map<string, Vec2>,
   entityMap: Map<string, RenderEntity>,
   resolveValue: (path: string, fallback: number) => number,
@@ -1837,6 +1938,7 @@ function pushConstraintGeometry(
       const mid = scale2(add2(a, b), 0.5);
       const fallbackAnchor = add2(mid, scale2(n, 1.8));
       const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
+      dimensionAnchors.set(constraintIndex, anchor);
       const offsetAmount = dot2(sub2(anchor, mid), n);
       const off = scale2(n, Math.abs(offsetAmount) < 0.5 ? 1.8 : offsetAmount);
       const aa = add2(a, off);
@@ -1866,6 +1968,7 @@ function pushConstraintGeometry(
       const radius = resolveValue(`sketch.entity.${circle.id}.radius`, circle.radius);
       const fallbackAnchor: Vec2 = [center[0], center[1] + radius + 2.4];
       const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
+      dimensionAnchors.set(constraintIndex, anchor);
       const axis = norm2(sub2(anchor, center));
       const dir = len2(axis) < 1e-6 ? ([0, 1] as Vec2) : axis;
       lines.push(
@@ -1899,6 +2002,7 @@ function pushConstraintGeometry(
       const rb = norm2(sub2(b1, b0));
       const fallback = len2(norm2(add2(ra, rb))) < 1e-6 ? [vertex[0] + 2.6, vertex[1] + 2.6] : add2(vertex, scale2(norm2(add2(ra, rb)), 4.4));
       const anchor = resolveLabelAnchor(constraintIndex, fallback);
+      dimensionAnchors.set(constraintIndex, anchor);
       const r = Math.max(2.4, len2(sub2(anchor, vertex)) - 0.8);
       lines.push({ x: vertex[0], y: vertex[1], color: DIM_COLOR }, { x: vertex[0] + ra[0] * r, y: vertex[1] + ra[1] * r, color: DIM_COLOR });
       lines.push({ x: vertex[0], y: vertex[1], color: DIM_COLOR }, { x: vertex[0] + rb[0] * r, y: vertex[1] + rb[1] * r, color: DIM_COLOR });
@@ -2558,6 +2662,29 @@ function toSketchFrame(t: JsonRigidTransform): SketchFrame {
 
 function liftPoint(frame: SketchFrame, p: Vec2): Vec3 {
   return add3(frame.position, add3(scale3(frame.xAxis, p[0]), scale3(frame.yAxis, p[1])));
+}
+
+function projectSketchLocalToScreen(
+  p: Vec2,
+  frame: SketchFrame,
+  canvas: HTMLCanvasElement,
+  camera: CameraState,
+): { x: number; y: number } | null {
+  const world = liftPoint(frame, p);
+  const width = Math.max(canvas.clientWidth, 1);
+  const height = Math.max(canvas.clientHeight, 1);
+  const aspect = width / height;
+  const { eye, forward, right, up } = viewBasis(camera);
+  const rel = sub3(world, eye);
+  const z = dot3(rel, forward);
+  if (z <= 1e-6) return null;
+  const tan = Math.tan(HALF_FOV);
+  const ndcX = dot3(rel, right) / (z * tan * aspect);
+  const ndcY = dot3(rel, up) / (z * tan);
+  return {
+    x: ((ndcX + 1) * 0.5) * width,
+    y: ((1 - ndcY) * 0.5) * height,
+  };
 }
 
 function pointerToSketchLocal(

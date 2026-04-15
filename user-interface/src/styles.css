@@ -432,20 +432,6 @@ body {
   background: var(--bg-surface-hover);
 }
 
-.constraint-edit-input {
-  width: 56px;
-  padding: 2px 4px;
-  background: var(--bg-page);
-  border: 1px solid var(--accent);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 10px;
-  font-family: "IBM Plex Mono", monospace;
-  border-radius: 2px;
-  text-align: right;
-  outline: none;
-}
-
 .constraint-delete {
   background: none;
   border: none;

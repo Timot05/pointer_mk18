@@ -198,3 +198,16 @@ export function postStartEditingDimension(constraintIndex: number): Promise<View
     body: JSON.stringify({ constraintIndex }),
   });
 }
+
+export function postCancelEditingDimension(): Promise<ViewerState> {
+  return request("/viewer/dimension-edit/cancel", {
+    method: "POST",
+  });
+}
+
+export function postCommitEditingDimension(value: number): Promise<ViewerState> {
+  return request("/viewer/dimension-edit/commit", {
+    method: "POST",
+    body: JSON.stringify({ value }),
+  });
+}

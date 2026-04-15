@@ -331,8 +331,8 @@ module SketchAuthoring =
             let la = max 1e-6 (sqrt (adx * adx + ady * ady))
             let lb = max 1e-6 (sqrt (bdx * bdx + bdy * bdy))
             let c = clamp -1.0 1.0 ((dot (adx, ady) (bdx, bdy)) / (la * lb))
-            acos c * 180.0 / Math.PI
-        | _ -> 90.0
+            acos c
+        | _ -> Math.PI * 0.5
 
     let private selectionForSketch sketchId (targets: SelectionTarget list) =
         let matching =
@@ -387,8 +387,8 @@ module SketchAuthoring =
                 Some { SketchId = sketchId; ConstraintIndex = index; Key = "distance"; Value = distance }
             | CircleDiameter(_, _, diameter, _) ->
                 Some { SketchId = sketchId; ConstraintIndex = index; Key = "diameter"; Value = diameter }
-            | Angle(_, _, _, _, _, _, angleDegrees, _, _, _, _) ->
-                Some { SketchId = sketchId; ConstraintIndex = index; Key = "angleDegrees"; Value = angleDegrees }
+            | Angle(_, _, _, _, _, _, angle, _, _, _, _) ->
+                Some { SketchId = sketchId; ConstraintIndex = index; Key = "angle"; Value = angle }
             | _ ->
                 None)
 
@@ -439,7 +439,7 @@ module SketchAuthoring =
                                 if ccw then ccwSweep else tau - ccwSweep
                             let midAngle =
                                 if ccw then angleA + sweep * 0.5 else angleA - sweep * 0.5
-                            Some(aReverse, bReverse, ccw, sweep * 180.0 / Math.PI, normalizePositive midAngle, angleA, sweep))
+                            Some(aReverse, bReverse, ccw, sweep, normalizePositive midAngle, angleA, sweep))
 
                 let chosen =
                     match cursor with
@@ -451,17 +451,17 @@ module SketchAuthoring =
                     | None ->
                         None
 
-                let aReverse, bReverse, ccw, degrees =
+                let aReverse, bReverse, ccw, angle =
                     match chosen, candidates with
-                    | Some(aReverse, bReverse, ccw, degrees, _, _, _), _ ->
-                        aReverse, bReverse, ccw, degrees
+                    | Some(aReverse, bReverse, ccw, angle, _, _, _), _ ->
+                        aReverse, bReverse, ccw, angle
                     | None, first :: _ ->
-                        let (aReverse, bReverse, ccw, degrees, _, _, _) = first
-                        aReverse, bReverse, ccw, degrees
+                        let (aReverse, bReverse, ccw, angle, _, _, _) = first
+                        aReverse, bReverse, ccw, angle
                     | None, [] ->
                         false, false, true, angleValue sketch lineA lineB
 
-                Some(Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, None))
+                Some(Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, angle, aReverse, bReverse, ccw, None))
             | _ -> None
         | _ -> None
 
@@ -705,8 +705,8 @@ module SketchAuthoring =
                     | Distance(a, b, distance, _) -> Distance(a, b, distance, Some labelPosition)
                     | LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, distance, _) -> LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, distance, Some labelPosition)
                     | CircleDiameter(circle, center, diameter, _) -> CircleDiameter(circle, center, diameter, Some labelPosition)
-                    | Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, _) ->
-                        Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, Some labelPosition)
+                    | Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, angle, aReverse, bReverse, ccw, _) ->
+                        Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, angle, aReverse, bReverse, ccw, Some labelPosition)
                     | other -> other
                 let nextSketch = { ctx.Sketch with Constraints = ctx.Sketch.Constraints @ [ withLabel ] }
                 withUpdatedSketch doc ctx.Action.Id nextSketch))
@@ -717,8 +717,8 @@ module SketchAuthoring =
             | Distance(a, b, distance, _) -> Distance(a, b, distance, Some labelPosition)
             | LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, distance, _) -> LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, distance, Some labelPosition)
             | CircleDiameter(circle, center, diameter, _) -> CircleDiameter(circle, center, diameter, Some labelPosition)
-            | Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, _) ->
-                Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, Some labelPosition)
+            | Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, angle, aReverse, bReverse, ccw, _) ->
+                Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, angle, aReverse, bReverse, ccw, Some labelPosition)
             | other -> other
 
         trySelectedSketch doc

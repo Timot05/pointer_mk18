@@ -3,26 +3,28 @@
 // ---------------------------------------------------------------------------
 
 import { renderIconForKind } from "./icons";
-import {
-  paletteOpen, paletteQuery, paletteQueryRapid, palettePick, paletteScalarRapid,
-  paletteScalarsCommit, paletteFinish, paletteBack, paletteClose,
-  type PaletteItem, type PaletteState, type PaletteAndDoc, type Document,
-} from "./api";
+import { type PaletteItem, type PaletteState } from "./api";
 import { el, setupDraggable } from "./dom";
+import {
+  dispatchEditor,
+  selectDocumentView,
+  selectPaletteView,
+} from "../../app/src/editor-store";
+import {
+  Editor_msgPaletteBack,
+  Editor_msgPaletteClose,
+  Editor_msgPaletteCommitScalars,
+  Editor_msgPaletteFinish,
+  Editor_msgPaletteOpen,
+  Editor_msgPalettePick,
+  Editor_msgPaletteSetQuery,
+  Editor_msgPaletteSetScalarField,
+} from "../../app/src-gen/core/Editor";
 
 let backdrop: HTMLElement | null = null;
 let activeIndex = 0;
 let currentItems: PaletteItem[] = [];
-let onDocUpdate: ((doc: Document) => void) | null = null;
 let cleanupKeydown: (() => void) | null = null;
-let onViewerStateDirty: (() => void) | null = null;
-let onViewerModelDirty: (() => void) | null = null;
-
-// ── Helpers ───────────────────────────────────────────────────────────
-
-function isPaletteAndDoc(r: PaletteState | PaletteAndDoc): r is PaletteAndDoc {
-  return "document" in r;
-}
 
 // ── Public API ────────────────────────────────────────────────────────
 
@@ -30,25 +32,16 @@ export function isOpen(): boolean {
   return backdrop !== null;
 }
 
-export async function open(
-  onDoc: (doc: Document) => void,
-  hooks?: { onViewerStateDirty?: () => void; onViewerModelDirty?: () => void },
-): Promise<void> {
+export async function open(): Promise<void> {
   if (backdrop) return;
-  onDocUpdate = onDoc;
-  onViewerStateDirty = hooks?.onViewerStateDirty ?? null;
-  onViewerModelDirty = hooks?.onViewerModelDirty ?? null;
   activeIndex = 0;
-  const state = await paletteOpen();
-  mount(state);
+  dispatchEditor(Editor_msgPaletteOpen);
+  mount(selectPaletteView() as PaletteState);
 }
 
 export async function close(): Promise<void> {
   unmount();
-  await paletteClose();
-  onDocUpdate = null;
-  onViewerStateDirty = null;
-  onViewerModelDirty = null;
+  dispatchEditor(Editor_msgPaletteClose);
 }
 
 // ── Mount / unmount ───────────────────────────────────────────────────
@@ -64,21 +57,14 @@ function unmount() {
   }
 }
 
-function handleResponse(r: PaletteState | PaletteAndDoc) {
-  if (isPaletteAndDoc(r)) {
+function syncPalette(afterModelChange = false) {
+  const state = selectPaletteView() as PaletteState;
+  if (!state.isOpen) {
     unmount();
-    onDocUpdate?.(r.document);
-    onViewerModelDirty?.();
-    if (r.palette.isOpen) {
-      activeIndex = 0;
-      mount(r.palette);
-    }
-  } else if (r.isOpen) {
-    activeIndex = 0;
-    mount(r);
-  } else {
-    unmount();
+    return;
   }
+  activeIndex = 0;
+  mount(state);
 }
 
 function mount(state: PaletteState) {
@@ -135,12 +121,10 @@ function mount(state: PaletteState) {
       setupDraggable(
         valSpan, field.value,
         (v) => {
-          paletteScalarRapid(field.key, v);
-          onViewerStateDirty?.();
+          dispatchEditor(Editor_msgPaletteSetScalarField(field.key, v));
         },
         (v) => {
-          paletteScalarRapid(field.key, v);
-          onViewerStateDirty?.();
+          dispatchEditor(Editor_msgPaletteSetScalarField(field.key, v));
         }
       );
       cell.appendChild(valSpan);
@@ -172,8 +156,9 @@ function mount(state: PaletteState) {
     input.addEventListener("input", () => {
       if (debounce) clearTimeout(debounce);
       debounce = setTimeout(async () => {
-        const items = await paletteQueryRapid(input!.value);
-        patchResults(items);
+        dispatchEditor(Editor_msgPaletteSetQuery(input!.value));
+        const next = selectPaletteView() as PaletteState;
+        patchResults(next.items);
       }, 80);
     });
 
@@ -186,7 +171,8 @@ function mount(state: PaletteState) {
       }
       if (e.key === "Backspace" && input!.value === "" && state.mode !== "command") {
         e.preventDefault();
-        paletteBack().then((r) => { activeIndex = 0; mount(r as PaletteState); });
+        dispatchEditor(Editor_msgPaletteBack);
+        syncPalette();
         return;
       }
       if (e.key === "ArrowDown") {
@@ -204,10 +190,16 @@ function mount(state: PaletteState) {
       } else if (e.key === "Enter") {
         e.preventDefault();
         if (e.metaKey || e.ctrlKey) {
-          paletteFinish().then(handleResponse);
+          dispatchEditor(Editor_msgPaletteFinish(Math.random().toString(36).slice(2, 8)));
+          syncPalette(true);
         } else {
           const item = currentItems[activeIndex];
-          if (item) palettePick(item.id).then(handleResponse);
+          if (item) {
+            const actionCountBefore = (selectDocumentView() as { actions: unknown[] }).actions.length;
+            dispatchEditor(Editor_msgPalettePick(item.id));
+            const actionCountAfter = (selectDocumentView() as { actions: unknown[] }).actions.length;
+            syncPalette(actionCountAfter !== actionCountBefore);
+          }
         }
       }
     });
@@ -223,13 +215,18 @@ function mount(state: PaletteState) {
         close();
       } else if (e.key === "Backspace") {
         e.preventDefault();
-        paletteBack().then((r) => { activeIndex = 0; mount(r as PaletteState); });
+        dispatchEditor(Editor_msgPaletteBack);
+        syncPalette();
       } else if (e.key === "Enter") {
         e.preventDefault();
         if (e.metaKey || e.ctrlKey) {
-          paletteFinish().then(handleResponse);
+          dispatchEditor(Editor_msgPaletteFinish(Math.random().toString(36).slice(2, 8)));
+          syncPalette(true);
         } else {
-          paletteScalarsCommit().then(handleResponse);
+          const actionCountBefore = (selectDocumentView() as { actions: unknown[] }).actions.length;
+          dispatchEditor(Editor_msgPaletteCommitScalars);
+          const actionCountAfter = (selectDocumentView() as { actions: unknown[] }).actions.length;
+          syncPalette(actionCountAfter !== actionCountBefore);
         }
       }
     }
@@ -261,7 +258,12 @@ function buildResultsList(items: PaletteItem[]): HTMLElement {
           el.classList.toggle("is-active", j === i);
         });
       });
-      btn.addEventListener("click", () => palettePick(item.id).then(handleResponse));
+      btn.addEventListener("click", () => {
+        const actionCountBefore = (selectDocumentView() as { actions: unknown[] }).actions.length;
+        dispatchEditor(Editor_msgPalettePick(item.id));
+        const actionCountAfter = (selectDocumentView() as { actions: unknown[] }).actions.length;
+        syncPalette(actionCountAfter !== actionCountBefore);
+      });
       results.appendChild(btn);
     });
   }

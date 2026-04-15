@@ -197,13 +197,12 @@ module Element =
                                 | None -> [], state
                             let core =
                                 EFromSketch(id, sketchId, sketch, selection, flip)
-                            let withOrigin = applyFrame frameChain' core
                             let withPlane =
                                 match plane with
-                                | XY -> withOrigin
-                                | XZ -> ERotate($"{id}_plane", 1.0, 0.0, 0.0, -90.0, withOrigin)
-                                | YZ -> ERotate($"{id}_plane_z", 0.0, 0.0, 1.0, 90.0, ERotate($"{id}_plane_x", 1.0, 0.0, 0.0, -90.0, withOrigin))
-                            withPlane, state
+                                | XY -> core
+                                | XZ -> ERotate($"{id}_plane", 1.0, 0.0, 0.0, System.Math.PI * 0.5, core)
+                                | YZ -> ERotate($"{id}_plane_z", 0.0, 0.0, 1.0, System.Math.PI * 0.5, ERotate($"{id}_plane_x", 1.0, 0.0, 0.0, System.Math.PI * 0.5, core))
+                            applyFrame frameChain' withPlane, state
                         | _ -> EEmpty, state
                     | None -> EEmpty, state
 

@@ -2,12 +2,15 @@ module TypeCheckTests
 
 open Xunit
 open Server
-open Server.Program
+open Server.Editor
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 let action id kind : DocAction =
     { Id = id; Name = None; Kind = kind; Visible = true; Display = None; FieldSlice = None }
+
+let quarterTurn = System.Math.PI * 0.5
+let eighthTurn = System.Math.PI * 0.25
 
 let ok (result: TypeCheck.TypecheckResult) =
     if result.Errors.Length > 0 then failwithf "Expected no errors but got: %A" result.Errors
@@ -122,7 +125,7 @@ let ``Translate Frame produces Frame`` () =
 let ``Rotate Field produces Field`` () =
     let typed =
         [ action "s" (Sphere 5.0)
-          action "r" (Rotate(Some "s", 0.0, 0.0, 1.0, 45.0)) ]
+          action "r" (Rotate(Some "s", 0.0, 0.0, 1.0, eighthTurn)) ]
         |> TypeCheck.typecheck |> ok
     Assert.Equal(FieldType.Field, outputOf "r" typed)
 
@@ -130,7 +133,7 @@ let ``Rotate Field produces Field`` () =
 let ``Rotate Frame produces Frame`` () =
     let typed =
         [ action "o" Origin
-          action "r" (Rotate(Some "o", 0.0, 0.0, 1.0, 90.0)) ]
+          action "r" (Rotate(Some "o", 0.0, 0.0, 1.0, quarterTurn)) ]
         |> TypeCheck.typecheck |> ok
     Assert.Equal(FieldType.Frame, outputOf "r" typed)
 
@@ -375,7 +378,7 @@ let ``Chained transforms preserve type`` () =
     let typed =
         [ action "o" Origin
           action "t1" (Translate(Some "o", 1.0, 0.0, 0.0))
-          action "r1" (Rotate(Some "t1", 0.0, 0.0, 1.0, 45.0))
+          action "r1" (Rotate(Some "t1", 0.0, 0.0, 1.0, eighthTurn))
           action "t2" (Translate(Some "r1", 0.0, 5.0, 0.0)) ]
         |> TypeCheck.typecheck |> ok
     // Frame flows through the chain

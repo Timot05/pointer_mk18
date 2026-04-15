@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postCancelEditingDimension, postCommitEditingDimension, postStartEditingDimension, postViewerDimensionClickTarget, postViewerHover, postViewerPick, postViewerPlacementCursor, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoomTowardsPointer, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -9,6 +9,29 @@ import { add2, add3, cross3, dot2, dot3, len2, norm2, norm3, perp, scale2, scale
 import { createIsosurfacePipeline } from "./pipeline-isosurface";
 import { createFieldSlicePipeline } from "./pipeline-field-slice";
 import { createMsdfLabelPipeline, writeLabelUniform } from "./pipeline-msdf-label";
+import {
+  dispatchEditor,
+  paramValueFromJs,
+  selectViewerModel,
+  selectViewerState,
+  selectionCandidatesFromJs,
+  subscribeViewerModel,
+  subscribeViewerState,
+} from "../../app/src/editor-store";
+import {
+  Editor_msgCancelEditingDimension,
+  Editor_msgCommitEditingDimension,
+  Editor_msgPatchActionParamValue,
+  Editor_msgPatchSketchParams,
+  Editor_msgSetConstraintPlacementCursor,
+  Editor_msgStartEditingDimension,
+  Editor_msgViewerDimensionClickTarget,
+  Editor_msgViewerHover,
+  Editor_msgViewerPick,
+  Editor_msgViewerPlaceConstraint,
+  Editor_msgViewerToolClick,
+} from "../../app/src-gen/core/Editor";
+import { ofArray as listOfArray } from "../../app/src-gen/core/fable_modules/fable-library-js.4.24.0/List";
 
 type PickKind = "point" | "line" | "circle" | "arc" | "loop" | "dimension";
 
@@ -182,10 +205,6 @@ interface FieldSlicePipelineState {
 }
 
 export interface ViewerStartOptions {
-  polling?: boolean;
-  onDocumentDirty?: () => void;
-  subscribeViewerStateDirty?: (listener: () => void) => () => void;
-  subscribeViewerModelDirty?: (listener: () => void) => () => void;
 }
 
 const NO_HIT_ID = 0xffffffff;
@@ -679,6 +698,8 @@ export class ViewerApp {
   private gpu: GpuContext | null = null;
   private model: ViewerModel | null = null;
   private state: ViewerState | null = null;
+  private sketchStateVersion = 0;
+  private solvedSketchStateVersion = -1;
   private fontMetrics: FontMetrics | null = null;
   private slotLookup = new Map<string, number>();
   private solverBindings = new Map<string, SketchSolverBinding>();
@@ -687,9 +708,6 @@ export class ViewerApp {
   private dimensionEditInput: HTMLInputElement | null = null;
   private dimensionEditKey: string | null = null;
   private resizeObserver: ResizeObserver | null = null;
-  private stateTimer: number | null = null;
-  private modelTimer: number | null = null;
-  private startOptions: ViewerStartOptions = {};
   private fieldPipeline: FieldPipelineState | null = null;
   private fieldSlicePipeline: FieldSlicePipelineState | null = null;
   private renderQueued = false;
@@ -720,7 +738,6 @@ export class ViewerApp {
   }
 
   async start(options: ViewerStartOptions = {}): Promise<void> {
-    this.startOptions = options;
     this.bindEvents();
     this.gpu = await this.initGpu();
     try {
@@ -734,14 +751,10 @@ export class ViewerApp {
     });
     this.resizeObserver.observe(this.canvas);
     this.resizeCanvas();
-    if (options.polling ?? true) {
-      this.stateTimer = window.setInterval(() => { void this.reloadState(); }, 350);
-      this.modelTimer = window.setInterval(() => { void this.reloadModel(false); }, 1800);
-    }
-    options.subscribeViewerStateDirty?.(() => {
+    subscribeViewerState(() => {
       void this.reloadState();
     });
-    options.subscribeViewerModelDirty?.(() => {
+    subscribeViewerModel(() => {
       void this.reloadModel(false).then(() => this.reloadState());
     });
     this.queueRender();
@@ -750,7 +763,9 @@ export class ViewerApp {
   private async reloadModel(resetCamera: boolean): Promise<void> {
     if (this.drag) return;
     this.destroySolverBindings();
-    this.model = await getViewerModel();
+    this.model = selectViewerModel() as ViewerModel;
+    this.sketchStateVersion += 1;
+    this.solvedSketchStateVersion = -1;
     this.rebuildFieldPipeline();
     this.rebuildFieldSlicePipeline();
     this.slotLookup = new Map(this.model.slotIndex.map((entry) => [`${entry.actionId}:${entry.path}`, entry.slot]));
@@ -762,21 +777,36 @@ export class ViewerApp {
 
   private async reloadState(): Promise<void> {
     if (this.drag) return;
-    let nextState = await getViewerState();
+    let nextState = selectViewerState() as ViewerState;
     if (this.model && nextState.params.length !== this.model.numSlots) {
       await this.reloadModel(false);
-      nextState = await getViewerState();
+      nextState = selectViewerState() as ViewerState;
     }
-    this.state = nextState;
-    this.updateFieldBuffers();
-    this.updateFieldSliceBuffers();
+    this.applyViewerState(nextState);
     await this.solveSketches();
     this.rebuildRenderData();
+    this.updateFieldBuffers();
+    this.updateFieldSliceBuffers();
     if (this.resetCameraPending) {
       this.fitCamera();
       this.resetCameraPending = false;
     }
     this.queueRender();
+  }
+
+  private applyViewerState(nextState: ViewerState): void {
+    if (!this.state || ViewerApp.haveSketchParamsChanged(this.state, nextState)) {
+      this.sketchStateVersion += 1;
+    }
+    this.state = nextState;
+  }
+
+  private static haveSketchParamsChanged(prev: ViewerState, next: ViewerState): boolean {
+    if (prev.params.length !== next.params.length) return true;
+    for (let i = 0; i < prev.params.length; i++) {
+      if (prev.params[i] !== next.params[i]) return true;
+    }
+    return false;
   }
 
   private bindEvents(): void {
@@ -878,7 +908,8 @@ export class ViewerApp {
       return;
     }
     const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
-    this.state = await postViewerHover(toPickRequest(candidates));
+    dispatchEditor(Editor_msgViewerHover(selectionCandidatesFromJs(toPickRequest(candidates))));
+    this.applyViewerState(selectViewerState() as ViewerState);
     this.rebuildRenderData();
     this.queueRender();
     if (event.shiftKey) return;
@@ -925,13 +956,15 @@ export class ViewerApp {
     if (!this.state?.sketchUi.editMode || this.drag || this.interaction) return;
     const target = this.state.hoveredTarget;
     if (!target || target.case !== "TargetDimension") return;
-    this.state = await postStartEditingDimension(target.constraintIndex);
+    dispatchEditor(Editor_msgStartEditingDimension(target.constraintIndex));
+    this.applyViewerState(selectViewerState() as ViewerState);
     this.rebuildRenderData();
     this.queueRender();
   }
 
   private async cancelDimensionEdit(): Promise<void> {
-    this.state = await postCancelEditingDimension();
+    dispatchEditor(Editor_msgCancelEditingDimension);
+    this.applyViewerState(selectViewerState() as ViewerState);
     this.rebuildRenderData();
     this.queueRender();
   }
@@ -942,11 +975,11 @@ export class ViewerApp {
       await this.cancelDimensionEdit();
       return;
     }
-    this.state = await postCommitEditingDimension(value);
+    dispatchEditor(Editor_msgCommitEditingDimension(value));
+    this.applyViewerState(selectViewerState() as ViewerState);
     await this.solveSketches();
     this.rebuildRenderData();
     this.queueRender();
-    this.startOptions.onDocumentDirty?.();
   }
 
   private authoringSketch(): { model: ViewerSketch; frame: SketchFrame } | null {
@@ -975,6 +1008,7 @@ export class ViewerApp {
     if (!authored || !pending || pending.sketchId !== authored.model.id) return null;
     const cursor = pointerToSketchLocal(this.pointer, this.canvas, this.camera, authored.frame);
     if (!cursor) return null;
+    const effectiveParams = this.currentEffectiveParams();
 
     const entityMap = new Map(authored.model.sketch.entities.map((entity) => [entity.id, entity]));
     const pointMap = new Map<string, Vec2>();
@@ -984,7 +1018,7 @@ export class ViewerApp {
     const binding = this.solverBindings.get(authored.model.id);
     const solved = this.solvedSketchParams.get(authored.model.id);
     const resolveValue = (path: string, fallback: number) =>
-      resolvedSketchValue(binding, solved, this.state!.params, this.slotLookup, authored.model.id, path, fallback);
+      resolvedSketchValue(binding, solved, false, effectiveParams, this.slotLookup, authored.model.id, path, fallback);
 
     for (const entity of authored.model.sketch.entities) {
       if (entity.case === "REPoint") {
@@ -1038,12 +1072,19 @@ export class ViewerApp {
       const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
       const placementCursor = this.currentPlacementCursor();
       if (placementCursor) {
-        this.state = await postViewerPlacementCursor(placementCursor);
+        dispatchEditor(
+          Editor_msgSetConstraintPlacementCursor(
+            placementCursor ? [placementCursor.sketchId, { X: placementCursor.x, Y: placementCursor.y }] : undefined,
+          ),
+        );
+        this.applyViewerState(selectViewerState() as ViewerState);
       }
-      this.state = await postViewerHover(toPickRequest(candidates));
+      dispatchEditor(Editor_msgViewerHover(selectionCandidatesFromJs(toPickRequest(candidates))));
+      this.applyViewerState(selectViewerState() as ViewerState);
       const hovered = this.state?.hoveredTarget;
       if (hovered && hovered.case !== "TargetDimension" && hovered.case !== "TargetLoop" && hovered.case !== "TargetSurface") {
-        this.state = await postViewerDimensionClickTarget();
+        dispatchEditor(Editor_msgViewerDimensionClickTarget);
+        this.applyViewerState(selectViewerState() as ViewerState);
         this.rebuildRenderData();
         this.queueRender();
         return true;
@@ -1051,9 +1092,9 @@ export class ViewerApp {
       if (!this.state?.sketchUi.pendingConstraintPlacement) {
         return false;
       }
-      this.state = await placeViewerConstraint(local[0], local[1]);
+      dispatchEditor(Editor_msgViewerPlaceConstraint(local[0], local[1]));
+      this.applyViewerState(selectViewerState() as ViewerState);
       await this.reloadModel(false);
-      this.startOptions.onDocumentDirty?.();
       return true;
     }
 
@@ -1061,9 +1102,9 @@ export class ViewerApp {
     if (tool === "none") {
       return false;
     }
-    this.state = await postViewerToolClick(local[0], local[1]);
+    dispatchEditor(Editor_msgViewerToolClick(local[0], local[1]));
+    this.applyViewerState(selectViewerState() as ViewerState);
     await this.reloadModel(false);
-    this.startOptions.onDocumentDirty?.();
     return true;
   }
 
@@ -1083,10 +1124,9 @@ export class ViewerApp {
     await this.solveSketches();
     this.drag = null;
     if (drag.kind === "label") {
-      await patchActionParam(drag.sketchId, drag.xPath, drag.target[0]);
-      await patchActionParam(drag.sketchId, drag.yPath, drag.target[1]);
+      dispatchEditor(Editor_msgPatchActionParamValue(drag.sketchId, drag.xPath, paramValueFromJs(drag.target[0])));
+      dispatchEditor(Editor_msgPatchActionParamValue(drag.sketchId, drag.yPath, paramValueFromJs(drag.target[1])));
       await this.reloadState();
-      this.startOptions.onDocumentDirty?.();
       return;
     }
     const solved = this.solvedSketchParams.get(drag.sketchId);
@@ -1102,11 +1142,16 @@ export class ViewerApp {
       await this.reloadState();
       return;
     }
-    this.state = await patchViewerSketchParams(drag.sketchId, params);
+    dispatchEditor(
+      Editor_msgPatchSketchParams(
+        drag.sketchId,
+        listOfArray(params.map((param) => [param.key, param.value] as [string, number])),
+      ),
+    );
+    this.applyViewerState(selectViewerState() as ViewerState);
     await this.solveSketches();
     this.rebuildRenderData();
     this.queueRender();
-    this.startOptions.onDocumentDirty?.();
   }
 
   private async updateDragFrame(): Promise<void> {
@@ -1189,6 +1234,7 @@ export class ViewerApp {
 
   private rebuildRenderData(): void {
     if (!this.model || !this.state) return;
+    const effectiveParams = this.currentEffectiveParams();
     this.renderSketches = this.model.sketches
       .filter((sketch) => this.isVisible(sketch.id))
       .map((sketch) => {
@@ -1197,13 +1243,13 @@ export class ViewerApp {
           sketch,
           this.model!.pickables,
           this.slotLookup,
-          this.state!.params,
+          effectiveParams,
           this.state!.frames,
           this.state!.highlightedTarget,
           this.state.highlightedTargets,
           this.fontMetrics,
           this.solverBindings.get(sketch.id),
-          this.solvedSketchParams.get(sketch.id),
+          this.solvedSketchStateVersion === this.sketchStateVersion ? this.solvedSketchParams.get(sketch.id) : undefined,
           this.drag,
           frame,
           (constraintIndex) => this.constraintLabelPosition(sketch.id, constraintIndex),
@@ -1222,6 +1268,21 @@ export class ViewerApp {
 
   private isVisible(actionId: string): boolean {
     return this.state?.visible[actionId] ?? true;
+  }
+
+  private currentEffectiveParams(): Float32Array {
+    const base = new Float32Array(this.state?.params ?? []);
+    if (this.solvedSketchStateVersion !== this.sketchStateVersion) return base;
+    for (const [sketchId, solvedLocal] of this.solvedSketchParams.entries()) {
+      const binding = this.solverBindings.get(sketchId);
+      if (!binding) continue;
+      const count = Math.min(binding.localToGlobal.length, solvedLocal.length);
+      for (let i = 0; i < count; i++) {
+        const globalSlot = binding.localToGlobal[i];
+        if (globalSlot < base.length) base[globalSlot] = solvedLocal[i];
+      }
+    }
+    return base;
   }
 
   private constraintLabelPosition(sketchId: string, constraintIndex: number): Vec2 | null {
@@ -1274,12 +1335,14 @@ export class ViewerApp {
       solved.set(sketch.id, result);
     }));
     this.solvedSketchParams = solved;
+    this.solvedSketchStateVersion = this.sketchStateVersion;
   }
 
   private destroySolverBindings(): void {
     for (const binding of this.solverBindings.values()) binding.solver.destroy();
     this.solverBindings.clear();
     this.solvedSketchParams.clear();
+    this.solvedSketchStateVersion = -1;
   }
 
   private resizeCanvas(): void {
@@ -1630,7 +1693,12 @@ export class ViewerApp {
     try {
       const placementCursor = this.currentPlacementCursor();
       if (!event && placementCursor) {
-        this.state = await postViewerPlacementCursor(placementCursor);
+        dispatchEditor(
+          Editor_msgSetConstraintPlacementCursor(
+            placementCursor ? [placementCursor.sketchId, { X: placementCursor.x, Y: placementCursor.y }] : undefined,
+          ),
+        );
+        this.applyViewerState(selectViewerState() as ViewerState);
       }
       const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
       if (candidates.length === 0) {
@@ -1648,10 +1716,11 @@ export class ViewerApp {
       }
       if (event) {
         const intent = event.shiftKey ? "toggle" : "replace";
-        this.state = await postViewerPick(toPickRequest(candidates), intent);
-        this.startOptions.onDocumentDirty?.();
+        dispatchEditor(Editor_msgViewerPick(intent, selectionCandidatesFromJs(toPickRequest(candidates))));
+        this.applyViewerState(selectViewerState() as ViewerState);
       } else {
-        this.state = await postViewerHover(toPickRequest(candidates));
+        dispatchEditor(Editor_msgViewerHover(selectionCandidatesFromJs(toPickRequest(candidates))));
+        this.applyViewerState(selectViewerState() as ViewerState);
       }
       this.rebuildRenderData();
       this.queueRender();
@@ -1929,12 +1998,13 @@ export class ViewerApp {
   private updateFieldBuffers(): void {
     if (!this.gpu || !this.model || !this.state || !this.fieldPipeline) return;
     const { device } = this.gpu;
-    if (this.state.params.length > this.fieldPipeline.slotCapacity) {
+    const effectiveParams = this.currentEffectiveParams();
+    if (effectiveParams.length > this.fieldPipeline.slotCapacity) {
       this.rebuildFieldPipeline();
       return;
     }
     const { slotBuffer, surfaceBuffer } = this.fieldPipeline;
-    device.queue.writeBuffer(slotBuffer, 0, new Float32Array(this.state.params));
+    device.queue.writeBuffer(slotBuffer, 0, effectiveParams);
 
     const surfaceState = new Float32Array(Math.max(this.model.fieldSurfaceActionIds.length, 1) * 8);
     this.model.fieldSurfaceActionIds.forEach((actionId, index) => {
@@ -2265,8 +2335,10 @@ function buildSketchBuffers(
     selectionMatches(hoveredTarget, viewerSketch.id, kind, id);
   const isSelected = (kind: PickKind, id: string | number): boolean =>
     selectionMatchesAny(selectedTargets, viewerSketch.id, kind, id);
+  const preferSolvedLocal =
+    drag?.kind === "point" && drag.sketchId === viewerSketch.id;
   const resolveValue = (path: string, fallback: number) =>
-    resolvedSketchValue(solverBinding, solvedLocal, params, slotLookup, viewerSketch.id, path, fallback);
+    resolvedSketchValue(solverBinding, solvedLocal, preferSolvedLocal, params, slotLookup, viewerSketch.id, path, fallback);
   const resolveLabelAnchor = (index: number, fallback: Vec2): Vec2 => {
     if (drag?.kind === "label" && drag.sketchId === viewerSketch.id && drag.constraintIndex === index) return drag.target;
     const live = stateLabelPosition?.(index);
@@ -2607,12 +2679,12 @@ function pushConstraintGeometry(
         pushAngleArc(highlightLines, vertex, rayA, rayB, r, constraint.ccwFromAToB, DIM_HOVER, arcStartAngle, arcEndAngle);
       }
       labels.push({
-        text: `${formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.angleDegrees`, constraint.angleDegrees))}°`,
+        text: `${formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.angle`, constraint.angle))}`,
         anchor,
         pickId,
         hovered: false,
       });
-      if (activeDimension) highlightLabels.push({ text: `${formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.angleDegrees`, constraint.angleDegrees))}°`, anchor, pickId, hovered: true });
+      if (activeDimension) highlightLabels.push({ text: `${formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.angle`, constraint.angle))}`, anchor, pickId, hovered: true });
       return;
     }
     default:
@@ -3418,6 +3490,7 @@ function slotValue(params: number[], slotLookup: Map<string, number>, actionId: 
 function resolvedSketchValue(
   solverBinding: SketchSolverBinding | undefined,
   solvedLocal: Float32Array | undefined,
+  preferSolvedLocal: boolean,
   params: number[],
   slotLookup: Map<string, number>,
   actionId: string,
@@ -3425,7 +3498,7 @@ function resolvedSketchValue(
   fallback: number,
 ): number {
   const localSlot = solverBinding?.localByPath.get(path);
-  if (localSlot != null && solvedLocal && localSlot < solvedLocal.length) return solvedLocal[localSlot];
+  if (preferSolvedLocal && localSlot != null && solvedLocal && localSlot < solvedLocal.length) return solvedLocal[localSlot];
   return slotValue(params, slotLookup, actionId, path, fallback);
 }
 
@@ -3470,7 +3543,7 @@ async function createSketchSolverBinding(
         localByPath.set(`sketch.constraint.${index}.diameter`, localSlot++);
         break;
       case "Angle":
-        localByPath.set(`sketch.constraint.${index}.angleDegrees`, localSlot++);
+        localByPath.set(`sketch.constraint.${index}.angle`, localSlot++);
         break;
       default:
         break;

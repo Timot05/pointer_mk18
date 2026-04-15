@@ -1,4 +1,4 @@
-import { graphFromJson, type Graph, type GraphJson } from "./graph";
+import type { Graph } from "./graph";
 
 export interface JsonVec3 { x: number; y: number; z: number }
 export interface JsonQuat { w: number; x: number; y: number; z: number }
@@ -27,7 +27,7 @@ export type SketchConstraint =
   | { case: "Distance"; a: string; b: string; distance: number }
   | { case: "CircleDiameter"; circle: string; center: string; diameter: number }
   | { case: "LineDistance"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; distance: number }
-  | { case: "Angle"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; angleDegrees: number; aReverse: boolean; bReverse: boolean; ccwFromAToB: boolean }
+  | { case: "Angle"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; angle: number; aReverse: boolean; bReverse: boolean; ccwFromAToB: boolean }
   | { case: string; [key: string]: unknown };
 
 export interface ActionSketch {
@@ -71,14 +71,6 @@ export interface ViewerModel {
   numSlots: number;
   slotIndex: SlotIndexEntry[];
   pickables: Pickable[];
-}
-
-interface ViewerSketchJson extends Omit<ViewerSketch, "graph"> {
-  graph: GraphJson;
-}
-
-interface ViewerModelJson extends Omit<ViewerModel, "sketches"> {
-  sketches: ViewerSketchJson[];
 }
 
 export interface ViewerState {
@@ -128,122 +120,4 @@ export interface SketchUiState {
   pendingConstraintPlacement: { sketchId: string; constraint: SketchConstraint } | null;
   constraintAvailability: Record<string, boolean>;
   dimensionPlacementAvailability: Record<string, boolean>;
-}
-
-const BASE = "/api";
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(BASE + path, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
-  if (!res.ok) throw new Error(`${init?.method ?? "GET"} ${path}: ${res.status}`);
-  return res.json();
-}
-
-export async function getViewerModel(): Promise<ViewerModel> {
-  const model = await request<ViewerModelJson>("/viewer/model");
-  return {
-    ...model,
-    sketches: model.sketches.map((sketch) => ({
-      ...sketch,
-      graph: graphFromJson(sketch.graph),
-    })),
-  };
-}
-
-export function getViewerState(): Promise<ViewerState> {
-  return request("/viewer/state");
-}
-
-export function postViewerHover(
-  candidates: Array<{ pickId: number; score: number }>,
-): Promise<ViewerState> {
-  return request("/viewer/hover", {
-    method: "POST",
-    body: JSON.stringify({ candidates }),
-  });
-}
-
-export function postViewerPlacementCursor(
-  cursor: { sketchId: string; x: number; y: number } | null,
-): Promise<ViewerState> {
-  return request("/viewer/placement-cursor", {
-    method: "POST",
-    body: JSON.stringify(cursor ?? {}),
-  });
-}
-
-export function postViewerPick(
-  candidates: Array<{ pickId: number; score: number }>,
-  intent: "replace" | "toggle",
-): Promise<ViewerState> {
-  return request("/viewer/pick", {
-    method: "POST",
-    body: JSON.stringify({ candidates, intent }),
-  });
-}
-
-export function patchActionParam(id: string, key: string, value: number | string | boolean): Promise<Record<string, unknown>> {
-  return request(`/document/action/${id}/param`, {
-    method: "PATCH",
-    body: JSON.stringify({ key, value }),
-  });
-}
-
-export function patchViewerSketchParams(
-  actionId: string,
-  params: Array<{ key: string; value: number }>,
-): Promise<ViewerState> {
-  return request("/viewer/sketch-params", {
-    method: "PATCH",
-    body: JSON.stringify({ actionId, params }),
-  });
-}
-
-export function replaceViewerSketch(actionId: string, sketch: ActionSketch): Promise<ViewerState> {
-  return request("/viewer/sketch", {
-    method: "PUT",
-    body: JSON.stringify({ actionId, sketch }),
-  });
-}
-
-export function placeViewerConstraint(x: number, y: number): Promise<ViewerState> {
-  return request("/viewer/place-constraint", {
-    method: "POST",
-    body: JSON.stringify({ x, y }),
-  });
-}
-
-export function postViewerToolClick(x: number, y: number): Promise<ViewerState> {
-  return request("/viewer/tool-click", {
-    method: "POST",
-    body: JSON.stringify({ x, y }),
-  });
-}
-
-export function postStartEditingDimension(constraintIndex: number): Promise<ViewerState> {
-  return request("/viewer/dimension-edit/start", {
-    method: "POST",
-    body: JSON.stringify({ constraintIndex }),
-  });
-}
-
-export function postViewerDimensionClickTarget(): Promise<ViewerState> {
-  return request("/viewer/dimension-click-target", {
-    method: "POST",
-  });
-}
-
-export function postCancelEditingDimension(): Promise<ViewerState> {
-  return request("/viewer/dimension-edit/cancel", {
-    method: "POST",
-  });
-}
-
-export function postCommitEditingDimension(value: number): Promise<ViewerState> {
-  return request("/viewer/dimension-edit/commit", {
-    method: "POST",
-    body: JSON.stringify({ value }),
-  });
 }

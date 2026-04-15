@@ -26,7 +26,7 @@ function kindSubtitle(kind: ActionKind): string {
     case "Translate":
       return `${kind.x}, ${kind.y}, ${kind.z}`;
     case "Rotate":
-      return `${kind.angle}\u00B0`;
+      return `${kind.angle}`;
     case "Thicken":
       return `${kind.amount}`;
     case "Shell":

@@ -1,34 +1,38 @@
-import { getDocument, exportModel, importModel, clearDocumentModel, selectAction, patchActionParam, patchActionParamRapid, toggleActionVisible, toggleDisplay, patchDisplay, toggleFieldSlice, patchFieldSlice, addAction, deleteCurrentSelection, reorderActions, toggleSketchEdit, setSketchTool, toggleConstraintPlacement, addConstraintFromSelection, deleteSketchConstraint, type Action, type Document, type ActionKind } from "./api";
+import type { Action, Document } from "./api";
 import { render, type RenderCallbacks } from "./render";
 import * as palette from "./command-palette";
+import {
+  dispatchEditor,
+  editorStore,
+  normalizeSerializedModelForLoad,
+  paramValueFromJs,
+  selectDocumentView,
+  selectSerializedModel,
+} from "../../app/src/editor-store";
+import {
+  Editor_msgAddConstraintFromSelection,
+  Editor_msgAddDefaultAction,
+  Editor_msgClearModel,
+  Editor_msgDeleteIntent,
+  Editor_msgPatchActionParamValue,
+  Editor_msgPatchDisplayValue,
+  Editor_msgPatchFieldSliceValue,
+  Editor_msgReorderActions,
+  Editor_msgSelectAction,
+  Editor_msgToggleActionVisible,
+  Editor_msgToggleConstraintPlacement,
+  Editor_msgToggleDisplay,
+  Editor_msgToggleFieldSlice,
+  Editor_msgToggleSketchEdit,
+  Editor_msgSetSketchTool,
+  Editor_msgDeleteSketchConstraint,
+  Editor_msgLoadModel,
+} from "../../app/src-gen/core/Editor";
+import { ofArray as listOfArray } from "../../app/src-gen/core/fable_modules/fable-library-js.4.24.0/List";
 
 export interface UserInterfaceMountOptions {
   embedded?: boolean;
   centerContent?: HTMLElement | null;
-  onViewerStateDirty?: () => void;
-  onViewerModelDirty?: () => void;
-  subscribeDocumentDirty?: (listener: () => void) => () => void;
-}
-
-function defaultKind(kindCase: string): ActionKind | null {
-  switch (kindCase) {
-    case "Sphere": return { case: "Sphere", radius: 8 };
-    case "Cylinder": return { case: "Cylinder", radius: 5, height: 20 };
-    case "Box": return { case: "Box", width: 10, height: 10, depth: 10 };
-    case "HalfPlane": return { case: "HalfPlane", axis: "Z", offset: 0, flip: false };
-    case "Translate": return { case: "Translate", child: null, x: 0, y: 0, z: 0 };
-    case "Rotate": return { case: "Rotate", child: null, ax: 0, ay: 0, az: 1, angle: 0 };
-    case "Move": return { case: "Move", child: null, frame: null };
-    case "Union": return { case: "Union", a: null, b: null, radius: 0 };
-    case "Subtract": return { case: "Subtract", a: null, b: null, radius: 0 };
-    case "Intersect": return { case: "Intersect", a: null, b: null, radius: 0 };
-    case "Sketch": return { case: "Sketch", origin: null, plane: "XY", sketch: { entities: [], constraints: [] } };
-    case "FromSketch": return { case: "FromSketch", child: null, flip: false, selection: { case: "SelectionLoop", loopId: null } };
-    case "Thicken": return { case: "Thicken", child: null, amount: 2 };
-    case "Shell": return { case: "Shell", child: null, thickness: 1 };
-    case "Mesh": return { case: "Mesh", child: null, size: 0.2, resolution: 96 };
-    default: return null;
-  }
 }
 
 let doc: Document | null = null;
@@ -68,11 +72,6 @@ const SKETCH_DIMENSION_SHORTCUTS: Record<string, string> = {
   a: "angle",
 };
 
-function emitViewerInvalidation(kind: "state" | "model"): void {
-  if (kind === "state") mountOptions.onViewerStateDirty?.();
-  else mountOptions.onViewerModelDirty?.();
-}
-
 function refresh(newDoc: Document) {
   doc = newDoc;
   const sel = doc.actions.find((a) => a.id === doc!.selectedId);
@@ -86,15 +85,12 @@ function rerender() {
 
 function openPalette() {
   if (!palette.isOpen()) {
-    palette.open(refresh, {
-      onViewerStateDirty: mountOptions.onViewerStateDirty,
-      onViewerModelDirty: mountOptions.onViewerModelDirty,
-    });
+    palette.open();
   }
 }
 
 async function saveDocumentModel(): Promise<void> {
-  const model = await exportModel();
+  const model = selectSerializedModel() as { name?: string; actions: unknown[] };
   const baseName =
     (model.name ?? "").trim().toLowerCase() === "untitled" || !(model.name ?? "").trim()
       ? "pointer-model"
@@ -111,34 +107,25 @@ async function saveDocumentModel(): Promise<void> {
 async function loadDocumentModel(file: File): Promise<void> {
   const text = await file.text();
   const model = JSON.parse(text);
-  const result = await importModel(model);
-  refresh(result.document);
-  emitViewerInvalidation(result.viewerInvalidation);
+  dispatchEditor(Editor_msgLoadModel(normalizeSerializedModelForLoad(model)));
 }
 
 async function resetDocumentModel(): Promise<void> {
-  const result = await clearDocumentModel();
-  refresh(result.document);
-  emitViewerInvalidation(result.viewerInvalidation);
+  dispatchEditor(Editor_msgClearModel);
 }
 
 const callbacks: RenderCallbacks = {
   onSelect: async (id) => {
-    refresh(await selectAction(id));
-    mountOptions.onViewerStateDirty?.();
+    dispatchEditor(Editor_msgSelectAction(id));
   },
 
   onToggleVisible: async (id) => {
-    refresh(await toggleActionVisible(id));
-    mountOptions.onViewerStateDirty?.();
+    dispatchEditor(Editor_msgToggleActionVisible(id));
   },
 
   onAddAction: async (kindCase) => {
-    const kind = defaultKind(kindCase);
-    if (!kind) return;
     const id = kindCase.toLowerCase() + "_" + Math.random().toString(36).slice(2, 8);
-    refresh(await addAction({ id, name: null, kind, visible: true, display: null, fieldSlice: null }));
-    mountOptions.onViewerModelDirty?.();
+    dispatchEditor(Editor_msgAddDefaultAction(kindCase, id));
   },
 
   onOpenPalette: openPalette,
@@ -156,73 +143,53 @@ const callbacks: RenderCallbacks = {
   },
 
   onReorder: async (ids) => {
-    refresh(await reorderActions(ids));
-    mountOptions.onViewerModelDirty?.();
+    dispatchEditor(Editor_msgReorderActions(listOfArray(ids)));
   },
 
   onParamRapid: (actionId, key, value) => {
-    void patchActionParamRapid(actionId, key, value).then((kind) => {
-      emitViewerInvalidation(kind);
-    });
+    dispatchEditor(Editor_msgPatchActionParamValue(actionId, key, paramValueFromJs(value)));
   },
 
   onParamChange: async (actionId, key, value) => {
-    const result = await patchActionParam(actionId, key, value);
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
+    dispatchEditor(Editor_msgPatchActionParamValue(actionId, key, paramValueFromJs(value)));
   },
 
   onToggleDisplay: async (id) => {
-    refresh(await toggleDisplay(id));
-    mountOptions.onViewerStateDirty?.();
+    dispatchEditor(Editor_msgToggleDisplay(id));
   },
 
   onDisplayChange: async (id, key, value) => {
-    refresh(await patchDisplay(id, key, value));
-    mountOptions.onViewerStateDirty?.();
+    dispatchEditor(Editor_msgPatchDisplayValue(id, key, paramValueFromJs(value)));
   },
 
   onToggleFieldSlice: async (id) => {
-    refresh(await toggleFieldSlice(id));
-    mountOptions.onViewerStateDirty?.();
+    dispatchEditor(Editor_msgToggleFieldSlice(id));
   },
 
   onFieldSliceChange: async (id, key, value) => {
-    refresh(await patchFieldSlice(id, key, value));
-    mountOptions.onViewerStateDirty?.();
+    dispatchEditor(Editor_msgPatchFieldSliceValue(id, key, paramValueFromJs(value)));
   },
 
   onToggleSketchEdit: () => {
-    void toggleSketchEdit().then((result) => {
-      refresh(result.document);
-      emitViewerInvalidation(result.viewerInvalidation);
-    });
+    dispatchEditor(Editor_msgToggleSketchEdit);
   },
 
   getSketchEditMode: () => doc?.sketchUi.editMode ?? sketchEditMode,
 
   onSetSketchTool: async (tool) => {
-    const result = await setSketchTool(tool);
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
+    dispatchEditor(Editor_msgSetSketchTool(tool));
   },
 
   onToggleConstraintPlacement: async (kind) => {
-    const result = await toggleConstraintPlacement(kind);
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
+    dispatchEditor(Editor_msgToggleConstraintPlacement(kind));
   },
 
   onAddConstraintFromSelection: async (kind) => {
-    const result = await addConstraintFromSelection(kind);
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
+    dispatchEditor(Editor_msgAddConstraintFromSelection(kind));
   },
 
   onDeleteSketchConstraint: async (index) => {
-    const result = await deleteSketchConstraint(index);
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
+    dispatchEditor(Editor_msgDeleteSketchConstraint(index));
   },
 };
 
@@ -248,47 +215,35 @@ async function handleSketchShortcut(e: KeyboardEvent): Promise<boolean> {
   if (e.key === "Escape") {
     e.preventDefault();
     if (doc.sketchUi.constraintPlacementMode) {
-      const result = await toggleConstraintPlacement(doc.sketchUi.constraintPlacementMode);
-      refresh(result.document);
-      emitViewerInvalidation(result.viewerInvalidation);
+      dispatchEditor(Editor_msgToggleConstraintPlacement(doc.sketchUi.constraintPlacementMode));
       return true;
     }
     if (doc.sketchUi.tool !== "none") {
-      const result = await setSketchTool("none");
-      refresh(result.document);
-      emitViewerInvalidation(result.viewerInvalidation);
+      dispatchEditor(Editor_msgSetSketchTool("none"));
       return true;
     }
-    const result = await toggleSketchEdit();
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
+    dispatchEditor(Editor_msgToggleSketchEdit);
     return true;
   }
 
   const tool = e.shiftKey ? SKETCH_TOOL_SHIFT_SHORTCUTS[key] : SKETCH_TOOL_SHORTCUTS[key];
   if (tool) {
     e.preventDefault();
-    const result = await setSketchTool(tool);
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
+    dispatchEditor(Editor_msgSetSketchTool(tool));
     return true;
   }
 
   const dimension = !e.shiftKey ? SKETCH_DIMENSION_SHORTCUTS[key] : undefined;
   if (dimension) {
     e.preventDefault();
-    const result = await toggleConstraintPlacement(dimension);
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
+    dispatchEditor(Editor_msgToggleConstraintPlacement(dimension));
     return true;
   }
 
   const constraint = e.shiftKey ? SKETCH_CONSTRAINT_SHIFT_SHORTCUTS[key] : SKETCH_CONSTRAINT_SHORTCUTS[key];
   if (constraint && doc.sketchUi.constraintAvailability[constraint]) {
     e.preventDefault();
-    const result = await addConstraintFromSelection(constraint);
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
+    dispatchEditor(Editor_msgAddConstraintFromSelection(constraint));
     return true;
   }
 
@@ -321,9 +276,7 @@ document.addEventListener("keydown", async (e) => {
 
   if (e.key === "Delete" || e.key === "Backspace") {
     e.preventDefault();
-    const result = await deleteCurrentSelection();
-    refresh(result.document);
-    emitViewerInvalidation(result.viewerInvalidation);
+    dispatchEditor(Editor_msgDeleteIntent);
   } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
     const idx = doc.actions.findIndex((a) => a.id === doc!.selectedId);
@@ -331,37 +284,31 @@ document.addEventListener("keydown", async (e) => {
       ? Math.min(idx + 1, doc.actions.length - 1)
       : Math.max(idx - 1, 0);
     if (next !== idx) {
-      refresh(await selectAction(doc.actions[next].id));
-      mountOptions.onViewerStateDirty?.();
+      dispatchEditor(Editor_msgSelectAction(doc.actions[next].id));
     }
   } else if (e.key === "v") {
     const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
     if (sel && sel.kind.case !== "Origin") {
       e.preventDefault();
-      refresh(await toggleActionVisible(sel.id));
-      mountOptions.onViewerStateDirty?.();
+      dispatchEditor(Editor_msgToggleActionVisible(sel.id));
     }
   } else if (e.key === "s") {
     const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
     if (sel && sel.display) {
       e.preventDefault();
-      refresh(await toggleDisplay(sel.id));
-      mountOptions.onViewerStateDirty?.();
+      dispatchEditor(Editor_msgToggleDisplay(sel.id));
     }
   } else if (e.key === "e" || e.key === "E") {
     const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
     if (sel && sel.kind.case === "Sketch") {
       e.preventDefault();
-      const result = await toggleSketchEdit();
-      refresh(result.document);
-      emitViewerInvalidation(result.viewerInvalidation);
+      dispatchEditor(Editor_msgToggleSketchEdit);
     }
   } else if (e.key === "f") {
     const sel = doc.actions.find((a: Action) => a.id === doc!.selectedId);
     if (sel && sel.fieldSlice) {
       e.preventDefault();
-      refresh(await toggleFieldSlice(sel.id));
-      mountOptions.onViewerStateDirty?.();
+      dispatchEditor(Editor_msgToggleFieldSlice(sel.id));
     }
   }
 });
@@ -369,8 +316,8 @@ document.addEventListener("keydown", async (e) => {
 export async function mountUserInterface(root: HTMLElement, options: UserInterfaceMountOptions = {}): Promise<void> {
   mountRoot = root;
   mountOptions = options;
-  mountOptions.subscribeDocumentDirty?.(() => {
-    void getDocument().then(refresh);
+  editorStore.subscribe(() => {
+    refresh(selectDocumentView() as Document);
   });
-  refresh(await getDocument());
+  refresh(selectDocumentView() as Document);
 }

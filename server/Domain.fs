@@ -1,6 +1,8 @@
 namespace Server
 
+#if !FABLE_COMPILER
 open System.Text.Json
+#endif
 open System.Text.Json.Serialization
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,85 @@ type DocAction =
       Display: DisplaySettings option
       FieldSlice: FieldSliceSettings option }
 
+type ParamValue =
+    | VNull
+    | VBool of bool
+    | VInt of int
+    | VFloat of float
+    | VString of string
+    | VArray of ParamValue list
+    | VRecord of Map<string, ParamValue>
+
+module ParamValue =
+
+#if !FABLE_COMPILER
+    let rec ofJsonElement (value: JsonElement) =
+        match value.ValueKind with
+        | JsonValueKind.Null
+        | JsonValueKind.Undefined -> VNull
+        | JsonValueKind.True -> VBool true
+        | JsonValueKind.False -> VBool false
+        | JsonValueKind.Number ->
+            match value.TryGetInt32() with
+            | true, i -> VInt i
+            | _ -> VFloat(value.GetDouble())
+        | JsonValueKind.String -> VString(value.GetString())
+        | JsonValueKind.Array ->
+            value.EnumerateArray()
+            |> Seq.map ofJsonElement
+            |> Seq.toList
+            |> VArray
+        | JsonValueKind.Object ->
+            value.EnumerateObject()
+            |> Seq.map (fun prop -> prop.Name, ofJsonElement prop.Value)
+            |> Map.ofSeq
+            |> VRecord
+#endif
+
+    let asFloat =
+        function
+        | VFloat x -> Some x
+        | VInt x -> Some(float x)
+        | _ -> None
+
+    let asInt =
+        function
+        | VInt x -> Some x
+        | VFloat x when abs (x - round x) < 1e-9 -> Some(int (round x))
+        | _ -> None
+
+    let asBool =
+        function
+        | VBool x -> Some x
+        | _ -> None
+
+    let asString =
+        function
+        | VString x -> Some x
+        | _ -> None
+
+    let asStringOption value =
+        match value with
+        | VNull -> None
+        | VString s when System.String.IsNullOrEmpty(s) -> None
+        | VString s -> Some s
+        | _ -> None
+
+    let asFloatArray =
+        function
+        | VArray values ->
+            List.foldBack (fun item acc ->
+                match item, acc with
+                | Some x, Some xs -> Some(x :: xs)
+                | _ -> None) (values |> List.map asFloat) (Some [])
+            |> Option.map List.toArray
+        | _ -> None
+
+    let tryField key =
+        function
+        | VRecord fields -> Map.tryFind key fields
+        | _ -> None
+
 type Document ={ 
     Name: string
     Actions: DocAction list
@@ -111,7 +192,7 @@ module Document =
                         let d = a.Display |> Option.defaultValue DisplaySettings.defaults
                         { a with Display = Some { d with Enabled = not d.Enabled } }) }
 
-    let patchDisplay (id: string) (key: string) (value: System.Text.Json.JsonElement) (doc: Document) : Document =
+    let patchDisplayValue (id: string) (key: string) (value: ParamValue) (doc: Document) : Document =
         { doc with
             Actions =
                 doc.Actions
@@ -122,12 +203,24 @@ module Document =
                         let d' =
                             match key with
                             | "color" ->
-                                let arr = value.EnumerateArray() |> Seq.map (fun e -> e.GetDouble()) |> Seq.toArray
-                                { d with Color = arr }
-                            | "opacity" -> { d with Opacity = value.GetDouble() }
-                            | "isoValue" -> { d with IsoValue = value.GetDouble() }
+                                match ParamValue.asFloatArray value with
+                                | Some arr -> { d with Color = arr }
+                                | None -> d
+                            | "opacity" ->
+                                match ParamValue.asFloat value with
+                                | Some opacity -> { d with Opacity = opacity }
+                                | None -> d
+                            | "isoValue" ->
+                                match ParamValue.asFloat value with
+                                | Some iso -> { d with IsoValue = iso }
+                                | None -> d
                             | _ -> d
                         { a with Display = Some d' }) }
+
+#if !FABLE_COMPILER
+    let patchDisplay (id: string) (key: string) (value: JsonElement) (doc: Document) : Document =
+        patchDisplayValue id key (ParamValue.ofJsonElement value) doc
+#endif
 
     let toggleFieldSlice (id: string) (doc: Document) : Document =
         { doc with
@@ -139,7 +232,7 @@ module Document =
                         let fs = a.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
                         { a with FieldSlice = Some { fs with Enabled = not fs.Enabled } }) }
 
-    let patchFieldSlice (id: string) (key: string) (value: System.Text.Json.JsonElement) (doc: Document) : Document =
+    let patchFieldSliceValue (id: string) (key: string) (value: ParamValue) (doc: Document) : Document =
         { doc with
             Actions =
                 doc.Actions
@@ -149,20 +242,27 @@ module Document =
                         let fs = a.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
                         let fs' =
                             match key with
-                            | "plane" -> { fs with Plane = value.GetString() }
-                            | "offset" -> { fs with Offset = value.GetDouble() }
+                            | "plane" ->
+                                match ParamValue.asString value with
+                                | Some plane -> { fs with Plane = plane }
+                                | None -> fs
+                            | "offset" ->
+                                match ParamValue.asFloat value with
+                                | Some offset -> { fs with Offset = offset }
+                                | None -> fs
                             | _ -> fs
                         { a with FieldSlice = Some fs' }) }
+
+#if !FABLE_COMPILER
+    let patchFieldSlice (id: string) (key: string) (value: JsonElement) (doc: Document) : Document =
+        patchFieldSliceValue id key (ParamValue.ofJsonElement value) doc
+#endif
 
     let reorder (ids: string list) (doc: Document) : Document =
         let lookup = doc.Actions |> List.map (fun a -> a.Id, a) |> Map.ofList
         { doc with Actions = ids |> List.choose (fun id -> Map.tryFind id lookup) }
 
-    let private optStr (value: System.Text.Json.JsonElement) =
-        let s = value.GetString()
-        if System.String.IsNullOrEmpty(s) then None else Some s
-
-    let private patchSketchEntityParam (key: string) (value: System.Text.Json.JsonElement) (sketch: ActionSketch) =
+    let private patchSketchEntityParam (key: string) (value: ParamValue) (sketch: ActionSketch) =
         let parts = key.Split('.')
         if parts.Length <> 4 || parts.[0] <> "sketch" || parts.[1] <> "entity" then sketch
         else
@@ -173,21 +273,23 @@ module Document =
                 |> List.map (fun entity ->
                     match entity with
                     | REPoint(id, x, y) when id = entityId ->
+                        let value = ParamValue.asFloat value
                         REPoint(
                             id,
-                            (if field = "x" then value.GetDouble() else x),
-                            (if field = "y" then value.GetDouble() else y))
+                            (if field = "x" then value |> Option.defaultValue x else x),
+                            (if field = "y" then value |> Option.defaultValue y else y))
                     | RECircle(id, center, radius) when id = entityId && field = "radius" ->
-                        RECircle(id, center, value.GetDouble())
+                        RECircle(id, center, value |> ParamValue.asFloat |> Option.defaultValue radius)
                     | REArc(id, startId, endId, ArcThreePoint through) when id = entityId ->
+                        let number = ParamValue.asFloat value
                         let through' =
-                            ({ X = if field = "throughX" then value.GetDouble() else through.X
-                               Y = if field = "throughY" then value.GetDouble() else through.Y } : FreePoint)
+                            ({ X = if field = "throughX" then number |> Option.defaultValue through.X else through.X
+                               Y = if field = "throughY" then number |> Option.defaultValue through.Y else through.Y } : FreePoint)
                         REArc(id, startId, endId, ArcThreePoint through')
                     | _ -> entity)
             { sketch with Entities = entities }
 
-    let private patchSketchConstraintParam (key: string) (value: System.Text.Json.JsonElement) (sketch: ActionSketch) =
+    let private patchSketchConstraintParam (key: string) (value: ParamValue) (sketch: ActionSketch) =
         let parts = key.Split('.')
         if parts.Length < 4 || parts.[0] <> "sketch" || parts.[1] <> "constraint" then sketch
         else
@@ -204,9 +306,10 @@ module Document =
                                 let field = parts.[4]
                                 let patchLabel current =
                                     let pos = current |> Option.defaultValue { X = 0.0; Y = 0.0 }
+                                    let number = ParamValue.asFloat value
                                     let pos' =
-                                        { X = if field = "x" then value.GetDouble() else pos.X
-                                          Y = if field = "y" then value.GetDouble() else pos.Y }
+                                        { X = if field = "x" then number |> Option.defaultValue pos.X else pos.X
+                                          Y = if field = "y" then number |> Option.defaultValue pos.Y else pos.Y }
                                     Some pos'
                                 match item with
                                 | Distance(a, b, dist, lp) -> Distance(a, b, dist, patchLabel lp)
@@ -218,23 +321,23 @@ module Document =
                                 | LineCircleDistance(lineA, aStart, aEnd, circle, center, dist, lp) -> LineCircleDistance(lineA, aStart, aEnd, circle, center, dist, patchLabel lp)
                                 | CircleCircleDistance(circleA, centerA, circleB, centerB, dist, internalFlag, lp) -> CircleCircleDistance(circleA, centerA, circleB, centerB, dist, internalFlag, patchLabel lp)
                                 | CircleDiameter(circle, center, diam, lp) -> CircleDiameter(circle, center, diam, patchLabel lp)
-                                | Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, lp) -> Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, degrees, aReverse, bReverse, ccw, patchLabel lp)
+                                | Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, angle, aReverse, bReverse, ccw, lp) -> Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, angle, aReverse, bReverse, ccw, patchLabel lp)
                                 | other -> other
-                            | "distance", Distance(a, b, _, lp) -> Distance(a, b, value.GetDouble(), lp)
-                            | "distance", FrameDistance(point, frame, part, _, lp) -> FrameDistance(point, frame, part, value.GetDouble(), lp)
-                            | "distance", LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, _, lp) -> LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, value.GetDouble(), lp)
-                            | "distance", FrameLineDistance(lineA, aStart, aEnd, frame, part, _, lp) -> FrameLineDistance(lineA, aStart, aEnd, frame, part, value.GetDouble(), lp)
-                            | "distance", PointLineDistance(point, lineA, aStart, aEnd, _, lp) -> PointLineDistance(point, lineA, aStart, aEnd, value.GetDouble(), lp)
-                            | "distance", PointCircleDistance(point, circle, center, _, lp) -> PointCircleDistance(point, circle, center, value.GetDouble(), lp)
-                            | "distance", LineCircleDistance(lineA, aStart, aEnd, circle, center, _, lp) -> LineCircleDistance(lineA, aStart, aEnd, circle, center, value.GetDouble(), lp)
-                            | "distance", CircleCircleDistance(circleA, centerA, circleB, centerB, _, internalFlag, lp) -> CircleCircleDistance(circleA, centerA, circleB, centerB, value.GetDouble(), internalFlag, lp)
-                            | "diameter", CircleDiameter(circle, center, _, lp) -> CircleDiameter(circle, center, value.GetDouble(), lp)
-                            | "angleDegrees", Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, _, aReverse, bReverse, ccw, lp) ->
-                                Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, value.GetDouble(), aReverse, bReverse, ccw, lp)
+                            | "distance", Distance(a, b, current, lp) -> Distance(a, b, value |> ParamValue.asFloat |> Option.defaultValue current, lp)
+                            | "distance", FrameDistance(point, frame, part, current, lp) -> FrameDistance(point, frame, part, value |> ParamValue.asFloat |> Option.defaultValue current, lp)
+                            | "distance", LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, current, lp) -> LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, value |> ParamValue.asFloat |> Option.defaultValue current, lp)
+                            | "distance", FrameLineDistance(lineA, aStart, aEnd, frame, part, current, lp) -> FrameLineDistance(lineA, aStart, aEnd, frame, part, value |> ParamValue.asFloat |> Option.defaultValue current, lp)
+                            | "distance", PointLineDistance(point, lineA, aStart, aEnd, current, lp) -> PointLineDistance(point, lineA, aStart, aEnd, value |> ParamValue.asFloat |> Option.defaultValue current, lp)
+                            | "distance", PointCircleDistance(point, circle, center, current, lp) -> PointCircleDistance(point, circle, center, value |> ParamValue.asFloat |> Option.defaultValue current, lp)
+                            | "distance", LineCircleDistance(lineA, aStart, aEnd, circle, center, current, lp) -> LineCircleDistance(lineA, aStart, aEnd, circle, center, value |> ParamValue.asFloat |> Option.defaultValue current, lp)
+                            | "distance", CircleCircleDistance(circleA, centerA, circleB, centerB, current, internalFlag, lp) -> CircleCircleDistance(circleA, centerA, circleB, centerB, value |> ParamValue.asFloat |> Option.defaultValue current, internalFlag, lp)
+                            | "diameter", CircleDiameter(circle, center, current, lp) -> CircleDiameter(circle, center, value |> ParamValue.asFloat |> Option.defaultValue current, lp)
+                            | "angle", Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, _, aReverse, bReverse, ccw, lp) ->
+                                Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, value |> ParamValue.asFloat |> Option.defaultValue 0.0, aReverse, bReverse, ccw, lp)
                             | _ -> item)
                 { sketch with Constraints = constraints }
 
-    let patchParam (id: string) (key: string) (value: System.Text.Json.JsonElement) (doc: Document) : Document =
+    let patchParamValue (id: string) (key: string) (value: ParamValue) (doc: Document) : Document =
         { doc with
             Actions =
                 doc.Actions
@@ -244,60 +347,67 @@ module Document =
                         let kind =
                             match a.Kind with
                             | Cylinder(r, h) ->
+                                let number = ParamValue.asFloat value
                                 Cylinder(
-                                    (if key = "radius" then value.GetDouble() else r),
-                                    (if key = "height" then value.GetDouble() else h))
+                                    (if key = "radius" then number |> Option.defaultValue r else r),
+                                    (if key = "height" then number |> Option.defaultValue h else h))
                             | Sphere r ->
-                                Sphere(if key = "radius" then value.GetDouble() else r)
+                                Sphere(if key = "radius" then value |> ParamValue.asFloat |> Option.defaultValue r else r)
                             | Box(w, h, d) ->
+                                let number = ParamValue.asFloat value
                                 Box(
-                                    (if key = "width" then value.GetDouble() else w),
-                                    (if key = "height" then value.GetDouble() else h),
-                                    (if key = "depth" then value.GetDouble() else d))
+                                    (if key = "width" then number |> Option.defaultValue w else w),
+                                    (if key = "height" then number |> Option.defaultValue h else h),
+                                    (if key = "depth" then number |> Option.defaultValue d else d))
                             | Translate(c, x, y, z) ->
+                                let number = ParamValue.asFloat value
                                 Translate(
-                                    (if key = "child" then optStr value else c),
-                                    (if key = "x" then value.GetDouble() else x),
-                                    (if key = "y" then value.GetDouble() else y),
-                                    (if key = "z" then value.GetDouble() else z))
+                                    (if key = "child" then ParamValue.asStringOption value else c),
+                                    (if key = "x" then number |> Option.defaultValue x else x),
+                                    (if key = "y" then number |> Option.defaultValue y else y),
+                                    (if key = "z" then number |> Option.defaultValue z else z))
                             | Rotate(c, ax, ay, az, ang) ->
+                                let number = ParamValue.asFloat value
                                 Rotate(
-                                    (if key = "child" then optStr value else c),
-                                    (if key = "ax" then value.GetDouble() else ax),
-                                    (if key = "ay" then value.GetDouble() else ay),
-                                    (if key = "az" then value.GetDouble() else az),
-                                    (if key = "angle" then value.GetDouble() else ang))
+                                    (if key = "child" then ParamValue.asStringOption value else c),
+                                    (if key = "ax" then number |> Option.defaultValue ax else ax),
+                                    (if key = "ay" then number |> Option.defaultValue ay else ay),
+                                    (if key = "az" then number |> Option.defaultValue az else az),
+                                    (if key = "angle" then number |> Option.defaultValue ang else ang))
                             | HalfPlane(ax, off, fl) ->
                                 HalfPlane(
-                                    (if key = "axis" then value.GetString() else ax),
-                                    (if key = "offset" then value.GetDouble() else off),
-                                    (if key = "flip" then value.GetBoolean() else fl))
+                                    (if key = "axis" then value |> ParamValue.asString |> Option.defaultValue ax else ax),
+                                    (if key = "offset" then value |> ParamValue.asFloat |> Option.defaultValue off else off),
+                                    (if key = "flip" then value |> ParamValue.asBool |> Option.defaultValue fl else fl))
                             | Move(c, f) ->
                                 Move(
-                                    (if key = "child" then optStr value else c),
-                                    (if key = "frame" then optStr value else f))
+                                    (if key = "child" then ParamValue.asStringOption value else c),
+                                    (if key = "frame" then ParamValue.asStringOption value else f))
                             | Union(a, b, r) ->
+                                let number = ParamValue.asFloat value
                                 Union(
-                                    (if key = "a" then optStr value else a),
-                                    (if key = "b" then optStr value else b),
-                                    (if key = "radius" then value.GetDouble() else r))
+                                    (if key = "a" then ParamValue.asStringOption value else a),
+                                    (if key = "b" then ParamValue.asStringOption value else b),
+                                    (if key = "radius" then number |> Option.defaultValue r else r))
                             | Subtract(a, b, r) ->
+                                let number = ParamValue.asFloat value
                                 Subtract(
-                                    (if key = "a" then optStr value else a),
-                                    (if key = "b" then optStr value else b),
-                                    (if key = "radius" then value.GetDouble() else r))
+                                    (if key = "a" then ParamValue.asStringOption value else a),
+                                    (if key = "b" then ParamValue.asStringOption value else b),
+                                    (if key = "radius" then number |> Option.defaultValue r else r))
                             | Intersect(a, b, r) ->
+                                let number = ParamValue.asFloat value
                                 Intersect(
-                                    (if key = "a" then optStr value else a),
-                                    (if key = "b" then optStr value else b),
-                                    (if key = "radius" then value.GetDouble() else r))
+                                    (if key = "a" then ParamValue.asStringOption value else a),
+                                    (if key = "b" then ParamValue.asStringOption value else b),
+                                    (if key = "radius" then number |> Option.defaultValue r else r))
                             | Sketch(origin, plane, s) ->
                                 Sketch(
-                                    (if key = "origin" then optStr value else origin),
+                                    (if key = "origin" then ParamValue.asStringOption value else origin),
                                     (if key = "plane" then
-                                        match value.GetString() with
-                                        | "XZ" -> XZ
-                                        | "YZ" -> YZ
+                                        match ParamValue.asString value with
+                                        | Some "XZ" -> XZ
+                                        | Some "YZ" -> YZ
                                         | _ -> XY
                                      else plane),
                                     (if key.StartsWith("sketch.entity.") then patchSketchEntityParam key value s
@@ -306,44 +416,49 @@ module Document =
                             | FromSketch(c, flip, sel) ->
                                 let selection =
                                     if key = "selection" then
-                                        let mutable caseEl = Unchecked.defaultof<JsonElement>
-                                        if value.TryGetProperty("case", &caseEl) then
-                                            match caseEl.GetString() with
-                                            | "SelectionElements" ->
-                                                let mutable lineIdsEl = Unchecked.defaultof<JsonElement>
-                                                let lineIds =
-                                                    if value.TryGetProperty("lineIds", &lineIdsEl) then
-                                                        lineIdsEl.EnumerateArray() |> Seq.map (fun item -> item.GetString()) |> Seq.toList
-                                                    else []
-                                                SelectionElements lineIds
-                                            | _ ->
-                                                let mutable loopIdEl = Unchecked.defaultof<JsonElement>
-                                                let loopId =
-                                                    if value.TryGetProperty("loopId", &loopIdEl) then
-                                                        if loopIdEl.ValueKind = JsonValueKind.Null then None else Some (loopIdEl.GetString())
-                                                    else None
-                                                SelectionLoop loopId
-                                        else sel
+                                        match ParamValue.tryField "case" value |> Option.bind ParamValue.asString with
+                                        | Some "SelectionElements" ->
+                                            let lineIds =
+                                                ParamValue.tryField "lineIds" value
+                                                |> Option.bind (function
+                                                    | VArray items ->
+                                                        List.foldBack (fun item acc ->
+                                                            match item, acc with
+                                                            | Some x, Some xs -> Some(x :: xs)
+                                                            | _ -> None) (items |> List.map ParamValue.asString) (Some [])
+                                                    | _ -> None)
+                                                |> Option.defaultValue []
+                                            SelectionElements lineIds
+                                        | _ ->
+                                            let loopId =
+                                                ParamValue.tryField "loopId" value
+                                                |> Option.bind ParamValue.asStringOption
+                                            SelectionLoop loopId
                                     else sel
                                 FromSketch(
-                                    (if key = "child" then optStr value else c),
-                                    (if key = "flip" then value.GetBoolean() else flip),
+                                    (if key = "child" then ParamValue.asStringOption value else c),
+                                    (if key = "flip" then value |> ParamValue.asBool |> Option.defaultValue flip else flip),
                                     selection)
                             | Thicken(c, amt) ->
                                 Thicken(
-                                    (if key = "child" then optStr value else c),
-                                    (if key = "amount" then value.GetDouble() else amt))
+                                    (if key = "child" then ParamValue.asStringOption value else c),
+                                    (if key = "amount" then value |> ParamValue.asFloat |> Option.defaultValue amt else amt))
                             | Shell(c, t) ->
                                 Shell(
-                                    (if key = "child" then optStr value else c),
-                                    (if key = "thickness" then value.GetDouble() else t))
+                                    (if key = "child" then ParamValue.asStringOption value else c),
+                                    (if key = "thickness" then value |> ParamValue.asFloat |> Option.defaultValue t else t))
                             | Mesh(c, s, res) ->
                                 Mesh(
-                                    (if key = "child" then optStr value else c),
-                                    (if key = "size" then value.GetDouble() else s),
-                                    (if key = "resolution" then value.GetInt32() else res))
+                                    (if key = "child" then ParamValue.asStringOption value else c),
+                                    (if key = "size" then value |> ParamValue.asFloat |> Option.defaultValue s else s),
+                                    (if key = "resolution" then value |> ParamValue.asInt |> Option.defaultValue res else res))
                             | other -> other
                         { a with Kind = kind }) }
+
+#if !FABLE_COMPILER
+    let patchParam (id: string) (key: string) (value: JsonElement) (doc: Document) : Document =
+        patchParamValue id key (ParamValue.ofJsonElement value) doc
+#endif
 
     let defaultDocument () : Document =
         { Name = "untitled"

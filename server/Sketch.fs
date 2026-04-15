@@ -55,7 +55,7 @@ type SketchConstraint =
     | PointCircleDistance of point: string * circle: string * center: string * distance: float * labelPosition: LabelPos option
     | LineCircleDistance of lineA: string * aStart: string * aEnd: string * circle: string * center: string * distance: float * labelPosition: LabelPos option
     | CircleCircleDistance of circleA: string * centerA: string * circleB: string * centerB: string * distance: float * ``internal``: bool * labelPosition: LabelPos option
-    | Angle of aStart: string * aEnd: string * bStart: string * bEnd: string * lineA: string * lineB: string * angleDegrees: float * aReverse: bool * bReverse: bool * ccwFromAToB: bool * labelPosition: LabelPos option
+    | Angle of aStart: string * aEnd: string * bStart: string * bEnd: string * lineA: string * lineB: string * angle: float * aReverse: bool * bReverse: bool * ccwFromAToB: bool * labelPosition: LabelPos option
 
 /// The full content of a Sketch action: a set of entities and the
 /// constraints between them.

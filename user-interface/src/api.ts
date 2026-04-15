@@ -1,19 +1,17 @@
 // ---------------------------------------------------------------------------
-// API client — single source of truth for backend communication
+// Shared UI document types
 // ---------------------------------------------------------------------------
-
-const BASE = "/api";
 
 export interface DisplaySettings {
   enabled: boolean;
-  color: number[];   // [r, g, b] normalized 0-1
+  color: number[];
   opacity: number;
   isoValue: number;
 }
 
 export interface FieldSliceSettings {
   enabled: boolean;
-  plane: string;   // "X" | "Y" | "Z"
+  plane: string;
   offset: number;
   extent: number;
 }
@@ -26,8 +24,6 @@ export interface Action {
   display: DisplaySettings | null;
   fieldSlice: FieldSliceSettings | null;
 }
-
-// ── Sketch data model ─────────────────────────────────────────────────
 
 export interface FreePoint { x: number; y: number; }
 
@@ -68,7 +64,7 @@ export type SketchConstraint =
   | { case: "PointCircleDistance"; point: string; circle: string; center: string; distance: number; labelPosition: LabelPos | null }
   | { case: "LineCircleDistance"; lineA: string; aStart: string; aEnd: string; circle: string; center: string; distance: number; labelPosition: LabelPos | null }
   | { case: "CircleCircleDistance"; circleA: string; centerA: string; circleB: string; centerB: string; distance: number; internal: boolean; labelPosition: LabelPos | null }
-  | { case: "Angle"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; angleDegrees: number; aReverse: boolean; bReverse: boolean; ccwFromAToB: boolean; labelPosition: LabelPos | null };
+  | { case: "Angle"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; angle: number; aReverse: boolean; bReverse: boolean; ccwFromAToB: boolean; labelPosition: LabelPos | null };
 
 export interface ActionSketch {
   entities: RenderEntity[];
@@ -78,8 +74,6 @@ export interface ActionSketch {
 export type FromSketchSelection =
   | { case: "SelectionLoop"; loopId: string | null }
   | { case: "SelectionElements"; lineIds: string[] };
-
-// ── Actions ───────────────────────────────────────────────────────────
 
 export type ActionKind =
   | { case: "Origin" }
@@ -144,193 +138,6 @@ export interface SketchUiState {
   dimensionPlacementAvailability: Record<string, boolean>;
 }
 
-function normalizeSketchPlane(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value && typeof value === "object" && "case" in value && typeof (value as { case?: unknown }).case === "string") {
-    return (value as { case: string }).case;
-  }
-  return "XY";
-}
-
-function normalizeAction(action: Action): Action {
-  if (action.kind.case !== "Sketch") return action;
-  return {
-    ...action,
-    kind: {
-      ...action.kind,
-      plane: normalizeSketchPlane((action.kind as ActionKind & { plane?: unknown }).plane),
-    },
-  };
-}
-
-function normalizeDocument(document: Document): Document {
-  return {
-    ...document,
-    actions: document.actions.map(normalizeAction),
-  };
-}
-
-function normalizeSerializedModel(model: SerializedModel): SerializedModel {
-  return {
-    ...model,
-    actions: model.actions.map(normalizeAction),
-  };
-}
-
-async function request(url: string, opts?: RequestInit): Promise<Document> {
-  const res = await fetch(BASE + url, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
-  if (!res.ok) throw new Error(`${opts?.method ?? "GET"} ${url}: ${res.status}`);
-  return normalizeDocument(await res.json());
-}
-
-export interface DocumentMutation {
-  document: Document;
-  viewerInvalidation: "state" | "model";
-}
-
-async function requestDocumentMutation(url: string, opts?: RequestInit): Promise<DocumentMutation> {
-  const res = await fetch(BASE + url, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
-  if (!res.ok) throw new Error(`${opts?.method ?? "GET"} ${url}: ${res.status}`);
-  const viewerInvalidation = (res.headers.get("X-Viewer-Invalidation") === "model" ? "model" : "state");
-  return {
-    document: normalizeDocument(await res.json()),
-    viewerInvalidation,
-  };
-}
-
-export async function getDocument(): Promise<Document> {
-  return request("/document");
-}
-
-export async function exportModel(): Promise<SerializedModel> {
-  const res = await fetch(BASE + "/document/model");
-  if (!res.ok) throw new Error(`GET /document/model: ${res.status}`);
-  return normalizeSerializedModel(await res.json());
-}
-
-export async function importModel(model: SerializedModel): Promise<DocumentMutation> {
-  return requestDocumentMutation("/document/model", {
-    method: "PUT",
-    body: JSON.stringify(model),
-  });
-}
-
-export async function clearDocumentModel(): Promise<DocumentMutation> {
-  return requestDocumentMutation("/editor/clear-model", {
-    method: "POST",
-  });
-}
-
-export async function selectAction(id: string): Promise<Document> {
-  return request(`/document/select/${id}`, { method: "PUT" });
-}
-
-export async function patchActionParam(id: string, key: string, value: number | string | boolean | object): Promise<DocumentMutation> {
-  return requestDocumentMutation(`/document/action/${id}/param`, {
-    method: "PATCH",
-    body: JSON.stringify({ key, value }),
-  });
-}
-
-export async function patchActionParamRapid(id: string, key: string, value: number | string | boolean): Promise<"state" | "model"> {
-  const res = await fetch(BASE + `/document/action/${id}/param/rapid`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key, value }),
-  });
-  if (!res.ok) throw new Error(`PATCH /document/action/${id}/param/rapid: ${res.status}`);
-  return res.headers.get("X-Viewer-Invalidation") === "model" ? "model" : "state";
-}
-
-export async function toggleActionVisible(id: string): Promise<Document> {
-  return request(`/document/action/${id}/visible`, { method: "PATCH" });
-}
-
-export async function toggleDisplay(id: string): Promise<Document> {
-  return request(`/document/action/${id}/display/toggle`, { method: "PATCH" });
-}
-
-export async function patchDisplay(id: string, key: string, value: number | number[]): Promise<Document> {
-  return request(`/document/action/${id}/display`, {
-    method: "PATCH",
-    body: JSON.stringify({ key, value }),
-  });
-}
-
-export async function toggleFieldSlice(id: string): Promise<Document> {
-  return request(`/document/action/${id}/field-slice/toggle`, { method: "PATCH" });
-}
-
-export async function patchFieldSlice(id: string, key: string, value: number | string): Promise<Document> {
-  return request(`/document/action/${id}/field-slice`, {
-    method: "PATCH",
-    body: JSON.stringify({ key, value }),
-  });
-}
-
-export async function addAction(action: Action): Promise<Document> {
-  return request("/document/action", {
-    method: "POST",
-    body: JSON.stringify(action),
-  });
-}
-
-export async function deleteAction(id: string): Promise<Document> {
-  return request(`/document/action/${id}`, { method: "DELETE" });
-}
-
-export async function deleteCurrentSelection(): Promise<DocumentMutation> {
-  return requestDocumentMutation("/editor/delete", {
-    method: "POST",
-  });
-}
-
-export async function reorderActions(ids: string[]): Promise<Document> {
-  return request("/document/reorder", {
-    method: "PUT",
-    body: JSON.stringify(ids),
-  });
-}
-
-export async function toggleSketchEdit(): Promise<DocumentMutation> {
-  return requestDocumentMutation("/sketch-ui/edit/toggle", { method: "POST" });
-}
-
-export async function setSketchTool(tool: string): Promise<DocumentMutation> {
-  return requestDocumentMutation("/sketch-ui/tool", {
-    method: "PUT",
-    body: JSON.stringify({ tool }),
-  });
-}
-
-export async function toggleConstraintPlacement(kind: string): Promise<DocumentMutation> {
-  return requestDocumentMutation("/sketch-ui/constraint-placement/toggle", {
-    method: "POST",
-    body: JSON.stringify({ kind }),
-  });
-}
-
-export async function addConstraintFromSelection(kind: string): Promise<DocumentMutation> {
-  return requestDocumentMutation("/sketch-ui/add-constraint", {
-    method: "POST",
-    body: JSON.stringify({ kind }),
-  });
-}
-
-export async function deleteSketchConstraint(index: number): Promise<DocumentMutation> {
-  return requestDocumentMutation(`/sketch-ui/constraint/${index}`, {
-    method: "DELETE",
-  });
-}
-
-// ── Palette ───────────────────────────────────────────────────────────
-
 export interface PaletteItem {
   id: string;
   label: string;
@@ -350,72 +157,11 @@ export interface PaletteScalarField {
 
 export interface PaletteState {
   isOpen: boolean;
-  mode: string; // "closed" | "command" | "ref" | "scalars" | "done"
+  mode: string;
   pickedKind: string | null;
   chips: PaletteChip[];
   prompt: string;
   items: PaletteItem[];
   scalarFields: PaletteScalarField[];
   hintBar: string[];
-}
-
-export interface PaletteAndDoc {
-  palette: PaletteState;
-  document: Document;
-}
-
-async function paletteRequest(url: string, body?: object): Promise<PaletteState | PaletteAndDoc> {
-  const res = await fetch(BASE + url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) throw new Error(`POST ${url}: ${res.status}`);
-  return res.json();
-}
-
-export async function paletteOpen(): Promise<PaletteState> {
-  return paletteRequest("/palette/open") as Promise<PaletteState>;
-}
-
-export async function paletteQuery(query: string): Promise<PaletteState> {
-  return paletteRequest("/palette/query", { query }) as Promise<PaletteState>;
-}
-
-export async function paletteQueryRapid(query: string): Promise<PaletteItem[]> {
-  const res = await fetch(BASE + "/palette/query/rapid", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query }),
-  });
-  if (!res.ok) throw new Error(`POST /palette/query/rapid: ${res.status}`);
-  return res.json();
-}
-
-export async function palettePick(id: string): Promise<PaletteState | PaletteAndDoc> {
-  return paletteRequest("/palette/pick", { id });
-}
-
-export function paletteScalarRapid(key: string, value: number): void {
-  fetch(BASE + "/palette/scalar/rapid", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ key, value }),
-  });
-}
-
-export async function paletteScalarsCommit(): Promise<PaletteState | PaletteAndDoc> {
-  return paletteRequest("/palette/scalars/commit");
-}
-
-export async function paletteFinish(): Promise<PaletteState | PaletteAndDoc> {
-  return paletteRequest("/palette/finish");
-}
-
-export async function paletteBack(): Promise<PaletteState> {
-  return paletteRequest("/palette/back") as Promise<PaletteState>;
-}
-
-export async function paletteClose(): Promise<void> {
-  await fetch(BASE + "/palette/close", { method: "POST" });
 }

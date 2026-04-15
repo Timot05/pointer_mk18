@@ -130,10 +130,9 @@ module RigidTransform =
     let translate (v: Vec3) : RigidTransform =
         { Rot = Quat.Identity; Trans = v }
 
-    /// Rotation from axis-angle. Axis need not be unit length;
+    /// Rotation from axis-angle in radians. Axis need not be unit length;
     /// its length is ignored and angle is separate.
-    let fromAxisAngle (axis: Vec3) (angleDeg: float) : RigidTransform =
-        let angleRad = angleDeg * Math.PI / 180.0
+    let fromAxisAngle (axis: Vec3) (angleRad: float) : RigidTransform =
         let half = angleRad * 0.5
         let a = axis.Normalized
         let s = sin half

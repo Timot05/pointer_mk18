@@ -154,10 +154,10 @@ let ``Angle placement with two selected lines yields pending angle`` () =
     | Some pending ->
         Assert.Equal("sketch1", pending.SketchId)
         match pending.Constraint with
-        | Angle(_, _, _, _, lineA, lineB, degrees, _, _, _, None) ->
+        | Angle(_, _, _, _, lineA, lineB, angle, _, _, _, None) ->
             Assert.Equal("l_bottom", lineA)
             Assert.Equal("l_right", lineB)
-            Assert.True(degrees > 0.0)
+            Assert.True(angle > 0.0)
         | other ->
             failwithf "Expected pending Angle, got %A" other
     | None ->
@@ -175,14 +175,14 @@ let ``Angle draft chooses acute or obtuse value based on cursor quadrant`` () =
 
     let angleValue =
         function
-        | Some { Constraint = Angle(_, _, _, _, _, _, degrees, _, _, _, None) } -> degrees
+        | Some { Constraint = Angle(_, _, _, _, _, _, angle, _, _, _, None) } -> angle
         | other -> failwithf "Expected pending Angle, got %A" other
 
     let acute = angleValue acuteState.PendingConstraintPlacement
     let obtuse = angleValue obtuseState.PendingConstraintPlacement
 
-    Assert.True(acute < 90.0)
-    Assert.True(obtuse > 90.0)
+    Assert.True(acute < System.Math.PI * 0.5)
+    Assert.True(obtuse > System.Math.PI * 0.5)
 
 [<Fact>]
 let ``Deleting a selected sketch line removes dependent constraints`` () =

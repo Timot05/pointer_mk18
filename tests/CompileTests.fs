@@ -8,6 +8,8 @@ open Server
 let action id kind : DocAction =
     { Id = id; Name = None; Kind = kind; Visible = true; Display = None; FieldSlice = None }
 
+let quarterTurn = System.Math.PI * 0.5
+
 let hidden id kind : DocAction =
     { Id = id; Name = None; Kind = kind; Visible = false; Display = None; FieldSlice = None }
 
@@ -60,21 +62,21 @@ let ``Translate of Origin is a frame chain (no Field element)`` () =
 
 [<Fact>]
 let ``Rotate of Origin is a frame chain (no Field element)`` () =
-    let actions = [ action "o" Origin; action "r" (Rotate(Some "o", 0.0, 0.0, 1.0, 90.0)) ]
+    let actions = [ action "o" Origin; action "r" (Rotate(Some "o", 0.0, 0.0, 1.0, quarterTurn)) ]
     let bres = buildElements actions
     Assert.False(Map.containsKey "r" bres.Elements)
-    Assert.Equal<FrameChain>([ FrameRotate("r", 0.0, 0.0, 1.0, 90.0) ], Map.find "r" bres.Frames)
+    Assert.Equal<FrameChain>([ FrameRotate("r", 0.0, 0.0, 1.0, quarterTurn) ], Map.find "r" bres.Frames)
 
 [<Fact>]
 let ``Translate then rotate frame chain preserves translated origin`` () =
     let actions =
         [ action "o" Origin
           action "t" (Translate(Some "o", 5.0, 0.0, 0.0))
-          action "r" (Rotate(Some "t", 0.0, 0.0, 1.0, 90.0)) ]
+          action "r" (Rotate(Some "t", 0.0, 0.0, 1.0, quarterTurn)) ]
     let bres = buildElements actions
     Assert.Equal<FrameChain>(
         [ FrameTranslate("t", 5.0, 0.0, 0.0)
-          FrameRotate("r", 0.0, 0.0, 1.0, 90.0) ],
+          FrameRotate("r", 0.0, 0.0, 1.0, quarterTurn) ],
         Map.find "r" bres.Frames)
 
     let pipelineResult = pipeline actions
@@ -132,12 +134,12 @@ let ``Translated sphere produces FTranslate over FPrimitive`` () =
 let ``Rotated sphere produces FRotate over FPrimitive`` () =
     let r =
         pipeline [ action "s" (Sphere 5.0)
-                   action "r" (Rotate(Some "s", 0.0, 0.0, 1.0, 90.0)) ]
+                   action "r" (Rotate(Some "s", 0.0, 0.0, 1.0, quarterTurn)) ]
     let rot = surfaceFor "r" r.Surfaces
     match rot.Field with
     | FRotate(_, _, azSlot, angleSlot, FPrimitive(PrimSphere _)) ->
         Assert.Equal(1.0, r.Slots.Values.[azSlot])
-        Assert.Equal(90.0, r.Slots.Values.[angleSlot])
+        Assert.Equal(quarterTurn, r.Slots.Values.[angleSlot])
     | other -> failwithf "Expected FRotate(FPrimitive), got %A" other
 
 [<Fact>]
@@ -403,8 +405,21 @@ let ``FromSketch on YZ sketch plane applies plane rotations`` () =
               action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
         |> fun result -> result.Elements
     match Map.find "f" elements with
-    | ERotate(_, 0.0, 0.0, 1.0, 90.0, ERotate(_, 1.0, 0.0, 0.0, -90.0, EFromSketch("f", "sk", _, _, false))) -> ()
+    | ERotate(_, 0.0, 0.0, 1.0, angleZ, ERotate(_, 1.0, 0.0, 0.0, angleX, EFromSketch("f", "sk", _, _, false))) when abs (angleZ - quarterTurn) < 1e-9 && abs (angleX - quarterTurn) < 1e-9 -> ()
     | other -> failwithf "Expected YZ plane rotations wrapping EFromSketch, got %A" other
+
+[<Fact>]
+let ``FromSketch applies plane rotation before translated sketch origin`` () =
+    let elements =
+        buildElements
+            [ action "o" Origin
+              action "tf" (Translate(Some "o", 5.0, 0.0, 0.0))
+              action "sk" (Sketch(Some "tf", XZ, squareSketch))
+              action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
+        |> fun result -> result.Elements
+    match Map.find "f" elements with
+    | ETranslate("tf", 5.0, 0.0, 0.0, ERotate(_, 1.0, 0.0, 0.0, angleX, EFromSketch("f", "sk", _, _, false))) when abs (angleX - quarterTurn) < 1e-9 -> ()
+    | other -> failwithf "Expected translated sketch origin to wrap plane-rotated FromSketch, got %A" other
 
 [<Fact>]
 let ``Default document now includes the from1 FSketch surface`` () =

@@ -442,7 +442,7 @@ module SketchCompile =
                 | _ -> skipped <- skipped + 1
 
             // ── Angle between two lines ──────────────────────────────
-            | Angle(asId, aeId, bsId, beId, _, _, angleDeg, aReverse, bReverse, ccwFromAToB, _) ->
+            | Angle(asId, aeId, bsId, beId, _, _, angleTarget, aReverse, bReverse, ccwFromAToB, _) ->
                 match tryPoint asId, tryPoint aeId, tryPoint bsId, tryPoint beId with
                 | Some aS, Some aE, Some bS, Some bE ->
                     let sign r = if r then -1.0 else 1.0
@@ -460,7 +460,7 @@ module SketchCompile =
                     // Flip sign if ccwFromAToB is false.
                     let angleSigned =
                         if ccwFromAToB then angle else b.Neg angle
-                    let target = b.Mul(fixedParam angleDeg, constant b (Math.PI / 180.0))
+                    let target = fixedParam angleTarget
                     emitDiff angleSigned target
                 | _ -> skipped <- skipped + 1
 

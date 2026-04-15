@@ -80,8 +80,8 @@ module Pipeline =
             | CircleDiameter(_, _, diam, lp) ->
                 a (sprintf "sketch.constraint.%d.diameter" i) diam
                 labelXY i lp
-            | Angle(_, _, _, _, _, _, deg, _, _, _, lp) ->
-                a (sprintf "sketch.constraint.%d.angleDegrees" i) deg
+            | Angle(_, _, _, _, _, _, angle, _, _, _, lp) ->
+                a (sprintf "sketch.constraint.%d.angle" i) angle
                 labelXY i lp
             | Tangent(_, _, _, _, _, radius) ->
                 a (sprintf "sketch.constraint.%d.radius" i) radius

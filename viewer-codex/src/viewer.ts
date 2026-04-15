@@ -1,4 +1,4 @@
-import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postCancelEditingDimension, postCommitEditingDimension, postStartEditingDimension, postViewerDimensionClickTarget, postViewerHover, postViewerPick, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
+import { getViewerModel, getViewerState, patchActionParam, patchViewerSketchParams, placeViewerConstraint, postCancelEditingDimension, postCommitEditingDimension, postStartEditingDimension, postViewerDimensionClickTarget, postViewerHover, postViewerPick, postViewerPlacementCursor, postViewerToolClick, type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoom, type CameraState } from "./camera";
 import type { Graph } from "./graph";
@@ -839,7 +839,7 @@ export class ViewerApp {
       return;
     }
     const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
-    this.state = await postViewerHover(toPickRequest(candidates), this.currentPlacementCursor());
+    this.state = await postViewerHover(toPickRequest(candidates));
     this.rebuildRenderData();
     this.queueRender();
     if (event.shiftKey) return;
@@ -997,10 +997,11 @@ export class ViewerApp {
     const placement = this.state?.sketchUi.constraintPlacementMode;
     if (placement) {
       const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
-      this.state = await postViewerHover(
-        toPickRequest(candidates),
-        this.currentPlacementCursor(),
-      );
+      const placementCursor = this.currentPlacementCursor();
+      if (placementCursor) {
+        this.state = await postViewerPlacementCursor(placementCursor);
+      }
+      this.state = await postViewerHover(toPickRequest(candidates));
       const hovered = this.state?.hoveredTarget;
       if (hovered && hovered.case !== "TargetDimension" && hovered.case !== "TargetLoop" && hovered.case !== "TargetSurface") {
         this.state = await postViewerDimensionClickTarget();
@@ -1578,6 +1579,10 @@ export class ViewerApp {
     if (!this.gpu || this.isPicking || this.renderSketches.length === 0) return;
     this.isPicking = true;
     try {
+      const placementCursor = this.currentPlacementCursor();
+      if (!event && placementCursor) {
+        this.state = await postViewerPlacementCursor(placementCursor);
+      }
       const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
       if (candidates.length === 0) {
         if (this.state) {
@@ -1597,7 +1602,7 @@ export class ViewerApp {
         this.state = await postViewerPick(toPickRequest(candidates), intent);
         this.startOptions.onDocumentDirty?.();
       } else {
-        this.state = await postViewerHover(toPickRequest(candidates), this.currentPlacementCursor());
+        this.state = await postViewerHover(toPickRequest(candidates));
       }
       this.rebuildRenderData();
       this.queueRender();

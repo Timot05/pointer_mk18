@@ -147,11 +147,19 @@ export function getViewerState(): Promise<ViewerState> {
 
 export function postViewerHover(
   candidates: Array<{ pickId: number; score: number }>,
-  placementCursor?: { sketchId: string; x: number; y: number } | null,
 ): Promise<ViewerState> {
   return request("/viewer/hover", {
     method: "POST",
-    body: JSON.stringify({ candidates, placementCursor: placementCursor ?? undefined }),
+    body: JSON.stringify({ candidates }),
+  });
+}
+
+export function postViewerPlacementCursor(
+  cursor: { sketchId: string; x: number; y: number } | null,
+): Promise<ViewerState> {
+  return request("/viewer/placement-cursor", {
+    method: "POST",
+    body: JSON.stringify(cursor ?? {}),
   });
 }
 

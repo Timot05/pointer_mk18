@@ -183,6 +183,34 @@ module Program =
             |> List.filter isValidSelectionTarget
         normalizeSketchUiState ()
 
+    let clearEditorTransientState () =
+        hoveredTarget <- None
+        selectedTargets <- []
+        sketchToolPoints <- []
+        editingDimension <- None
+        constraintPlacementDraft <- None
+        constraintPlacementCursor <- None
+
+    let applyDeleteIntent () =
+        if sketchEditMode then
+            match SketchAuthoring.trySelectedSketch doc with
+            | Some ctx when not selectedTargets.IsEmpty ->
+                doc <- SketchAuthoring.withUpdatedSketch doc ctx.Action.Id (SketchAuthoring.deleteTargets selectedTargets ctx.Sketch)
+                clearEditorTransientState ()
+                recompile ()
+                "model"
+            | _ ->
+                "state"
+        else
+            match doc.SelectedId with
+            | Some id when id <> "origin" ->
+                clearEditorTransientState ()
+                doc <- Document.removeAction id doc
+                recompile ()
+                "model"
+            | _ ->
+                "state"
+
     let formatErrors (errs: TypeError list) =
         errs |> List.map (fun e ->
             match e with
@@ -265,6 +293,10 @@ module Program =
             hoveredTarget |> Option.filter isActiveSketchTarget
 
         let highlightedTargetAllowed =
+            let frameHighlightAllowed () =
+                match constraintPlacementMode with
+                | Some "angle" -> false
+                | _ -> true
             function
             | TargetPoint(sketchId, _)
             | TargetLine(sketchId, _)
@@ -275,7 +307,7 @@ module Program =
                 sketchEditMode && doc.SelectedId = Some sketchId
             | TargetFrameOrigin _
                 as target ->
-                (activeSketchEditId ()).IsSome && isAllowedSketchEditFrameTarget target
+                frameHighlightAllowed () && (activeSketchEditId ()).IsSome && isAllowedSketchEditFrameTarget target
             | TargetFrameAxis _ ->
                 false
             | TargetSurface _ ->
@@ -504,20 +536,23 @@ module Program =
             Func<HttpContext, IResult>(fun ctx ->
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
                 let candidates = readPickCandidates body
-                let mutable placementCursorEl = Unchecked.defaultof<JsonElement>
-                if body.TryGetProperty("placementCursor", &placementCursorEl) then
-                    let mutable sketchIdEl = Unchecked.defaultof<JsonElement>
-                    let mutable xEl = Unchecked.defaultof<JsonElement>
-                    let mutable yEl = Unchecked.defaultof<JsonElement>
-                    if placementCursorEl.TryGetProperty("sketchId", &sketchIdEl)
-                        && placementCursorEl.TryGetProperty("x", &xEl)
-                        && placementCursorEl.TryGetProperty("y", &yEl) then
-                        constraintPlacementCursor <- Some(sketchIdEl.GetString(), { X = xEl.GetDouble(); Y = yEl.GetDouble() })
-                else
-                    constraintPlacementCursor <- None
                 hoveredTarget <-
                     reduceSelectionCandidates candidates
                     |> Option.map (fun (target, _score, _action) -> target)
+                viewerStateResult ())) |> ignore
+
+        app.MapPost("/api/viewer/placement-cursor",
+            Func<HttpContext, IResult>(fun ctx ->
+                let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
+                let mutable sketchIdEl = Unchecked.defaultof<JsonElement>
+                let mutable xEl = Unchecked.defaultof<JsonElement>
+                let mutable yEl = Unchecked.defaultof<JsonElement>
+                if body.TryGetProperty("sketchId", &sketchIdEl)
+                    && body.TryGetProperty("x", &xEl)
+                    && body.TryGetProperty("y", &yEl) then
+                    constraintPlacementCursor <- Some(sketchIdEl.GetString(), { X = xEl.GetDouble(); Y = yEl.GetDouble() })
+                else
+                    constraintPlacementCursor <- None
                 viewerStateResult ())) |> ignore
 
         app.MapPost("/api/viewer/pick",
@@ -622,44 +657,10 @@ module Program =
                 | None ->
                     withViewerInvalidation "state" (json ()))) |> ignore
 
-        app.MapPost("/api/sketch-ui/delete-selection",
+        app.MapPost("/api/editor/delete",
             Func<IResult>(fun () ->
-                match SketchAuthoring.trySelectedSketch doc with
-                | Some ctx when sketchEditMode ->
-                    doc <- SketchAuthoring.withUpdatedSketch doc ctx.Action.Id (SketchAuthoring.deleteTargets selectedTargets ctx.Sketch)
-                    hoveredTarget <- None
-                    selectedTargets <- []
-                    sketchToolPoints <- []
-                    editingDimension <- None
-                    constraintPlacementDraft <- None
-                    constraintPlacementCursor <- None
-                    recompile ()
-                    withViewerInvalidation "model" (json ())
-                | _ ->
-                    withViewerInvalidation "state" (json ()))) |> ignore
-
-        app.MapPost("/api/delete-selection",
-            Func<IResult>(fun () ->
-                if sketchEditMode then
-                    match SketchAuthoring.trySelectedSketch doc with
-                    | Some ctx when not selectedTargets.IsEmpty ->
-                        doc <- SketchAuthoring.withUpdatedSketch doc ctx.Action.Id (SketchAuthoring.deleteTargets selectedTargets ctx.Sketch)
-                        hoveredTarget <- None
-                        selectedTargets <- []
-                        sketchToolPoints <- []
-                        editingDimension <- None
-                        constraintPlacementDraft <- None
-                        constraintPlacementCursor <- None
-                        recompile ()
-                        withViewerInvalidation "model" (json ())
-                    | _ ->
-                        withViewerInvalidation "state" (json ())
-                else
-                    match doc.SelectedId with
-                    | Some id when id <> "origin" ->
-                        withViewerInvalidation "model" (mutate (Document.removeAction id))
-                    | _ ->
-                        withViewerInvalidation "state" (json ()))) |> ignore
+                let invalidation = applyDeleteIntent ()
+                withViewerInvalidation invalidation (json ()))) |> ignore
 
         app.MapPost("/api/sketch-ui/dimension-edit/start",
             Func<HttpContext, IResult>(fun ctx ->

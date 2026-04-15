@@ -228,7 +228,7 @@ export async function deleteAction(id: string): Promise<Document> {
 }
 
 export async function deleteCurrentSelection(): Promise<DocumentMutation> {
-  return requestDocumentMutation("/delete-selection", {
+  return requestDocumentMutation("/editor/delete", {
     method: "POST",
   });
 }
@@ -268,12 +268,6 @@ export async function addConstraintFromSelection(kind: string): Promise<Document
 export async function deleteSketchConstraint(index: number): Promise<DocumentMutation> {
   return requestDocumentMutation(`/sketch-ui/constraint/${index}`, {
     method: "DELETE",
-  });
-}
-
-export async function deleteSketchSelection(): Promise<DocumentMutation> {
-  return requestDocumentMutation("/sketch-ui/delete-selection", {
-    method: "POST",
   });
 }
 

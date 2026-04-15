@@ -25,6 +25,9 @@ type Pickable =
     | PickLoop of pickId: PickId * sketchId: ActionId * loopId: string * entityIds: string list
     // Dimensions — label anchor lives in existing labelPosition slots.
     | PickDimension of pickId: PickId * sketchId: ActionId * constraintIndex: int * anchor: SlotPt2
+    // Frame gizmos.
+    | PickFrameOrigin of pickId: PickId * frameId: ActionId
+    | PickFrameAxis of pickId: PickId * frameId: ActionId * part: string
     // Coarse SDF surface — the whole surface of a Field-producing action.
     | PickSurface of pickId: PickId * actionId: ActionId
 
@@ -35,6 +38,8 @@ type SelectionTarget =
     | TargetArc of sketchId: ActionId * entityId: string
     | TargetLoop of sketchId: ActionId * loopId: string
     | TargetDimension of sketchId: ActionId * constraintIndex: int
+    | TargetFrameOrigin of frameId: ActionId
+    | TargetFrameAxis of frameId: ActionId * part: string
     | TargetSurface of actionId: ActionId
 
 type PickCandidate =
@@ -52,6 +57,8 @@ module Pickable =
         | PickArc(id, _, _, _, _, _, _) -> id
         | PickLoop(id, _, _, _) -> id
         | PickDimension(id, _, _, _) -> id
+        | PickFrameOrigin(id, _) -> id
+        | PickFrameAxis(id, _, _) -> id
         | PickSurface(id, _) -> id
 
     /// Resolve a pickable to the ActionId the server should select when
@@ -64,6 +71,8 @@ module Pickable =
         | PickArc(_, sketchId, _, _, _, _, _) -> sketchId
         | PickLoop(_, sketchId, _, _) -> sketchId
         | PickDimension(_, sketchId, _, _) -> sketchId
+        | PickFrameOrigin(_, frameId) -> frameId
+        | PickFrameAxis(_, frameId, _) -> frameId
         | PickSurface(_, actionId) -> actionId
 
     let selectionTarget =
@@ -74,6 +83,8 @@ module Pickable =
         | PickArc(_, sketchId, entityId, _, _, _, _) -> TargetArc(sketchId, entityId)
         | PickLoop(_, sketchId, loopId, _) -> TargetLoop(sketchId, loopId)
         | PickDimension(_, sketchId, constraintIndex, _) -> TargetDimension(sketchId, constraintIndex)
+        | PickFrameOrigin(_, frameId) -> TargetFrameOrigin(frameId)
+        | PickFrameAxis(_, frameId, part) -> TargetFrameAxis(frameId, part)
         | PickSurface(_, actionId) -> TargetSurface(actionId)
 
     let sameTarget target pickable =
@@ -85,7 +96,8 @@ module Pickable =
         | PickLine _ | PickCircle _ | PickArc _ -> 1
         | PickDimension _ -> 2
         | PickLoop _ -> 3
-        | PickSurface _ -> 4
+        | PickFrameOrigin _ | PickFrameAxis _ -> 4
+        | PickSurface _ -> 5
 
     let reduceCandidates (pickables: Pickable list) (candidates: PickCandidate list) : Pickable option =
         let byId = pickables |> List.map (fun p -> pickId p, p) |> Map.ofList
@@ -94,3 +106,15 @@ module Pickable =
         |> List.sortBy (fun (c, p) -> priority p, c.Score, pickId p)
         |> List.tryHead
         |> Option.map snd
+
+    let selectionPriority =
+        function
+        | TargetPoint _
+        | TargetFrameOrigin _ -> 0
+        | TargetLine _
+        | TargetCircle _
+        | TargetArc _
+        | TargetFrameAxis _ -> 1
+        | TargetDimension _ -> 2
+        | TargetLoop _ -> 3
+        | TargetSurface _ -> 4

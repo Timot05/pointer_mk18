@@ -65,7 +65,6 @@ export type SketchConstraint =
   | { case: "LineDistance"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; distance: number; labelPosition: LabelPos | null }
   | { case: "FrameLineDistance"; lineA: string; aStart: string; aEnd: string; frame: string; part: string; distance: number; labelPosition: LabelPos | null }
   | { case: "PointLineDistance"; point: string; lineA: string; aStart: string; aEnd: string; distance: number; labelPosition: LabelPos | null }
-  | { case: "FramePointLineDistance"; point: string; frame: string; part: string; distance: number; labelPosition: LabelPos | null }
   | { case: "PointCircleDistance"; point: string; circle: string; center: string; distance: number; labelPosition: LabelPos | null }
   | { case: "LineCircleDistance"; lineA: string; aStart: string; aEnd: string; circle: string; center: string; distance: number; labelPosition: LabelPos | null }
   | { case: "CircleCircleDistance"; circleA: string; centerA: string; circleB: string; centerB: string; distance: number; internal: boolean; labelPosition: LabelPos | null }
@@ -123,6 +122,8 @@ export type SelectionTarget =
   | { case: "TargetArc"; sketchId: string; entityId: string }
   | { case: "TargetLoop"; sketchId: string; loopId: string }
   | { case: "TargetDimension"; sketchId: string; constraintIndex: number }
+  | { case: "TargetFrameOrigin"; frameId: string }
+  | { case: "TargetFrameAxis"; frameId: string; part: string }
   | { case: "TargetSurface"; actionId: string };
 
 export interface SketchUiState {

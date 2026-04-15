@@ -52,7 +52,6 @@ type SketchConstraint =
     | LineDistance of aStart: string * aEnd: string * bStart: string * bEnd: string * lineA: string * lineB: string * distance: float * labelPosition: LabelPos option
     | FrameLineDistance of lineA: string * aStart: string * aEnd: string * frame: string * part: string * distance: float * labelPosition: LabelPos option
     | PointLineDistance of point: string * lineA: string * aStart: string * aEnd: string * distance: float * labelPosition: LabelPos option
-    | FramePointLineDistance of point: string * frame: string * part: string * distance: float * labelPosition: LabelPos option
     | PointCircleDistance of point: string * circle: string * center: string * distance: float * labelPosition: LabelPos option
     | LineCircleDistance of lineA: string * aStart: string * aEnd: string * circle: string * center: string * distance: float * labelPosition: LabelPos option
     | CircleCircleDistance of circleA: string * centerA: string * circleB: string * centerB: string * distance: float * ``internal``: bool * labelPosition: LabelPos option

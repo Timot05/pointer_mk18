@@ -38,6 +38,106 @@ module Program =
         | Some target when selectedTargets |> List.contains target |> not -> selectedTargets @ [ target ]
         | _ -> selectedTargets
 
+    let activeSketchEditId () =
+        match sketchEditMode, doc.SelectedId with
+        | true, Some selectedId ->
+            match doc.Actions |> List.tryFind (fun a -> a.Id = selectedId) with
+            | Some { Kind = Sketch _ } -> Some selectedId
+            | _ -> None
+        | _ -> None
+
+    let sketchEditFrames () =
+        match activeSketchEditId () with
+        | None -> []
+        | Some sketchId ->
+            let sketchIndex = doc.Actions |> List.findIndex (fun a -> a.Id = sketchId)
+            doc.Actions
+            |> List.take sketchIndex
+            |> List.choose (fun a ->
+                match Map.tryFind a.Id compiled.TypeMap with
+                | Some FieldType.Frame ->
+                    Map.tryFind a.Id compiled.Frames
+                    |> Option.map (fun t -> {| Id = a.Id; Transform = t |})
+                | _ -> None)
+
+    let isAllowedSketchEditFrameTarget =
+        let allowedFrameIds () =
+            sketchEditFrames () |> List.map (fun f -> f.Id) |> Set.ofList
+        function
+        | TargetFrameOrigin(frameId) ->
+            Set.contains frameId (allowedFrameIds ())
+        | TargetFrameAxis(frameId, part) ->
+            Set.contains frameId (allowedFrameIds ()) && (part = "xAxis" || part = "yAxis" || part = "zAxis")
+        | _ -> false
+
+    let isValidSelectionTarget target =
+        match target with
+        | TargetFrameOrigin _
+        | TargetFrameAxis _ -> isAllowedSketchEditFrameTarget target
+        | _ -> compiled.Pickables |> List.exists (Pickable.sameTarget target)
+
+    let trySketchContext (sketchId: string) =
+        doc.Actions
+        |> List.tryFind (fun action -> action.Id = sketchId)
+        |> Option.bind (fun action ->
+            match action.Kind with
+            | Sketch(origin, sketch) ->
+                let sketchOrigin =
+                    origin
+                    |> Option.bind (fun id -> Map.tryFind id compiled.Frames)
+                    |> Option.defaultValue RigidTransform.Identity
+                Some(sketch, sketchOrigin)
+            | _ -> None)
+
+    let tryPoint2 (sketch: ActionSketch) (pointId: string) =
+        sketch.Entities
+        |> List.tryPick (function
+            | REPoint(id, x, y) when id = pointId -> Some(x, y)
+            | _ -> None)
+
+    let tryFrameOrigin2 (sketchOrigin: RigidTransform) (frameId: string) =
+        Map.tryFind frameId compiled.Frames
+        |> Option.map (fun frameT ->
+            let local = sketchOrigin.Inverse.Apply frameT.Trans
+            local.X, local.Y)
+
+    let tryLine2 (sketch: ActionSketch) (startId: string) (endId: string) =
+        match tryPoint2 sketch startId, tryPoint2 sketch endId with
+        | Some(a), Some(b) -> Some(a, b)
+        | _ -> None
+
+    let pointLineDistance ((px, py): float * float) ((ax, ay): float * float) ((bx, by): float * float) =
+        let dx = bx - ax
+        let dy = by - ay
+        let len = sqrt (dx * dx + dy * dy)
+        if len < 1e-9 then 0.0
+        else abs ((dx * (py - ay) - dy * (px - ax)) / len)
+
+    let pointDistance ((ax, ay): float * float) ((bx, by): float * float) =
+        let dx = bx - ax
+        let dy = by - ay
+        sqrt (dx * dx + dy * dy)
+
+    let withResolvedPendingConstraintValue (state: SketchUiState) =
+        let resolved =
+            state.PendingConstraintPlacement
+            |> Option.bind (fun pending ->
+                trySketchContext pending.SketchId
+                |> Option.map (fun (sketch, sketchOrigin) ->
+                    let nextConstraint =
+                        match pending.Constraint with
+                        | FrameDistance(pointId, frameId, "origin", _distance, lp) ->
+                            match tryPoint2 sketch pointId, tryFrameOrigin2 sketchOrigin frameId with
+                            | Some p, Some fp -> FrameDistance(pointId, frameId, "origin", pointDistance p fp, lp)
+                            | _ -> pending.Constraint
+                        | FrameLineDistance(lineId, aStart, aEnd, frameId, "origin", _distance, lp) ->
+                            match tryLine2 sketch aStart aEnd, tryFrameOrigin2 sketchOrigin frameId with
+                            | Some(a, b), Some fp -> FrameLineDistance(lineId, aStart, aEnd, frameId, "origin", pointLineDistance fp a b, lp)
+                            | _ -> pending.Constraint
+                        | _ -> pending.Constraint
+                    { pending with Constraint = nextConstraint }))
+        { state with PendingConstraintPlacement = resolved }
+
     let sketchUiState () =
         let baseState =
             let placementCursor =
@@ -52,6 +152,7 @@ module Program =
         { baseState with
             ToolPoints = if baseState.Tool = "none" then [] else sketchToolPoints
             EditingDimension = editingDimension }
+        |> withResolvedPendingConstraintValue
 
     let normalizeSketchUiState () =
         let next = sketchUiState ()
@@ -79,12 +180,10 @@ module Program =
         compiled <- Pipeline.compile doc.Actions
         hoveredTarget <-
             hoveredTarget
-            |> Option.filter (fun target ->
-                compiled.Pickables |> List.exists (Pickable.sameTarget target))
+            |> Option.filter isValidSelectionTarget
         selectedTargets <-
             selectedTargets
-            |> List.filter (fun target ->
-                compiled.Pickables |> List.exists (Pickable.sameTarget target))
+            |> List.filter isValidSelectionTarget
         normalizeSketchUiState ()
 
     let formatErrors (errs: TypeError list) =
@@ -177,6 +276,9 @@ module Program =
             | TargetLoop(sketchId, _)
             | TargetDimension(sketchId, _) ->
                 sketchEditMode && doc.SelectedId = Some sketchId
+            | TargetFrameOrigin _
+            | TargetFrameAxis _ as target ->
+                (activeSketchEditId ()).IsSome && isAllowedSketchEditFrameTarget target
             | TargetSurface _ ->
                 true
 
@@ -212,6 +314,7 @@ module Program =
                     Map.tryFind a.Id compiled.Frames
                     |> Option.map (fun t -> {| Id = a.Id; Transform = t |})
                 | _ -> None)
+        let sketchEditFrames = sketchEditFrames ()
 
         let sketchFrames =
             doc.Actions
@@ -244,7 +347,6 @@ module Program =
                             | LineDistance(_, _, _, _, _, _, _, lp)
                             | FrameLineDistance(_, _, _, _, _, _, lp)
                             | PointLineDistance(_, _, _, _, _, lp)
-                            | FramePointLineDistance(_, _, _, _, lp)
                             | PointCircleDistance(_, _, _, _, lp)
                             | LineCircleDistance(_, _, _, _, _, _, lp)
                             | CircleCircleDistance(_, _, _, _, _, _, lp)
@@ -267,6 +369,7 @@ module Program =
            VisibleDimensionSketchIds = visibleDimensionSketchIds
            SketchUi = sketchUiState ()
            Frames = frames
+           SketchEditFrames = sketchEditFrames
            SketchFrames = sketchFrames
            Visible = visibleByAction
            ConstraintLabelPositions = constraintLabelPositions
@@ -387,6 +490,17 @@ module Program =
             | _ ->
                 [ target ]
 
+        let reduceSelectionCandidates pickCandidates =
+            let pickableById = compiled.Pickables |> List.map (fun p -> Pickable.pickId p, p) |> Map.ofList
+            pickCandidates
+            |> List.choose (fun candidate ->
+                Map.tryFind candidate.PickId pickableById
+                |> Option.map (fun pickable ->
+                    Pickable.selectionTarget pickable, candidate.Score, Some(Pickable.targetAction pickable))
+                |> Option.filter (fun (target, _score, _action) -> isValidSelectionTarget target))
+            |> List.sortBy (fun (target, score, _action) -> Pickable.selectionPriority target, score)
+            |> List.tryHead
+
         app.MapPost("/api/viewer/hover",
             Func<HttpContext, IResult>(fun ctx ->
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
@@ -403,8 +517,8 @@ module Program =
                 else
                     constraintPlacementCursor <- None
                 hoveredTarget <-
-                    Pickable.reduceCandidates compiled.Pickables candidates
-                    |> Option.map Pickable.selectionTarget
+                    reduceSelectionCandidates candidates
+                    |> Option.map (fun (target, _score, _action) -> target)
                 viewerStateResult ())) |> ignore
 
         app.MapPost("/api/viewer/pick",
@@ -412,13 +526,13 @@ module Program =
                 let body = ctx.Request.ReadFromJsonAsync<JsonElement>().Result
                 let candidates = readPickCandidates body
                 let intent = readPickIntent body
-                let targetPickable = Pickable.reduceCandidates compiled.Pickables candidates
-                match targetPickable with
-                | Some pickable ->
-                    let target = Pickable.selectionTarget pickable
+                match reduceSelectionCandidates candidates with
+                | Some(target, _score, actionId) ->
                     hoveredTarget <- Some target
                     selectedTargets <- applySelectionIntent intent target selectedTargets
-                    doc <- Document.select (Pickable.targetAction pickable) doc
+                    match actionId with
+                    | Some id -> doc <- Document.select id doc
+                    | None -> ()
                     recompile ()
                     viewerStateResult ()
                 | None ->

@@ -28,6 +28,8 @@ and ConstraintPlacementRef =
     | RefLine of string
     | RefCircle of string
     | RefArc of string
+    | RefFrameOrigin of string
+    | RefFrameAxis of string * string
 
 and ConstraintPlacementDraft =
     { SketchId: string
@@ -146,7 +148,6 @@ module SketchAuthoring =
         | CircleDiameter(circle, center, _, _) -> hasEntity circle || hasEntity center
         | PointLineDistance(point, lineA, aStart, aEnd, _, _) ->
             [ point; lineA; aStart; aEnd ] |> List.exists hasEntity
-        | FramePointLineDistance(point, _, _, _, _) -> hasEntity point
         | PointCircleDistance(point, circle, center, _, _) ->
             [ point; circle; center ] |> List.exists hasEntity
         | LineCircleDistance(lineA, aStart, aEnd, circle, center, _, _) ->
@@ -350,6 +351,26 @@ module SketchAuthoring =
            Circles = matching |> List.choose (fun (kind, id) -> if kind = "circle" then Some id else None)
            Arcs = matching |> List.choose (fun (kind, id) -> if kind = "arc" then Some id else None) |}
 
+    let private selectionForFrames (targets: SelectionTarget list) =
+        {| Origins =
+            targets
+            |> List.choose (function
+                | TargetFrameOrigin(frameId) -> Some frameId
+                | _ -> None)
+           Axes =
+            targets
+            |> List.choose (function
+                | TargetFrameAxis(frameId, part) -> Some(frameId, part)
+                | _ -> None) |}
+
+    let private frameOriginFromSelection (origins: string list) (axes: (string * string) list) =
+        match
+            (origins @ (axes |> List.map fst))
+            |> List.distinct
+        with
+        | [ frameId ] -> Some frameId
+        | _ -> None
+
     let tryEditableDimension (sketchId: string) (sketch: ActionSketch) (index: int) =
         sketch.Constraints
         |> List.tryItem index
@@ -360,7 +381,6 @@ module SketchAuthoring =
             | LineDistance(_, _, _, _, _, _, distance, _)
             | FrameLineDistance(_, _, _, _, _, distance, _)
             | PointLineDistance(_, _, _, _, distance, _)
-            | FramePointLineDistance(_, _, _, distance, _)
             | PointCircleDistance(_, _, _, distance, _)
             | LineCircleDistance(_, _, _, _, _, distance, _)
             | CircleCircleDistance(_, _, _, _, distance, _, _) ->
@@ -447,10 +467,16 @@ module SketchAuthoring =
 
     let private buildConstraint sketch sketchId kind targets cursor =
         let selection = selectionForSketch sketchId targets
+        let frameSelection = selectionForFrames targets
+        let frameOrigin = frameOriginFromSelection frameSelection.Origins frameSelection.Axes
         match kind with
         | "Coincident" ->
             match selection.Points with
             | [ a; b ] -> Some(Coincident(a, b))
+            | [ pointId ] ->
+                match frameSelection.Origins with
+                | [ frameId ] -> Some(FrameCoincident(pointId, frameId, "origin"))
+                | _ -> None
             | _ -> None
         | "Horizontal" ->
             match selection.Points, selection.Lines with
@@ -470,18 +496,22 @@ module SketchAuthoring =
                 tryLine sketch lineId |> Option.map (fun (aStart, aEnd) -> Midpoint(pointId, lineId, aStart, aEnd))
             | _ -> None
         | "Parallel" ->
-            match selection.Lines with
-            | [ lineA; lineB ] ->
+            match selection.Lines, frameSelection.Axes with
+            | [ lineA; lineB ], _ ->
                 Option.map2 (fun (aStart, aEnd) (bStart, bEnd) -> Parallel(aStart, aEnd, bStart, bEnd, lineA, lineB))
                     (tryLine sketch lineA)
                     (tryLine sketch lineB)
+            | [ lineA ], [ (frameId, part) ] when part <> "origin" ->
+                tryLine sketch lineA |> Option.map (fun (aStart, aEnd) -> FrameParallel(aStart, aEnd, lineA, frameId, part))
             | _ -> None
         | "Perpendicular" ->
-            match selection.Lines with
-            | [ lineA; lineB ] ->
+            match selection.Lines, frameSelection.Axes with
+            | [ lineA; lineB ], _ ->
                 Option.map2 (fun (aStart, aEnd) (bStart, bEnd) -> Perpendicular(aStart, aEnd, bStart, bEnd, lineA, lineB))
                     (tryLine sketch lineA)
                     (tryLine sketch lineB)
+            | [ lineA ], [ (frameId, part) ] when part <> "origin" ->
+                tryLine sketch lineA |> Option.map (fun (aStart, aEnd) -> FramePerpendicular(aStart, aEnd, lineA, frameId, part))
             | _ -> None
         | "Equal" ->
             match selection.Lines, selection.Circles, selection.Arcs with
@@ -526,19 +556,23 @@ module SketchAuthoring =
                 |> Option.map (fun (x, y) -> Fixed(pointId, x, y))
             | _ -> None
         | "distance" ->
-            match selection.Points, selection.Lines, selection.Circles, selection.Arcs with
-            | [ a; b ], _, _, _ ->
+            match selection.Points, selection.Lines, selection.Circles, selection.Arcs, frameOrigin with
+            | [ a; b ], _, _, _, _ ->
                 Option.map2 (fun pa pb -> Distance(a, b, dist pa pb, None)) (tryPoint sketch a) (tryPoint sketch b)
-            | _, [ lineA; lineB ], _, _ ->
+            | [ pointId ], _, _, _, Some frameId ->
+                Some(FrameDistance(pointId, frameId, "origin", 0.0, None))
+            | _, [ lineA; lineB ], _, _, _ ->
                 match tryLine sketch lineA, tryLine sketch lineB with
                 | Some(aStart, aEnd), Some(bStart, bEnd) ->
                     Some(LineDistance(aStart, aEnd, bStart, bEnd, lineA, lineB, lineDistanceValue sketch lineA lineB, None))
                 | _ -> None
-            | _, _, [ circleId ], [] ->
+            | _, [ lineA ], _, _, Some frameId ->
+                tryLine sketch lineA |> Option.map (fun (aStart, aEnd) -> FrameLineDistance(lineA, aStart, aEnd, frameId, "origin", 0.0, None))
+            | _, _, [ circleId ], [], _ ->
                 match tryDiameterEntity sketch circleId with
                 | Some(centerId, radius) -> Some(CircleDiameter(circleId, centerId, radius * 2.0, None))
                 | _ -> None
-            | _, _, [], [ arcId ] ->
+            | _, _, [], [ arcId ], _ ->
                 match tryDiameterEntity sketch arcId with
                 | Some(centerId, radius) -> Some(CircleDiameter(arcId, centerId, radius * 2.0, None))
                 | _ -> None
@@ -551,7 +585,23 @@ module SketchAuthoring =
         | _ -> None
 
     let private buildDistanceConstraintFromDraft sketch draft hoveredRef =
-        match draft.ClickedRefs, hoveredRef with
+        let normalizeFrameRef =
+            function
+            | RefFrameOrigin frameId -> RefFrameOrigin frameId
+            | RefFrameAxis(frameId, _part) -> RefFrameOrigin frameId
+            | other -> other
+
+        let hoveredRef = hoveredRef |> Option.map normalizeFrameRef
+        let clickedRefs = draft.ClickedRefs |> List.map normalizeFrameRef
+        match clickedRefs, hoveredRef with
+        | [ RefLine lineA ], Some(RefFrameOrigin frameId)
+        | [ RefFrameOrigin frameId ], Some(RefLine lineA) ->
+            match tryLine sketch lineA with
+            | Some(aStart, aEnd) -> Some(FrameLineDistance(lineA, aStart, aEnd, frameId, "origin", 0.0, None))
+            | _ -> None
+        | [ RefPoint pointId ], Some(RefFrameOrigin frameId)
+        | [ RefFrameOrigin frameId ], Some(RefPoint pointId) ->
+            Some(FrameDistance(pointId, frameId, "origin", 0.0, None))
         | [ RefLine lineA ], Some(RefLine lineB) when lineA <> lineB ->
             match tryLine sketch lineA, tryLine sketch lineB with
             | Some(aStart, aEnd), Some(bStart, bEnd) ->
@@ -571,6 +621,12 @@ module SketchAuthoring =
             | _ -> None
         | [ RefPoint a ], Some(RefPoint b) when a <> b ->
             Option.map2 (fun pa pb -> Distance(a, b, dist pa pb, None)) (tryPoint sketch a) (tryPoint sketch b)
+        | [ RefLine lineA; RefFrameOrigin frameId ], _ ->
+            match tryLine sketch lineA with
+            | Some(aStart, aEnd) -> Some(FrameLineDistance(lineA, aStart, aEnd, frameId, "origin", 0.0, None))
+            | _ -> None
+        | [ RefPoint pointId; RefFrameOrigin frameId ], _ ->
+            Some(FrameDistance(pointId, frameId, "origin", 0.0, None))
         | [ RefLine lineA; RefLine lineB ], _ when lineA <> lineB ->
             match tryLine sketch lineA, tryLine sketch lineB with
             | Some(aStart, aEnd), Some(bStart, bEnd) ->
@@ -600,6 +656,8 @@ module SketchAuthoring =
         | TargetLine(id, entityId) when id = sketchId -> Some(RefLine entityId)
         | TargetCircle(id, entityId) when id = sketchId -> Some(RefCircle entityId)
         | TargetArc(id, entityId) when id = sketchId -> Some(RefArc entityId)
+        | TargetFrameOrigin(frameId) -> Some(RefFrameOrigin frameId)
+        | TargetFrameAxis(frameId, part) -> Some(RefFrameAxis(frameId, part))
         | _ -> None
 
     let updatePlacementDraft sketchId kind hoveredTarget draft =
@@ -607,10 +665,18 @@ module SketchAuthoring =
         match kind, clickedRef, draft with
         | _, None, _ -> draft
         | "distance", Some ref_, _ ->
+            let ref_ =
+                match ref_ with
+                | RefFrameAxis(frameId, _part) -> RefFrameOrigin frameId
+                | other -> other
             let nextRefs =
                 match ref_, draft |> Option.bind (fun d -> if d.Kind = kind then Some d.ClickedRefs else None) with
                 | RefLine lineB, Some [ RefLine lineA ] when lineA <> lineB -> [ RefLine lineA; RefLine lineB ]
                 | RefPoint b, Some [ RefPoint a ] when a <> b -> [ RefPoint a; RefPoint b ]
+                | RefFrameOrigin frameId, Some [ RefLine lineA ] -> [ RefLine lineA; RefFrameOrigin frameId ]
+                | RefLine lineA, Some [ RefFrameOrigin frameId ] -> [ RefLine lineA; RefFrameOrigin frameId ]
+                | RefFrameOrigin frameId, Some [ RefPoint pointId ] -> [ RefPoint pointId; RefFrameOrigin frameId ]
+                | RefPoint pointId, Some [ RefFrameOrigin frameId ] -> [ RefPoint pointId; RefFrameOrigin frameId ]
                 | _, _ -> [ ref_ ]
             Some { SketchId = sketchId; Kind = kind; ClickedRefs = nextRefs }
         | "angle", Some(RefLine line), _ ->

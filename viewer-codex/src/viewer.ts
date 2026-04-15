@@ -155,6 +155,8 @@ interface GpuContext {
   labelUniformBuffer: GPUBuffer | null;
   pickPipeline: GPUComputePipeline;
   pickBindGroupLayout: GPUBindGroupLayout;
+  framePickPipeline: GPUComputePipeline;
+  framePickBindGroupLayout: GPUBindGroupLayout;
   pickStateBuffer: GPUBuffer;
   pickResultBuffer: GPUBuffer;
 }
@@ -169,7 +171,6 @@ export interface ViewerStartOptions {
 const NO_HIT_ID = 0xffffffff;
 const PICK_GRID = 5;
 const PICK_SAMPLES = PICK_GRID * PICK_GRID;
-
 const LINE_SHADER = `
 struct Camera {
   eye: vec3<f32>, _p0: f32,
@@ -574,6 +575,106 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
 }
 `;
 
+const FRAME_PICK_SHADER = `
+const HALF_FOV: f32 = ${HALF_FOV};
+const PICK_GRID: u32 = ${PICK_GRID}u;
+const NO_HIT: u32 = ${NO_HIT_ID}u;
+
+struct Camera {
+  eye: vec3<f32>, _p0: f32,
+  forward: vec3<f32>, _p1: f32,
+  right: vec3<f32>, _p2: f32,
+  up: vec3<f32>, aspect: f32,
+};
+
+struct PickState {
+  viewport: vec2<f32>,
+  mouse: vec2<f32>,
+};
+
+struct PickSample {
+  id: u32,
+  kind: u32,
+  score: f32,
+  _pad: f32,
+};
+
+@group(0) @binding(0) var<uniform> cam: Camera;
+@group(0) @binding(1) var<uniform> pick: PickState;
+@group(0) @binding(2) var<storage, read> origins: array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> axes: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read_write> samples: array<PickSample, ${PICK_SAMPLES}>;
+
+fn project_world(pos: vec3<f32>) -> vec3<f32> {
+  let rel = pos - cam.eye;
+  let z = dot(rel, cam.forward);
+  if (z <= 1e-6) { return vec3<f32>(1e9, 1e9, -1.0); }
+  let ndc_x = dot(rel, cam.right) / (z * tan(HALF_FOV) * cam.aspect);
+  let ndc_y = dot(rel, cam.up) / (z * tan(HALF_FOV));
+  return vec3<f32>(
+    ((ndc_x + 1.0) * 0.5) * pick.viewport.x,
+    ((1.0 - ndc_y) * 0.5) * pick.viewport.y,
+    z,
+  );
+}
+
+fn sdf_segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+  let ab = b - a;
+  let denom = max(dot(ab, ab), 1e-8);
+  let h = clamp(dot(p - a, ab) / denom, 0.0, 1.0);
+  return length((a + ab * h) - p);
+}
+
+@compute @workgroup_size(${PICK_SAMPLES})
+fn cs_main(@builtin(local_invocation_index) index: u32) {
+  let gx = i32(index % PICK_GRID) - 2;
+  let gy = i32(index / PICK_GRID) - 2;
+  let pixel = pick.mouse + vec2<f32>(f32(gx), f32(gy));
+
+  var bestId: u32 = NO_HIT;
+  var bestKind: u32 = 0u;
+  var bestScore: f32 = 1e9;
+
+  let originCount = arrayLength(&origins);
+  for (var i: u32 = 0u; i < originCount; i = i + 1u) {
+    let raw = origins[i];
+    let screen = project_world(raw.xyz);
+    if (screen.z <= 0.0) { continue; }
+    let score = length(pixel - screen.xy);
+    if (score <= 9.0 && score < bestScore) {
+      bestScore = score;
+      bestId = u32(raw.w + 0.5);
+      bestKind = 1u;
+    }
+  }
+
+  let axisCount = arrayLength(&axes) / 2u;
+  for (var i: u32 = 0u; i < axisCount; i = i + 1u) {
+    let a0 = axes[i * 2u];
+    let a1 = axes[i * 2u + 1u];
+    let start = project_world(a0.xyz);
+    if (start.z <= 0.0) { continue; }
+    let axis = a1.xyz;
+    let proj_axis = axis - dot(axis, cam.forward) * cam.forward;
+    let dx = dot(proj_axis, cam.right);
+    let dy = dot(proj_axis, cam.up);
+    let len = length(vec2<f32>(dx, dy));
+    if (len <= 1e-6) { continue; }
+    let endp = start.xy + vec2<f32>(dx / len, -dy / len) * a1.w;
+    let score = sdf_segment(pixel, start.xy, endp);
+    if (score <= 9.0 && score < bestScore) {
+      bestScore = score;
+      bestId = u32(a0.w + 0.5);
+      bestKind = 2u;
+    }
+  }
+
+  samples[index].id = bestId;
+  samples[index].kind = bestKind;
+  samples[index].score = bestScore;
+}
+`;
+
 export class ViewerApp {
   private static readonly DRAG_START_PX = 4;
   private readonly root: HTMLElement;
@@ -760,7 +861,7 @@ export class ViewerApp {
       this.queueRender();
       return;
     }
-    const candidates = await this.pickAcrossSketches();
+    const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
     this.state = await postViewerHover(toPickRequest(candidates), this.currentPlacementCursor());
     this.rebuildRenderData();
     this.queueRender();
@@ -861,6 +962,9 @@ export class ViewerApp {
 
     const entityMap = new Map(authored.model.sketch.entities.map((entity) => [entity.id, entity]));
     const pointMap = new Map<string, Vec2>();
+    const framePointMap = new Map<string, Vec2>(
+      this.state!.frames.map((frame) => [frame.id, projectWorldToSketchLocal(toSketchFrame(frame.transform).position, authored.frame)] as const),
+    );
     const binding = this.solverBindings.get(authored.model.id);
     const solved = this.solvedSketchParams.get(authored.model.id);
     const resolveValue = (path: string, fallback: number) =>
@@ -885,6 +989,7 @@ export class ViewerApp {
       new Map<number, Vec2>(),
       pointMap,
       entityMap,
+      framePointMap,
       resolveValue,
       () => cursor,
       pending.constraint,
@@ -914,8 +1019,11 @@ export class ViewerApp {
 
     const placement = this.state?.sketchUi.constraintPlacementMode;
     if (placement) {
-      const candidates = await this.pickAcrossSketches();
-      this.state = await postViewerHover(toPickRequest(candidates), this.currentPlacementCursor());
+      const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
+      this.state = await postViewerHover(
+        toPickRequest(candidates),
+        this.currentPlacementCursor(),
+      );
       const hovered = this.state?.hoveredTarget;
       if (hovered && hovered.case !== "TargetDimension" && hovered.case !== "TargetLoop" && hovered.case !== "TargetSurface") {
         this.state = await postViewerDimensionClickTarget();
@@ -1024,10 +1132,11 @@ export class ViewerApp {
 
   private fitCamera(): void {
     if (!this.model || !this.state) return;
-    if (this.model.sketches.length === 0 && this.state.frames.length === 0) return;
+    const frames = this.activeFrameList();
+    if (this.model.sketches.length === 0 && frames.length === 0) return;
     let worldMin: Vec3 = [Infinity, Infinity, Infinity];
     let worldMax: Vec3 = [-Infinity, -Infinity, -Infinity];
-    for (const frame of this.state.frames) {
+    for (const frame of frames) {
       if (!this.isVisible(frame.id)) continue;
       const t = toSketchFrame(frame.transform);
       const p = t.position;
@@ -1056,6 +1165,11 @@ export class ViewerApp {
     this.camera.distance = Math.max(40, radius * 2.4);
   }
 
+  private activeFrameList(): Array<{ id: string; transform: JsonRigidTransform }> {
+    if (!this.state) return [];
+    return this.state.sketchUi.editMode ? this.state.sketchEditFrames : this.state.frames;
+  }
+
   private rebuildRenderData(): void {
     if (!this.model || !this.state) return;
     this.renderSketches = this.model.sketches
@@ -1067,12 +1181,14 @@ export class ViewerApp {
         this.model!.pickables,
         this.slotLookup,
         this.state!.params,
+        this.state!.frames,
         this.state!.highlightedTarget,
         this.state.highlightedTargets,
         this.fontMetrics,
         this.solverBindings.get(sketch.id),
         this.solvedSketchParams.get(sketch.id),
         this.drag,
+        frame,
         (constraintIndex) => this.constraintLabelPosition(sketch.id, constraintIndex),
         this.state!.visibleDimensionSketchIds.includes(sketch.id),
       );
@@ -1209,7 +1325,12 @@ export class ViewerApp {
     pass.setBindGroup(0, cameraBindGroup);
 
     const frameLineData = this.state
-      ? buildFrameLineData(this.state.frames.filter((frame) => this.isVisible(frame.id)), this.state.selectedId)
+      ? buildFrameLineData(
+          this.activeFrameList().filter((frame) => this.isVisible(frame.id)),
+          this.state.hoveredTarget,
+          this.state.selectedTargets,
+          this.state.selectedId,
+        )
       : new Float32Array();
     if (frameLineData.length > 0) {
       const gizmoBuffer = device.createBuffer({
@@ -1480,7 +1601,7 @@ export class ViewerApp {
     if (!this.gpu || this.isPicking || this.renderSketches.length === 0) return;
     this.isPicking = true;
     try {
-      const candidates = await this.pickAcrossSketches();
+      const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
       if (candidates.length === 0) {
         if (this.state) {
           this.state = {
@@ -1514,7 +1635,120 @@ export class ViewerApp {
     for (const sketch of this.renderSketches) {
       hits.push(...(await this.runPickPass(sketch)));
     }
-    return hits;
+    const deduped = new Map<string, PickCandidateHit>();
+    for (const hit of hits) {
+      const key = `${hit.pickId}:${hit.kind}:${hit.sketchId}`;
+      const current = deduped.get(key);
+      if (!current || hit.score < current.score) deduped.set(key, hit);
+    }
+    return [...deduped.values()];
+  }
+
+  private async pickFrameTargetsGpu(): Promise<PickCandidateHit[]> {
+    if (!this.gpu || !this.state?.sketchUi.editMode) return [];
+    const frames = this.state.sketchEditFrames.filter((frame) => this.isVisible(frame.id));
+    if (frames.length === 0) return [];
+    const pickables = this.model?.pickables ?? [];
+    const { device, cameraBuffer, framePickPipeline, framePickBindGroupLayout, pickStateBuffer, pickResultBuffer } = this.gpu;
+    const dprX = this.canvas.width / Math.max(this.canvas.clientWidth, 1);
+    const dprY = this.canvas.height / Math.max(this.canvas.clientHeight, 1);
+    device.queue.writeBuffer(
+      pickStateBuffer,
+      0,
+      new Float32Array([this.canvas.width, this.canvas.height, this.pointer.x * dprX, this.pointer.y * dprY]),
+    );
+
+    const originEntries = new Float32Array(frames.length * 4);
+    const axisEntries = new Float32Array(frames.length * 3 * 8);
+    let oo = 0;
+    let ao = 0;
+    const pickIdFor = (frameId: string, part: "origin" | "xAxis" | "yAxis" | "zAxis") =>
+      pickables.find((candidate) =>
+        candidate.case === "PickFrameOrigin"
+          ? candidate.frameId === frameId && part === "origin"
+          : candidate.case === "PickFrameAxis" && candidate.frameId === frameId && candidate.part === part,
+      )?.pickId;
+    for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
+      const frame = frames[frameIndex];
+      const t = toSketchFrame(frame.transform);
+      const originId = pickIdFor(frame.id, "origin");
+      if (originId == null) continue;
+      originEntries[oo++] = t.position[0];
+      originEntries[oo++] = t.position[1];
+      originEntries[oo++] = t.position[2];
+      originEntries[oo++] = originId;
+      const axisPx = frame.id === "origin" ? 64 : 52;
+      for (const [part, axis] of [["xAxis", t.xAxis], ["yAxis", t.yAxis], ["zAxis", t.zAxis]] as const) {
+        const axisId = pickIdFor(frame.id, part);
+        if (axisId == null) continue;
+        axisEntries[ao++] = t.position[0];
+        axisEntries[ao++] = t.position[1];
+        axisEntries[ao++] = t.position[2];
+        axisEntries[ao++] = axisId;
+        axisEntries[ao++] = axis[0];
+        axisEntries[ao++] = axis[1];
+        axisEntries[ao++] = axis[2];
+        axisEntries[ao++] = axisPx;
+      }
+    }
+
+    const originBuffer = device.createBuffer({
+      size: Math.max(16, originEntries.byteLength),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(originBuffer, 0, originEntries);
+    const axisBuffer = device.createBuffer({
+      size: Math.max(16, axisEntries.byteLength),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(axisBuffer, 0, axisEntries);
+    const bindGroup = device.createBindGroup({
+      layout: framePickBindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: cameraBuffer } },
+        { binding: 1, resource: { buffer: pickStateBuffer } },
+        { binding: 2, resource: { buffer: originBuffer } },
+        { binding: 3, resource: { buffer: axisBuffer } },
+        { binding: 4, resource: { buffer: pickResultBuffer } },
+      ],
+    });
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(framePickPipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(1);
+    pass.end();
+    const readBuffer = device.createBuffer({
+      size: PICK_SAMPLES * 16,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    encoder.copyBufferToBuffer(pickResultBuffer, 0, readBuffer, 0, PICK_SAMPLES * 16);
+    device.queue.submit([encoder.finish()]);
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const copy = readBuffer.getMappedRange().slice(0);
+    readBuffer.unmap();
+    readBuffer.destroy();
+    originBuffer.destroy();
+    axisBuffer.destroy();
+    const view = new DataView(copy);
+    const hits = new Map<number, PickCandidateHit>();
+    for (let i = 0; i < PICK_SAMPLES; i++) {
+      const base = i * 16;
+      const id = view.getUint32(base, true);
+      const score = view.getFloat32(base + 8, true);
+      if (id === NO_HIT_ID || !Number.isFinite(score)) continue;
+      const current = hits.get(id);
+      if (!current || score < current.score) {
+        const kindOffset = pickables.find((candidate) => candidate.pickId === id)?.case === "PickFrameOrigin" ? 0 : 1;
+        hits.set(id, {
+          pickId: id,
+          kind: kindOffset === 0 ? "point" : "line",
+          score,
+          sketchId: "",
+        });
+      }
+    }
+    return [...hits.values()];
   }
 
   private async runPickPass(sketch: RenderSketch): Promise<PickCandidateHit[]> {
@@ -1814,6 +2048,19 @@ export class ViewerApp {
       layout: device.createPipelineLayout({ bindGroupLayouts: [pickBindGroupLayout] }),
       compute: { module: device.createShaderModule({ code: PICK_SHADER }), entryPoint: "cs_main" },
     });
+    const framePickBindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
+      ],
+    });
+    const framePickPipeline = device.createComputePipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [framePickBindGroupLayout] }),
+      compute: { module: device.createShaderModule({ code: FRAME_PICK_SHADER }), entryPoint: "cs_main" },
+    });
     const pickStateBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const pickResultBuffer = device.createBuffer({ size: PICK_SAMPLES * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
     return {
@@ -1837,6 +2084,8 @@ export class ViewerApp {
       labelUniformBuffer,
       pickPipeline,
       pickBindGroupLayout,
+      framePickPipeline,
+      framePickBindGroupLayout,
       pickStateBuffer,
       pickResultBuffer,
     };
@@ -1849,17 +2098,25 @@ function buildSketchBuffers(
   pickables: Pickable[],
   slotLookup: Map<string, number>,
   params: number[],
+  frames: Array<{ id: string; transform: JsonRigidTransform }>,
   hoveredTarget: SelectionTarget | null,
   selectedTargets: SelectionTarget[],
   fontMetrics: FontMetrics | null,
   solverBinding?: SketchSolverBinding,
   solvedLocal?: Float32Array,
   drag?: DragState | null,
+  sketchFrame?: SketchFrame,
   stateLabelPosition?: (constraintIndex: number) => Vec2 | null,
   showDimensions?: boolean,
 ): { buffers: RenderBuffers; loops: ResolvedLoopGeometry[]; dimensionAnchors: Map<number, Vec2> } {
   const entityMap = new Map(viewerSketch.sketch.entities.map((entity) => [entity.id, entity]));
   const pointMap = new Map<string, Vec2>();
+  const framePointMap =
+    sketchFrame
+      ? new Map<string, Vec2>(
+          frames.map((frame) => [frame.id, projectWorldToSketchLocal(toSketchFrame(frame.transform).position, sketchFrame)] as const),
+        )
+      : new Map<string, Vec2>();
   const triVertices: LineVertex[] = [];
   const lineVertices: LineVertex[] = [];
   const highlightLineVertices: LineVertex[] = [];
@@ -1968,6 +2225,7 @@ function buildSketchBuffers(
       dimensionAnchors,
       pointMap,
       entityMap,
+      framePointMap,
       resolveValue,
       resolveLabelAnchor,
       constraint,
@@ -2008,6 +2266,7 @@ function pushConstraintGeometry(
   dimensionAnchors: Map<number, Vec2>,
   pointMap: Map<string, Vec2>,
   entityMap: Map<string, RenderEntity>,
+  framePointMap: Map<string, Vec2>,
   resolveValue: (path: string, fallback: number) => number,
   resolveLabelAnchor: (index: number, fallback: Vec2) => Vec2,
   constraint: ActionSketch["constraints"][number],
@@ -2098,6 +2357,54 @@ function pushConstraintGeometry(
       if (activeDimension) highlightLabels.push({ text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)), anchor, pickId, hovered: true });
       return;
     }
+    case "FrameDistance": {
+      if (!showDimensions || constraint.part !== "origin") return;
+      const a = pointMap.get(constraint.point);
+      const b = framePointMap.get(constraint.frame);
+      if (!a || !b) return;
+      const dir = norm2(sub2(b, a));
+      const n = perp(dir);
+      const mid = scale2(add2(a, b), 0.5);
+      const fallbackAnchor = add2(mid, scale2(n, 1.8));
+      const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
+      dimensionAnchors.set(constraintIndex, anchor);
+      const offsetAmount = dot2(sub2(anchor, mid), n);
+      const off = scale2(n, Math.abs(offsetAmount) < 0.5 ? 1.8 : offsetAmount);
+      const aa = add2(a, off);
+      const bb = add2(b, off);
+      const axis = norm2(sub2(bb, aa));
+      const projected = add2(aa, scale2(axis, dot2(sub2(anchor, aa), axis)));
+      const extentA = dot2(sub2(projected, aa), axis);
+      const extentB = dot2(sub2(projected, bb), axis);
+      lines.push({ x: a[0], y: a[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
+      lines.push({ x: b[0], y: b[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
+      lines.push({ x: aa[0], y: aa[1], color: DIM_COLOR }, { x: bb[0], y: bb[1], color: DIM_COLOR });
+      if (extentA < 0) {
+        lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: aa[0], y: aa[1], color: DIM_COLOR });
+      } else if (extentB > 0) {
+        lines.push({ x: bb[0], y: bb[1], color: DIM_COLOR }, { x: projected[0], y: projected[1], color: DIM_COLOR });
+      }
+      lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: anchor[0], y: anchor[1], color: DIM_COLOR });
+      if (activeDimension) {
+        highlightLines.push({ x: a[0], y: a[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
+        highlightLines.push({ x: b[0], y: b[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
+        highlightLines.push({ x: aa[0], y: aa[1], color: DIM_HOVER }, { x: bb[0], y: bb[1], color: DIM_HOVER });
+        if (extentA < 0) {
+          highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: aa[0], y: aa[1], color: DIM_HOVER });
+        } else if (extentB > 0) {
+          highlightLines.push({ x: bb[0], y: bb[1], color: DIM_HOVER }, { x: projected[0], y: projected[1], color: DIM_HOVER });
+        }
+        highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: anchor[0], y: anchor[1], color: DIM_HOVER });
+      }
+      labels.push({
+        text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)),
+        anchor,
+        pickId,
+        hovered: false,
+      });
+      if (activeDimension) highlightLabels.push({ text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)), anchor, pickId, hovered: true });
+      return;
+    }
     case "LineDistance": {
       if (!showDimensions) return;
       const aStart = pointMap.get(constraint.aStart);
@@ -2117,6 +2424,38 @@ function pushConstraintGeometry(
       lines.push({ x: mid[0], y: mid[1], color: DIM_COLOR }, { x: anchor[0], y: anchor[1], color: DIM_COLOR });
       if (activeDimension) {
         highlightLines.push({ x: pa[0], y: pa[1], color: DIM_HOVER }, { x: pb[0], y: pb[1], color: DIM_HOVER });
+        highlightLines.push({ x: mid[0], y: mid[1], color: DIM_HOVER }, { x: anchor[0], y: anchor[1], color: DIM_HOVER });
+      }
+      labels.push({
+        text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)),
+        anchor,
+        pickId,
+        hovered: false,
+      });
+      if (activeDimension) {
+        highlightLabels.push({
+          text: formatNumber(resolveValue(`sketch.constraint.${constraintIndex}.distance`, constraint.distance)),
+          anchor,
+          pickId,
+          hovered: true,
+        });
+      }
+      return;
+    }
+    case "FrameLineDistance": {
+      if (!showDimensions || constraint.part !== "origin") return;
+      const aStart = pointMap.get(constraint.aStart);
+      const aEnd = pointMap.get(constraint.aEnd);
+      const framePoint = framePointMap.get(constraint.frame);
+      if (!aStart || !aEnd || !framePoint) return;
+      const projected = projectPointToInfiniteLine(framePoint, aStart, aEnd);
+      const mid = scale2(add2(projected, framePoint), 0.5);
+      const anchor = resolveLabelAnchor(constraintIndex, mid);
+      dimensionAnchors.set(constraintIndex, anchor);
+      lines.push({ x: projected[0], y: projected[1], color: DIM_COLOR }, { x: framePoint[0], y: framePoint[1], color: DIM_COLOR });
+      lines.push({ x: mid[0], y: mid[1], color: DIM_COLOR }, { x: anchor[0], y: anchor[1], color: DIM_COLOR });
+      if (activeDimension) {
+        highlightLines.push({ x: projected[0], y: projected[1], color: DIM_HOVER }, { x: framePoint[0], y: framePoint[1], color: DIM_HOVER });
         highlightLines.push({ x: mid[0], y: mid[1], color: DIM_HOVER }, { x: anchor[0], y: anchor[1], color: DIM_HOVER });
       }
       labels.push({
@@ -2865,17 +3204,48 @@ function selectionMatchesAny(
   return targets.some((target) => selectionMatches(target, sketchId, kind, id));
 }
 
-function buildFrameLineData(frames: Array<{ id: string; transform: JsonRigidTransform }>, selectedActionId: string | null): Float32Array {
+function buildFrameLineData(
+  frames: Array<{ id: string; transform: JsonRigidTransform }>,
+  hoveredTarget: SelectionTarget | null,
+  selectedTargets: SelectionTarget[],
+  selectedActionId: string | null,
+): Float32Array {
   const data: number[] = [];
   for (const frame of frames) {
     const t = toSketchFrame(frame.transform);
     const axisPx = frame.id === "origin" ? 64 : 52;
-    const alpha = selectedActionId === frame.id ? 1.0 : 0.88;
-    pushFrameAxis(data, t.position, t.xAxis, axisPx, [0.88, 0.42, 0.42, alpha]);
-    pushFrameAxis(data, t.position, t.yAxis, axisPx, [0.48, 0.78, 0.54, alpha]);
-    pushFrameAxis(data, t.position, t.zAxis, axisPx, [0.45, 0.56, 0.92, alpha]);
+    const originActive =
+      frameTargetMatches(hoveredTarget, frame.id, "origin") ||
+      selectedTargets.some((target) => frameTargetMatches(target, frame.id, "origin"));
+    const frameSelected = selectedActionId === frame.id;
+    const axisColor = (
+      part: string,
+      base: readonly number[],
+    ): readonly number[] => {
+      const active =
+        originActive ||
+        frameTargetMatches(hoveredTarget, frame.id, part) ||
+        selectedTargets.some((target) => frameTargetMatches(target, frame.id, part));
+      const alpha = active || frameSelected ? 1.0 : 0.88;
+      return active ? [ACCENT[0], ACCENT[1], ACCENT[2], alpha] : [base[0], base[1], base[2], alpha];
+    };
+    pushFrameAxis(data, t.position, t.xAxis, axisPx, axisColor("xAxis", [0.88, 0.42, 0.42, 1]));
+    pushFrameAxis(data, t.position, t.yAxis, axisPx, axisColor("yAxis", [0.48, 0.78, 0.54, 1]));
+    pushFrameAxis(data, t.position, t.zAxis, axisPx, axisColor("zAxis", [0.45, 0.56, 0.92, 1]));
   }
   return new Float32Array(data);
+}
+
+function frameTargetMatches(target: SelectionTarget | null, frameId: string, part: string): boolean {
+  if (!target) return false;
+  switch (target.case) {
+    case "TargetFrameOrigin":
+      return target.frameId === frameId && part === "origin";
+    case "TargetFrameAxis":
+      return target.frameId === frameId && target.part === part;
+    default:
+      return false;
+  }
 }
 
 function pushFrameAxis(target: number[], origin: Vec3, axis: Vec3, axisPx: number, color: readonly number[]): void {
@@ -2934,7 +3304,6 @@ async function createSketchSolverBinding(
       case "LineDistance":
       case "FrameLineDistance":
       case "PointLineDistance":
-      case "FramePointLineDistance":
       case "PointCircleDistance":
       case "LineCircleDistance":
       case "CircleCircleDistance":
@@ -3004,6 +3373,11 @@ function liftPoint(frame: SketchFrame, p: Vec2): Vec3 {
   return add3(frame.position, add3(scale3(frame.xAxis, p[0]), scale3(frame.yAxis, p[1])));
 }
 
+function projectWorldToSketchLocal(world: Vec3, frame: SketchFrame): Vec2 {
+  const local = sub3(world, frame.position);
+  return [dot3(local, frame.xAxis), dot3(local, frame.yAxis)];
+}
+
 function projectSketchLocalToScreen(
   p: Vec2,
   frame: SketchFrame,
@@ -3011,6 +3385,14 @@ function projectSketchLocalToScreen(
   camera: CameraState,
 ): { x: number; y: number } | null {
   const world = liftPoint(frame, p);
+  return projectWorldToScreen(world, canvas, camera);
+}
+
+function projectWorldToScreen(
+  world: Vec3,
+  canvas: HTMLCanvasElement,
+  camera: CameraState,
+): { x: number; y: number } | null {
   const width = Math.max(canvas.clientWidth, 1);
   const height = Math.max(canvas.clientHeight, 1);
   const aspect = width / height;

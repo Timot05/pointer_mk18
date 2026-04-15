@@ -519,30 +519,17 @@ module SketchCompile =
                 | _ -> skipped <- skipped + 1
 
             | FrameLineDistance(_, asId, aeId, frameId, part, distance, _) ->
-                // Sketch line assumed parallel to the frame axis (enforced
-                // separately by FrameParallel if the user wants it). We emit
-                // only the perpendicular separation: distance from aStart to
-                // the axis line equals `distance`.
+                // Distance from the sketch line to the projected frame point.
                 match tryPoint asId, tryPoint aeId, parseFramePart part, Map.tryFind frameId ctx.Frames with
-                | Some aS, _aE, Some fp, Some ft when fp <> FPOrigin ->
+                | Some aS, Some aE, Some fp, Some ft when fp = FPOrigin ->
                     match frameGeometry ctx.SketchOrigin ft fp with
-                    | Some (FGLine(ox, oy, dx, dy)) ->
-                        let dpx = b.Sub(aS.XNode, constant b ox)
-                        let dpy = b.Sub(aS.YNode, constant b oy)
-                        let cross = crossZ b (constant b dx) (constant b dy) dpx dpy
-                        emitDiff cross (fixedParam distance)
-                    | _ -> skipped <- skipped + 1
-                | _ -> skipped <- skipped + 1
-
-            | FramePointLineDistance(pid, frameId, part, distance, _) ->
-                match tryPoint pid, parseFramePart part, Map.tryFind frameId ctx.Frames with
-                | Some p, Some fp, Some ft when fp <> FPOrigin ->
-                    match frameGeometry ctx.SketchOrigin ft fp with
-                    | Some (FGLine(ox, oy, dx, dy)) ->
-                        let dpx = b.Sub(p.XNode, constant b ox)
-                        let dpy = b.Sub(p.YNode, constant b oy)
-                        let cross = crossZ b (constant b dx) (constant b dy) dpx dpy
-                        emitDiff cross (fixedParam distance)
+                    | Some (FGPoint(fx, fy)) ->
+                        let dxL, dyL = vecSub b aS aE
+                        let dpx = b.Sub(constant b fx, aS.XNode)
+                        let dpy = b.Sub(constant b fy, aS.YNode)
+                        let cross = crossZ b dxL dyL dpx dpy
+                        let lineLen = length b dxL dyL
+                        emitDiff (b.Div(cross, lineLen)) (fixedParam distance)
                     | _ -> skipped <- skipped + 1
                 | _ -> skipped <- skipped + 1
 

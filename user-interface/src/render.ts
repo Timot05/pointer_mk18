@@ -446,7 +446,6 @@ function itemizedConstraints(constraints: SketchConstraint[], dimensions: boolea
     "LineDistance",
     "FrameLineDistance",
     "PointLineDistance",
-    "FramePointLineDistance",
     "PointCircleDistance",
     "LineCircleDistance",
     "CircleCircleDistance",

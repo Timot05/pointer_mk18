@@ -52,6 +52,8 @@ export interface Pickable {
   case: string;
   pickId: number;
   sketchId?: string;
+  frameId?: string;
+  part?: string;
   entityId?: string;
   loopId?: string;
   entityIds?: string[];
@@ -86,6 +88,7 @@ export interface ViewerState {
   visibleDimensionSketchIds: string[];
   sketchUi: SketchUiState;
   frames: Array<{ id: string; transform: JsonRigidTransform }>;
+  sketchEditFrames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchFrames: Array<{ id: string; transform: JsonRigidTransform }>;
   visible: Record<string, boolean>;
   constraintLabelPositions: Array<{ sketchId: string; constraintIndex: number; position: { x: number; y: number } }>;
@@ -100,6 +103,8 @@ export type SelectionTarget =
   | { case: "TargetArc"; sketchId: string; entityId: string }
   | { case: "TargetLoop"; sketchId: string; loopId: string }
   | { case: "TargetDimension"; sketchId: string; constraintIndex: number }
+  | { case: "TargetFrameOrigin"; frameId: string }
+  | { case: "TargetFrameAxis"; frameId: string; part: string }
   | { case: "TargetSurface"; actionId: string };
 
 export interface SketchUiState {

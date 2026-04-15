@@ -312,6 +312,28 @@ let ``SketchCompile keeps center arcs on a constant radius`` () =
     Assert.True(graph.Outputs.Length > 0)
 
 [<Fact>]
+let ``SketchCompile supports frame line distance to projected frame origin`` () =
+    let sketch : ActionSketch =
+        { Entities =
+            [ REPoint("p0", 0.0, 0.0)
+              REPoint("p1", 10.0, 0.0)
+              RELine("l1", "p0", "p1") ]
+          Constraints = [ FrameLineDistance("l1", "p0", "p1", "f1", "origin", 4.0, None) ] }
+
+    let frames =
+        Map.ofList
+            [ "f1",
+              { RigidTransform.Identity with
+                    Trans = { X = 0.0; Y = 4.0; Z = 0.0 } } ]
+
+    let graph =
+        SketchCompile.compile sketch
+            { SketchOrigin = RigidTransform.Identity
+              Frames = frames }
+
+    Assert.True(graph.Outputs.Length > 0)
+
+[<Fact>]
 let ``FromSketch with SelectionLoop None compiles to FSketch with 4 line segments`` () =
     let r =
         pipeline [ action "sk" (Sketch(None, squareSketch))
@@ -451,6 +473,8 @@ let ``Pickable list is stable across compiles of the same input`` () =
         | PickArc(id, s, e, _, _, _, _) -> sprintf "arc|%d|%s|%s" id s e
         | PickLoop(id, s, l, _) -> sprintf "loop|%d|%s|%s" id s l
         | PickDimension(id, s, i, _) -> sprintf "dim|%d|%s|%d" id s i
+        | PickFrameOrigin(id, f) -> sprintf "frame-origin|%d|%s" id f
+        | PickFrameAxis(id, f, part) -> sprintf "frame-axis|%d|%s|%s" id f part
         | PickSurface(id, a) -> sprintf "surf|%d|%s" id a
     let k1 = r1.Pickables |> List.map key
     let k2 = r2.Pickables |> List.map key

@@ -65,6 +65,20 @@ let curveTangentDoc () =
         [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
           { Id = "sketchCT"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
 
+let frameConstraintDoc () =
+    let sketch =
+        { Entities =
+            [ REPoint("p0", 0.0, 0.0)
+              REPoint("p1", 10.0, 0.0)
+              RELine("l1", "p0", "p1") ]
+          Constraints = [] }
+    { Name = "frame-constraints"
+      SelectedId = Some "sketchF"
+      Actions =
+        [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
+          { Id = "f1"; Name = None; Kind = Translate(Some "origin", 5.0, 0.0, 0.0); Visible = true; Display = None; FieldSlice = None }
+          { Id = "sketchF"; Name = None; Kind = Sketch(Some "origin", sketch); Visible = true; Display = None; FieldSlice = None } ] }
+
 [<Fact>]
 let ``Dimension placement buttons stay enabled in sketch edit mode`` () =
     let doc = Document.defaultDocument () |> Document.select "sketch1"
@@ -334,3 +348,86 @@ let ``Rounded rectangle tool creates arcs and tangent constraints`` () =
     Assert.Equal(4, lineCount)
     Assert.Equal(8, tangentCount)
     Assert.Equal(3, equalRadiusCount)
+
+[<Fact>]
+let ``Point and frame origin can build a frame coincident constraint`` () =
+    let doc = frameConstraintDoc ()
+    let next =
+        SketchAuthoring.addConstraintFromSelection doc [ TargetPoint("sketchF", "p0"); TargetFrameOrigin("f1") ] "Coincident"
+        |> Option.defaultWith (fun () -> failwith "Expected frame coincident constraint to be added")
+    let sketch =
+        match next.Actions |> List.find (fun a -> a.Id = "sketchF") with
+        | { Kind = Sketch(_, sketch) } -> sketch
+        | _ -> failwith "Expected sketchF to be a sketch"
+
+    match List.last sketch.Constraints with
+    | FrameCoincident("p0", "f1", "origin") -> ()
+    | other -> failwithf "Expected FrameCoincident, got %A" other
+
+[<Fact>]
+let ``Line and frame axis can build a frame parallel constraint`` () =
+    let doc = frameConstraintDoc ()
+    let next =
+        SketchAuthoring.addConstraintFromSelection doc [ TargetLine("sketchF", "l1"); TargetFrameAxis("f1", "xAxis") ] "Parallel"
+        |> Option.defaultWith (fun () -> failwith "Expected frame parallel constraint to be added")
+    let sketch =
+        match next.Actions |> List.find (fun a -> a.Id = "sketchF") with
+        | { Kind = Sketch(_, sketch) } -> sketch
+        | _ -> failwith "Expected sketchF to be a sketch"
+
+    match List.last sketch.Constraints with
+    | FrameParallel("p0", "p1", "l1", "f1", "xAxis") -> ()
+    | other -> failwithf "Expected FrameParallel, got %A" other
+
+[<Fact>]
+let ``Distance draft with clicked line and hovered frame axis yields frame origin line distance`` () =
+    let doc = frameConstraintDoc ()
+    let draft = Some { SketchId = "sketchF"; Kind = "distance"; ClickedRefs = [ RefLine "l1" ] }
+    let state =
+        SketchAuthoring.availabilityForSelection
+            doc true "none" (Some "distance") []
+            None
+            draft
+            (Some(TargetFrameAxis("f1", "xAxis")))
+
+    match state.PendingConstraintPlacement with
+    | Some pending ->
+        match pending.Constraint with
+        | FrameLineDistance("l1", "p0", "p1", "f1", "origin", _, None) -> ()
+        | other -> failwithf "Expected FrameLineDistance to frame origin, got %A" other
+    | None ->
+        failwith "Expected pending frame line distance placement"
+
+[<Fact>]
+let ``Distance from selection with line and frame axis uses frame origin`` () =
+    let doc = frameConstraintDoc ()
+    let next =
+        SketchAuthoring.addConstraintFromSelection doc [ TargetLine("sketchF", "l1"); TargetFrameAxis("f1", "xAxis") ] "distance"
+        |> Option.defaultWith (fun () -> failwith "Expected frame line distance constraint to be added")
+    let sketch =
+        match next.Actions |> List.find (fun a -> a.Id = "sketchF") with
+        | { Kind = Sketch(_, sketch) } -> sketch
+        | _ -> failwith "Expected sketchF to be a sketch"
+
+    match List.last sketch.Constraints with
+    | FrameLineDistance("l1", "p0", "p1", "f1", "origin", _, None) -> ()
+    | other -> failwithf "Expected FrameLineDistance to frame origin, got %A" other
+
+[<Fact>]
+let ``Distance draft with clicked point and hovered frame origin yields frame distance`` () =
+    let doc = frameConstraintDoc ()
+    let draft = Some { SketchId = "sketchF"; Kind = "distance"; ClickedRefs = [ RefPoint "p0" ] }
+    let state =
+        SketchAuthoring.availabilityForSelection
+            doc true "none" (Some "distance") []
+            None
+            draft
+            (Some(TargetFrameOrigin("f1")))
+
+    match state.PendingConstraintPlacement with
+    | Some pending ->
+        match pending.Constraint with
+        | FrameDistance("p0", "f1", "origin", _, None) -> ()
+        | other -> failwithf "Expected FrameDistance, got %A" other
+    | None ->
+        failwith "Expected pending frame distance placement"

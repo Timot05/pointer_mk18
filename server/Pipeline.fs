@@ -72,7 +72,6 @@ module Pipeline =
             | LineDistance(_, _, _, _, _, _, dist, lp)
             | FrameLineDistance(_, _, _, _, _, dist, lp)
             | PointLineDistance(_, _, _, _, dist, lp)
-            | FramePointLineDistance(_, _, _, dist, lp)
             | PointCircleDistance(_, _, _, dist, lp)
             | LineCircleDistance(_, _, _, _, _, dist, lp)
             | CircleCircleDistance(_, _, _, _, dist, _, lp) ->
@@ -151,7 +150,7 @@ module Pipeline =
                 let hasLabel =
                     match c with
                     | Distance _ | FrameDistance _ | LineDistance _ | FrameLineDistance _
-                    | PointLineDistance _ | FramePointLineDistance _ | PointCircleDistance _
+                    | PointLineDistance _ | PointCircleDistance _
                     | LineCircleDistance _ | CircleCircleDistance _ | CircleDiameter _ | Angle _ -> true
                     | _ -> false
                 if hasLabel then
@@ -176,6 +175,11 @@ module Pipeline =
             match Map.tryFind action.Id typeMap with
             | Some FieldType.Field when action.Visible ->
                 [ PickSurface(nextId(), action.Id) ]
+            | Some FieldType.Frame ->
+                [ PickFrameOrigin(nextId(), action.Id)
+                  PickFrameAxis(nextId(), action.Id, "xAxis")
+                  PickFrameAxis(nextId(), action.Id, "yAxis")
+                  PickFrameAxis(nextId(), action.Id, "zAxis") ]
             | Some FieldType.Sketch ->
                 match action.Kind with
                 | Sketch(_, sk) -> buildSketchPickables b counter action.Id sk

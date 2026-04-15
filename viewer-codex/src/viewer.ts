@@ -980,13 +980,14 @@ export class ViewerApp {
         this.model!.pickables,
         this.slotLookup,
         this.state!.params,
-        this.state!.hoveredTarget,
-        this.state.selectedTargets,
+        this.state!.highlightedTarget,
+        this.state.highlightedTargets,
         this.fontMetrics,
         this.solverBindings.get(sketch.id),
         this.solvedSketchParams.get(sketch.id),
         this.drag,
         (constraintIndex) => this.constraintLabelPosition(sketch.id, constraintIndex),
+        this.state!.visibleDimensionSketchIds.includes(sketch.id),
       );
       return {
         sketchId: sketch.id,
@@ -1636,6 +1637,7 @@ function buildSketchBuffers(
   solvedLocal?: Float32Array,
   drag?: DragState | null,
   stateLabelPosition?: (constraintIndex: number) => Vec2 | null,
+  showDimensions?: boolean,
 ): { buffers: RenderBuffers; loops: ResolvedLoopGeometry[] } {
   const entityMap = new Map(viewerSketch.sketch.entities.map((entity) => [entity.id, entity]));
   const pointMap = new Map<string, Vec2>();
@@ -1753,6 +1755,7 @@ function buildSketchBuffers(
       hoveredTarget,
       selectedTargets,
       viewerSketch.id,
+      showDimensions ?? false,
     );
   });
 
@@ -1790,6 +1793,7 @@ function pushConstraintGeometry(
   hoveredTarget: SelectionTarget | null,
   selectedTargets: SelectionTarget[],
   sketchId: string,
+  showDimensions: boolean,
 ): void {
   const activeDimension =
     selectionMatches(hoveredTarget, sketchId, "dimension", constraintIndex) ||
@@ -1824,6 +1828,7 @@ function pushConstraintGeometry(
       return;
     }
     case "Distance": {
+      if (!showDimensions) return;
       const a = pointMap.get(constraint.a);
       const b = pointMap.get(constraint.b);
       if (!a || !b) return;
@@ -1854,6 +1859,7 @@ function pushConstraintGeometry(
       return;
     }
     case "CircleDiameter": {
+      if (!showDimensions) return;
       const center = pointMap.get(constraint.center);
       const circle = entityMap.get(constraint.circle);
       if (!center || !circle || circle.case !== "RECircle") return;
@@ -1882,6 +1888,7 @@ function pushConstraintGeometry(
       return;
     }
     case "Angle": {
+      if (!showDimensions) return;
       const a0 = pointMap.get(constraint.aStart);
       const a1 = pointMap.get(constraint.aEnd);
       const b0 = pointMap.get(constraint.bStart);

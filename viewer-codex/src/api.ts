@@ -78,8 +78,11 @@ export interface ViewerState {
   params: number[];
   selectedId: string | null;
   hoveredTarget: SelectionTarget | null;
+  highlightedTarget: SelectionTarget | null;
   dragTarget: SelectionTarget | null;
   selectedTargets: SelectionTarget[];
+  highlightedTargets: SelectionTarget[];
+  visibleDimensionSketchIds: string[];
   sketchUi: SketchUiState;
   frames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchFrames: Array<{ id: string; transform: JsonRigidTransform }>;

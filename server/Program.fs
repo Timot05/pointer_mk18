@@ -145,6 +145,28 @@ module Program =
                 | _ -> false
             hoveredTarget |> Option.filter isActiveSketchTarget
 
+        let highlightedTargetAllowed =
+            function
+            | TargetPoint(sketchId, _)
+            | TargetLine(sketchId, _)
+            | TargetCircle(sketchId, _)
+            | TargetArc(sketchId, _)
+            | TargetLoop(sketchId, _)
+            | TargetDimension(sketchId, _) ->
+                sketchEditMode && doc.SelectedId = Some sketchId
+            | TargetSurface _ ->
+                true
+
+        let highlightedTarget = hoveredTarget |> Option.filter highlightedTargetAllowed
+        let highlightedTargets = selectedTargets |> List.filter highlightedTargetAllowed
+        let visibleDimensionSketchIds =
+            match sketchEditMode, doc.SelectedId with
+            | true, Some selectedId ->
+                match doc.Actions |> List.tryFind (fun a -> a.Id = selectedId) with
+                | Some { Kind = Sketch _ } -> [ selectedId ]
+                | _ -> []
+            | _ -> []
+
         // Per-action display & field-slice settings, for actions where they
         // apply. Slots ARE in Slots.Values, but sending the original
         // settings is simpler for the UI right now.
@@ -215,8 +237,11 @@ module Program =
         {| Params = compiled.Slots.Values
            SelectedId = doc.SelectedId
            HoveredTarget = hoveredTarget
+           HighlightedTarget = highlightedTarget
            DragTarget = dragTarget
            SelectedTargets = selectedTargets
+           HighlightedTargets = highlightedTargets
+           VisibleDimensionSketchIds = visibleDimensionSketchIds
            SketchUi = sketchUiState ()
            Frames = frames
            SketchFrames = sketchFrames

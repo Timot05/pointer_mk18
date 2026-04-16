@@ -25,6 +25,8 @@
     <Compile Include="Pipeline.fs" />
     <Compile Include="Palette.fs" />
     <Compile Include="Editor.fs" />
+    <Compile Include="DocumentPipeline.fs" />
+    <Compile Include="ViewerPipeline.fs" />
   </ItemGroup>
 
   <ItemGroup>

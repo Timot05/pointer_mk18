@@ -1,11 +1,6 @@
 namespace Server
 
 open System
-#if !FABLE_COMPILER
-open System.Text.Json
-open System.Text.Json.Nodes
-#endif
-open System.Text.Json.Serialization
 
 type EditorState =
     { Doc: Document
@@ -33,73 +28,6 @@ type ActionErrorView =
 type SketchLoopView =
     { Id: string
       EntityIds: string list }
-
-type DocumentView =
-    { Name: string
-      Actions: DocAction list
-      SelectedId: string option
-      SelectedTargets: SelectionTarget list
-      SketchUi: SketchUiState
-      RefOptions: Map<string, string list>
-      SketchLoops: Map<string, SketchLoopView list>
-      Errors: ActionErrorView list }
-
-type FrameView =
-    { Id: string
-      Transform: RigidTransform }
-
-type ConstraintLabelPositionView =
-    { SketchId: string
-      ConstraintIndex: int
-      Position: LabelPos }
-
-type DisplayStateView =
-    { Display: DisplaySettings
-      FieldSlice: FieldSliceSettings }
-
-type FieldSliceView =
-    { SurfaceIndex: int
-      PlaneOrigin: Vec3
-      PlaneX: Vec3
-      PlaneY: Vec3
-      Extent: float }
-
-type ViewerSketchView =
-    { Id: string
-      Origin: string option
-      Transform: RigidTransform
-      Sketch: ActionSketch
-      Graph: Graph
-      Loops: SketchLoopView list }
-
-type ViewerModel =
-    { Surfaces: FieldSurface list
-      FieldWgsl: string option
-      FieldSliceWgsl: string option
-      FieldSurfaceActionIds: string list
-      Sketches: ViewerSketchView list
-      NumSlots: int
-      SlotIndex: {| ActionId: string; Path: string; Slot: int |} list
-      Pickables: Pickable list }
-
-type ViewerState =
-    { Params: float array
-      SelectedId: string option
-      HoveredTarget: SelectionTarget option
-      HighlightedTarget: SelectionTarget option
-      DragTarget: SelectionTarget option
-      SelectedTargets: SelectionTarget list
-      HighlightedTargets: SelectionTarget list
-      VisibleDimensionSketchIds: string list
-      SketchUi: SketchUiState
-      Frames: FrameView list
-      SketchEditFrames: FrameView list
-      SketchOriginFrames: FrameView list
-      FieldSlices: FieldSliceView list
-      Visible: Map<string, bool>
-      ConstraintLabelPositions: ConstraintLabelPositionView list
-      Display: Map<string, DisplayStateView>
-      Errors: ActionErrorView list }
 
 type PickCandidateInput =
     { PickId: int
@@ -151,19 +79,6 @@ type Message =
 
 module Editor =
 
-#if !FABLE_COMPILER
-    let jsonOpts =
-        let o = JsonSerializerOptions(PropertyNamingPolicy = JsonNamingPolicy.CamelCase)
-        o.Converters.Add(
-            JsonFSharpConverter(
-                JsonUnionEncoding.InternalTag ||| JsonUnionEncoding.NamedFields ||| JsonUnionEncoding.UnwrapOption,
-                unionTagName = "case",
-                unionFieldNamingPolicy = JsonNamingPolicy.CamelCase
-            )
-        )
-        o
-#endif
-
     let initState () =
         let doc = Document.defaultDocument ()
         { Doc = doc
@@ -211,21 +126,20 @@ module Editor =
             |> Option.bind (fun a -> match a.Kind with Sketch _ -> Some id | _ -> None)
         | _ -> None
 
-    /// Frame actions that appear before the active sketch, with their transforms.
-    /// These are the frame origins that sketch can legitimately reference.
-    let sketchEditFrames (state: EditorState) =
+    /// Ids of frame actions that appear before the active sketch — the
+    /// frame origins the sketch is allowed to reference.
+    let sketchEditFrameIds (state: EditorState) : Set<string> =
         match activeSketchEditId state with
-        | None -> []
+        | None -> Set.empty
         | Some sketchId ->
             let i = state.Doc.Actions |> List.findIndex (fun a -> a.Id = sketchId)
             state.Doc.Actions
             |> List.take i
             |> List.choose (fun a ->
                 match Map.tryFind a.Id state.Compiled.TypeMap with
-                | Some FieldType.Frame ->
-                    Map.tryFind a.Id state.Compiled.Frames
-                    |> Option.map (fun t -> { Id = a.Id; Transform = t })
+                | Some FieldType.Frame -> Some a.Id
                 | _ -> None)
+            |> Set.ofList
 
     /// True when `target` belongs to the actively-edited sketch: either its
     /// own geometry (point/line/circle/arc/loop/dimension) or a frame origin
@@ -237,8 +151,7 @@ module Editor =
             match target with
             | TargetPoint(s, _) | TargetLine(s, _) | TargetCircle(s, _)
             | TargetArc(s, _) | TargetLoop(s, _) | TargetDimension(s, _) -> s = sid
-            | TargetFrameOrigin f ->
-                sketchEditFrames state |> List.exists (fun frame -> frame.Id = f)
+            | TargetFrameOrigin f -> Set.contains f (sketchEditFrameIds state)
             | _ -> false
 
     let isValidSelectionTarget (state: EditorState) target =
@@ -279,54 +192,6 @@ module Editor =
         match tryPoint2 sketch startId, tryPoint2 sketch endId with
         | Some a, Some b -> Some(a, b)
         | _ -> None
-
-    let localSliceBasis plane =
-        match plane with
-        | "X" -> { X = 0.0; Y = 1.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }, { X = 1.0; Y = 0.0; Z = 0.0 }
-        | "Y" -> { X = 1.0; Y = 0.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }, { X = 0.0; Y = 1.0; Z = 0.0 }
-        | _ -> { X = 1.0; Y = 0.0; Z = 0.0 }, { X = 0.0; Y = 1.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }
-
-    let rec leadingFieldTransform (state: EditorState) (field: FieldNode) (acc: RigidTransform) =
-        let slot (s: Slot) = state.Compiled.Slots.Values.[s]
-        match field with
-        | FTranslate(x, y, z, child) ->
-            let step = RigidTransform.translate { X = slot x; Y = slot y; Z = slot z }
-            leadingFieldTransform state child (acc * step)
-        | FRotate(ax, ay, az, angle, child) ->
-            let step = RigidTransform.fromAxisAngle { X = slot ax; Y = slot ay; Z = slot az } (slot angle)
-            leadingFieldTransform state child (acc * step)
-        | FFieldOp(_, _, child) ->
-            leadingFieldTransform state child acc
-        | _ ->
-            acc
-
-    let activeFieldSlices (state: EditorState) =
-        let surfaceIndexByAction =
-            state.Compiled.Surfaces
-            |> List.mapi (fun index surface -> surface.ActionId, (index, surface.Field))
-            |> Map.ofList
-
-        state.Doc.Actions
-        |> List.choose (fun action ->
-            let fs = action.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
-            if not action.Visible || not fs.Enabled then
-                None
-            else
-                match Map.tryFind action.Id surfaceIndexByAction with
-                | None -> None
-                | Some(surfaceIndex, field) ->
-                    let frame = leadingFieldTransform state field RigidTransform.Identity
-                    let localX, localY, localN = localSliceBasis fs.Plane
-                    let planeX = frame.Rot.Rotate(localX)
-                    let planeY = frame.Rot.Rotate(localY)
-                    let planeN = frame.Rot.Rotate(localN)
-                    let origin = frame.Trans + fs.Offset * planeN
-                    Some
-                        { SurfaceIndex = surfaceIndex
-                          PlaneOrigin = origin
-                          PlaneX = planeX
-                          PlaneY = planeY
-                          Extent = fs.Extent })
 
     let formatErrors (errs: TypeError list) =
         errs |> List.map (fun e ->
@@ -528,33 +393,6 @@ module Editor =
     let serializedModel (state: EditorState) =
         { Name = state.Doc.Name
           Actions = state.Doc.Actions }
-
-#if !FABLE_COMPILER
-    let deserializeSerializedModel (rawText: string) =
-        let root = JsonNode.Parse(rawText).AsObject()
-        match root["actions"] with
-        | :? JsonArray as actions ->
-            for actionNode in actions do
-                match actionNode with
-                | :? JsonObject as actionObj ->
-                    match actionObj["kind"] with
-                    | :? JsonObject as kindObj when kindObj["case"] <> null ->
-                        match kindObj["case"].GetValue<string>() with
-                        | "Sketch" ->
-                            match kindObj["plane"] with
-                            | :? JsonValue as planeValue ->
-                                let mutable plane = ""
-                                if planeValue.TryGetValue<string>(&plane) then
-                                    let planeObj = JsonObject()
-                                    planeObj["case"] <- JsonValue.Create(plane)
-                                    kindObj["plane"] <- planeObj
-                            | _ -> ()
-                        | _ -> ()
-                    | _ -> ()
-                | _ -> ()
-        | _ -> ()
-        JsonSerializer.Deserialize<SerializedModel>(root.ToJsonString(), jsonOpts)
-#endif
 
     let update (message: Message) (state: EditorState) =
         match message with
@@ -763,177 +601,3 @@ module Editor =
             loadDoc { Name = model.Name; Actions = model.Actions; SelectedId = selectedId } state
         | ClearModel ->
             loadDoc (Document.emptyDocument ()) state
-
-    let documentView (state: EditorState) =
-        let tm = state.Compiled.TypeMap
-        let errors = formatErrors state.Compiled.Errors
-        let refOptions =
-            match state.Doc.SelectedId with
-            | None -> Map.empty
-            | Some selId ->
-                match state.Doc.Actions |> List.tryFind (fun a -> a.Id = selId) with
-                | None -> Map.empty
-                | Some sel ->
-                    let selIdx = state.Doc.Actions |> List.findIndex (fun a -> a.Id = selId)
-                    let before = state.Doc.Actions |> List.take selIdx
-                    let accepted = TypeCheck.acceptedInputs sel.Kind
-                    accepted
-                    |> Map.map (fun _key types ->
-                        before
-                        |> List.choose (fun a ->
-                            match Map.tryFind a.Id tm with
-                            | Some t when List.contains t types -> Some a.Id
-                            | _ -> None))
-
-        let actions =
-            state.Doc.Actions
-            |> List.map (fun a ->
-                match Map.tryFind a.Id tm with
-                | Some FieldType.Field ->
-                    { a with
-                        Display = Some(a.Display |> Option.defaultValue DisplaySettings.defaults)
-                        FieldSlice = Some(a.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults) }
-                | _ ->
-                    { a with Display = None; FieldSlice = None })
-
-        let sketchLoops =
-            actions
-            |> List.choose (fun a ->
-                match a.Kind with
-                | Sketch(_, _, sketch) ->
-                    let loops =
-                        SketchLoops.detectLoops sketch.Entities
-                        |> List.map (fun loop -> { Id = loop.Id; EntityIds = loop.EntityIds })
-                    Some(a.Id, loops)
-                | _ -> None)
-            |> Map.ofList
-
-        { Name = state.Doc.Name
-          Actions = actions
-          SelectedId = state.Doc.SelectedId
-          SelectedTargets = state.SelectedTargets
-          SketchUi = sketchUiState state
-          RefOptions = refOptions
-          SketchLoops = sketchLoops
-          Errors = errors }
-
-    let paletteView (state: EditorState) =
-        Palette.toState state.PaletteSession state.Compiled.TypeMap state.Doc
-
-    let viewerModel (state: EditorState) =
-        let indexList =
-            state.Compiled.Slots.Index
-            |> Map.toList
-            |> List.map (fun (r, s) -> {| ActionId = r.ActionId; Path = r.Path; Slot = s |})
-        let sketches =
-            state.Doc.Actions
-            |> List.choose (fun a ->
-                match a.Kind with
-                | Sketch(origin, plane, sk) ->
-                    let sketchOrigin = resolveSketchTransform state origin plane
-                    let ctx: SketchCompileContext =
-                        { SketchOrigin = sketchOrigin; Frames = state.Compiled.Frames }
-                    let graph = SketchCompile.compile sk ctx
-                    let loops =
-                        SketchLoops.detectLoops sk.Entities
-                        |> List.map (fun l -> { Id = l.Id; EntityIds = l.EntityIds })
-                    Some
-                        { Id = a.Id
-                          Origin = origin
-                          Transform = sketchOrigin
-                          Sketch = sk
-                          Graph = graph
-                          Loops = loops }
-                | _ -> None)
-        { Surfaces = state.Compiled.Surfaces
-          FieldWgsl = GpuIsosurface.combinedIsosurfaceWgsl state.Compiled.Surfaces
-          FieldSliceWgsl = GpuFieldSlice.combinedFieldSliceWgsl state.Compiled.Surfaces
-          FieldSurfaceActionIds = state.Compiled.Surfaces |> List.map (fun s -> s.ActionId)
-          Sketches = sketches
-          NumSlots = state.Compiled.Slots.Values.Length
-          SlotIndex = indexList
-          Pickables = state.Compiled.Pickables }
-
-    let viewerState (state: EditorState) =
-        let isDraggable =
-            function
-            | TargetPoint _ | TargetDimension _ as t -> belongsToActiveSketch state t
-            | _ -> false
-        let dragTarget = state.HoveredTarget |> Option.filter isDraggable
-
-        let frameHighlightAllowed = state.ConstraintPlacementMode <> Some "angle"
-        let highlightedTargetAllowed target =
-            match target with
-            | TargetSurface _ -> true
-            | TargetFrameAxis _ -> false
-            | TargetFrameOrigin _ -> frameHighlightAllowed && belongsToActiveSketch state target
-            | _ -> belongsToActiveSketch state target
-
-        let visibleDimensionSketchIds =
-            match state.SketchEditMode, state.Doc.SelectedId with
-            | true, Some selectedId ->
-                match state.Doc.Actions |> List.tryFind (fun a -> a.Id = selectedId) with
-                | Some { Kind = Sketch _ } -> [ selectedId ]
-                | _ -> []
-            | _ -> []
-
-        let displayByAction =
-            state.Doc.Actions
-            |> List.choose (fun a ->
-                match Map.tryFind a.Id state.Compiled.TypeMap with
-                | Some FieldType.Field ->
-                    let d = a.Display |> Option.defaultValue DisplaySettings.defaults
-                    let fs = a.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
-                    Some(a.Id, { Display = d; FieldSlice = fs })
-                | _ -> None)
-            |> Map.ofList
-
-        let frames =
-            state.Doc.Actions
-            |> List.choose (fun a ->
-                match Map.tryFind a.Id state.Compiled.TypeMap with
-                | Some FieldType.Frame ->
-                    Map.tryFind a.Id state.Compiled.Frames
-                    |> Option.map (fun t -> { Id = a.Id; Transform = t })
-                | _ -> None)
-
-        let sketchFrames =
-            state.Doc.Actions
-            |> List.choose (fun a ->
-                match a.Kind with
-                | Sketch(origin, plane, _) ->
-                    Some { Id = a.Id; Transform = resolveSketchTransform state origin plane }
-                | _ -> None)
-
-        let visibleByAction =
-            state.Doc.Actions |> List.map (fun a -> a.Id, a.Visible) |> Map.ofList
-
-        let constraintLabelPositions =
-            state.Doc.Actions
-            |> List.collect (fun a ->
-                match a.Kind with
-                | Sketch(_, _, sk) ->
-                    sk.Constraints
-                    |> List.mapi (fun i c ->
-                        SketchConstraint.labelPos c
-                        |> Option.map (fun pos -> { SketchId = a.Id; ConstraintIndex = i; Position = pos }))
-                    |> List.choose id
-                | _ -> [])
-
-        { Params = state.Compiled.Slots.Values
-          SelectedId = state.Doc.SelectedId
-          HoveredTarget = state.HoveredTarget
-          HighlightedTarget = state.HoveredTarget |> Option.filter highlightedTargetAllowed
-          DragTarget = dragTarget
-          SelectedTargets = state.SelectedTargets
-          HighlightedTargets = state.SelectedTargets |> List.filter highlightedTargetAllowed
-          VisibleDimensionSketchIds = visibleDimensionSketchIds
-          SketchUi = sketchUiState state
-          Frames = frames
-          SketchEditFrames = sketchEditFrames state
-          SketchOriginFrames = sketchFrames
-          FieldSlices = activeFieldSlices state
-          Visible = visibleByAction
-          ConstraintLabelPositions = constraintLabelPositions
-          Display = displayByAction
-          Errors = formatErrors state.Compiled.Errors }

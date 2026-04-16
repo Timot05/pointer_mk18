@@ -97,9 +97,9 @@ let ``Editor selectors expose coherent document and viewer state`` () =
             [ SelectAction "sketch1"
               ToggleSketchEdit ]
 
-    let document = Editor.documentView state
-    let viewerModel = Editor.viewerModel state
-    let viewerState = Editor.viewerState state
+    let document = DocumentPipeline.documentView state
+    let viewerModel = ViewerPipeline.viewerModel state
+    let viewerState = ViewerPipeline.viewerState state
 
     Assert.Equal(Some "sketch1", document.SelectedId)
     Assert.True(document.SketchUi.EditMode)

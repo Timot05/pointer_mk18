@@ -55,8 +55,6 @@ type [<AllowNullLiteral>] IGPUCommandEncoder =
     abstract finish: unit -> IGPUCommandBuffer
 
 type [<AllowNullLiteral>] IGPUQueue =
-    abstract writeBuffer: buffer: IGPUBuffer * offset: int * data: float32[] -> unit
-    abstract writeBuffer: buffer: IGPUBuffer * offset: int * data: uint32[] -> unit
     abstract submit: commandBuffers: IGPUCommandBuffer[] -> unit
 
 type GPUBufferDescriptor = { size: int; usage: int }
@@ -102,6 +100,12 @@ module WebGpu =
 
     let gpu () : IGPU option =
         if isNull gpuRaw then None else Some gpuRaw
+
+    [<Emit("$0.writeBuffer($1, $2, new Float32Array($3))")>]
+    let writeFloat32Buffer (queue: IGPUQueue) (buffer: IGPUBuffer) (offset: int) (data: float32[]) : unit = jsNative
+
+    [<Emit("$0.writeBuffer($1, $2, new Uint32Array($3))")>]
+    let writeUint32Buffer (queue: IGPUQueue) (buffer: IGPUBuffer) (offset: int) (data: uint32[]) : unit = jsNative
 
     [<Emit("new Float32Array($0).slice()")>]
     let f32ArrayOf (buffer: JS.ArrayBuffer) : float32[] = jsNative

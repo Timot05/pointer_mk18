@@ -2228,11 +2228,7 @@ function buildSketchBuffers(
         resolveValue(`sketch.entity.${entity.id}.x`, entity.x),
         resolveValue(`sketch.entity.${entity.id}.y`, entity.y),
       ];
-      if (drag?.kind === "point" && drag.sketchId === viewerSketch.id && drag.pointId === entity.id) {
-        pointMap.set(entity.id, drag.target);
-      } else {
-        pointMap.set(entity.id, resolved);
-      }
+      pointMap.set(entity.id, resolved);
     }
   }
 

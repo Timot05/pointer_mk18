@@ -13,6 +13,8 @@ open Browser.Dom
 // ---------------------------------------------------------------------------
 
 let mutable private solverCache : Map<string, string * IGpuSolver> = Map.empty
+let mutable private solveInFlight : Set<string> = Set.empty
+let mutable private pendingSolveBySketch : Map<string, SketchDrag * bool> = Map.empty
 
 let private activeSketchGraphKeys (state: EditorState) =
     ViewerPipeline.viewerModel state
@@ -26,15 +28,17 @@ let private pruneSolverCache (state: EditorState) =
 
     solverCache
     |> Map.iter (fun sketchId (cachedKey, solver) ->
-        match Map.tryFind sketchId active with
-        | Some activeKey when activeKey = cachedKey -> ()
+        match (Set.contains sketchId solveInFlight, Map.tryFind sketchId active) with
+        | true, _ -> ()
+        | false, Some activeKey when activeKey = cachedKey -> ()
         | _ -> solver.Destroy())
 
     solverCache <-
         solverCache
         |> Map.filter (fun sketchId (cachedKey, _) ->
-            match Map.tryFind sketchId active with
-            | Some activeKey when activeKey = cachedKey -> true
+            match (Set.contains sketchId solveInFlight, Map.tryFind sketchId active) with
+            | true, _ -> true
+            | false, Some activeKey when activeKey = cachedKey -> true
             | _ -> false)
 
 let private ensureSolver (sketchId: string) (graphKey: string) (graph: Graph) =
@@ -53,10 +57,11 @@ let private ensureSolver (sketchId: string) (graphKey: string) (graph: Graph) =
             return next
     }
 
-let private runEffect (store: Store.Store<EditorState, Message>) (effect: Effect) : unit =
-    match effect with
-    | RunSketchSolve drag ->
-        promise {
+let rec private startSketchSolve (store: Store.Store<EditorState, Message>) (drag: SketchDrag) (usePins: bool) : unit =
+    solveInFlight <- solveInFlight |> Set.add drag.SketchId
+
+    promise {
+        try
             let state = store.State
             pruneSolverCache state
             let model = ViewerPipeline.viewerModel state
@@ -78,13 +83,44 @@ let private runEffect (store: Store.Store<EditorState, Message>) (effect: Effect
                     let globalSlot = binding.LocalToGlobal.[i]
                     initialLocal.[i] <- float32 state.Compiled.Slots.Values.[globalSlot]
 
-                let pins = SketchSolve.buildPins drag.XField drag.YField drag.Target binding
+                let pins =
+                    if usePins then
+                        SketchSolve.buildPins 4.0 drag.XField drag.YField drag.Target binding
+                    else
+                        []
                 let! solved = GpuLmSolver.solveGraphWithGpu sketch.Graph solver initialLocal pins GpuLmSolver.defaultSolverConfig
                 Store.dispatch store (ApplySketchSolveResult(drag, solved))
             | None ->
                 ()
-        }
-        |> Promise.catchEnd (fun error -> console.error("RunSketchSolve failed", error))
+        with error ->
+            console.error("RunSketchSolve failed", error)
+
+        completeSketchSolve store drag.SketchId
+    }
+    |> ignore
+
+and private completeSketchSolve (store: Store.Store<EditorState, Message>) (sketchId: string) =
+    solveInFlight <- solveInFlight |> Set.remove sketchId
+
+    match Map.tryFind sketchId pendingSolveBySketch with
+    | Some(next, usePins) ->
+        pendingSolveBySketch <- pendingSolveBySketch |> Map.remove sketchId
+        startSketchSolve store next usePins
+    | None ->
+        pruneSolverCache store.State
+
+let private runEffect (store: Store.Store<EditorState, Message>) (effect: Effect) : unit =
+    match effect with
+    | RunSketchSolve drag ->
+        if Set.contains drag.SketchId solveInFlight then
+            pendingSolveBySketch <- pendingSolveBySketch |> Map.add drag.SketchId (drag, true)
+        else
+            startSketchSolve store drag true
+    | FinalizeSketchDrag drag ->
+        if Set.contains drag.SketchId solveInFlight then
+            pendingSolveBySketch <- pendingSolveBySketch |> Map.add drag.SketchId (drag, false)
+        else
+            startSketchSolve store drag false
 
 let store = Store.create Editor.update runEffect (Editor.initState ())
 

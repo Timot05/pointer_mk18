@@ -57,7 +57,7 @@ module SketchSolve =
           LocalToGlobal = localToGlobal
           VarIndexByLocal = varIndexByLocal }
 
-    let buildPins (xField: ActionParamField) (yField: ActionParamField) (target: LabelPos) (binding: SketchSolveBinding) : SolverPin list =
+    let buildPins (weight: float) (xField: ActionParamField) (yField: ActionParamField) (target: LabelPos) (binding: SketchSolveBinding) : SolverPin list =
         let findLocal field =
             binding.LocalFields |> Array.tryFindIndex ((=) field)
 
@@ -68,11 +68,11 @@ module SketchSolve =
                 [ { LocalSlot = xLocal
                     VarIndex = xVar
                     Target = target.X
-                    Weight = 20.0 }
+                    Weight = weight }
                   { LocalSlot = yLocal
                     VarIndex = yVar
                     Target = target.Y
-                    Weight = 20.0 } ]
+                    Weight = weight } ]
             | _ ->
                 []
         | _ ->

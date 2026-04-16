@@ -93,6 +93,7 @@ type PickCandidateInput =
 
 type Effect =
     | RunSketchSolve of SketchDrag
+    | FinalizeSketchDrag of SketchDrag
 
 type Message =
     | SelectAction of string
@@ -530,7 +531,7 @@ module Editor =
         | FinishSketchDrag ->
             match state.ActiveSketchDrag with
             | Some drag ->
-                { state with PendingSketchDragCommit = true }, [ RunSketchSolve drag ]
+                { state with PendingSketchDragCommit = true }, [ FinalizeSketchDrag drag ]
             | None ->
                 { state with PendingSketchDragCommit = false; SolvedSketchParams = Map.empty }, noEffects
         | CancelSketchDrag ->

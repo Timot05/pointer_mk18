@@ -227,6 +227,7 @@ let private renderGeometricSection
 let private renderDimensionSection
         (dispatch: Message -> unit)
         (doc: DocumentView)
+        (sketch: ActionSketch)
         : HTMLElement =
     let section = Dom.el "div" "constraint-section"
     let header = Dom.el "div" "constraint-section-header"
@@ -251,6 +252,7 @@ let private renderDimensionSection
         button.addEventListener ("click", fun _ -> dispatch (ToggleConstraintPlacement b.Kind))
         row.appendChild (button :> Node) |> ignore
     section.appendChild (row :> Node) |> ignore
+    renderExistingConstraints dispatch sketch true section
     section
 
 // ── Top-level overlay ──────────────────────────────────────────────────
@@ -265,7 +267,7 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement option 
 
             let panel = Dom.el "div" "constraints-panel"
             panel.appendChild (renderGeometricSection dispatch doc sketch :> Node) |> ignore
-            panel.appendChild (renderDimensionSection dispatch doc :> Node) |> ignore
+            panel.appendChild (renderDimensionSection dispatch doc sketch :> Node) |> ignore
             overlay.appendChild (panel :> Node) |> ignore
             Some overlay
         | _ -> None

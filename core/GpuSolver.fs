@@ -154,7 +154,7 @@ fn reverse(@builtin(global_invocation_id) gid: vec3u) {
                     { size = 16
                       usage = GPUBufferUsage.Uniform ||| GPUBufferUsage.CopyDst }
 
-            device.queue.writeBuffer(shapeBuf, 0, [| uint32 nNodes; uint32 nParams; uint32 nVars; uint32 nRes |])
+            WebGpu.writeUint32Buffer device.queue shapeBuf 0 [| uint32 nNodes; uint32 nParams; uint32 nVars; uint32 nRes |]
 
             let nodesBuf =
                 device.createBuffer
@@ -162,7 +162,7 @@ fn reverse(@builtin(global_invocation_id) gid: vec3u) {
                       usage = GPUBufferUsage.Storage ||| GPUBufferUsage.CopyDst }
 
             if packed.PackedNodes.Length > 0 then
-                device.queue.writeBuffer(nodesBuf, 0, packed.PackedNodes)
+                WebGpu.writeUint32Buffer device.queue nodesBuf 0 packed.PackedNodes
 
             let constsBuf =
                 device.createBuffer
@@ -170,7 +170,7 @@ fn reverse(@builtin(global_invocation_id) gid: vec3u) {
                       usage = GPUBufferUsage.Storage ||| GPUBufferUsage.CopyDst }
 
             if packed.Consts.Length > 0 then
-                device.queue.writeBuffer(constsBuf, 0, packed.Consts)
+                WebGpu.writeFloat32Buffer device.queue constsBuf 0 packed.Consts
 
             let outputsData = graph.Outputs |> Array.map uint32
             let outputsBuf =
@@ -179,7 +179,7 @@ fn reverse(@builtin(global_invocation_id) gid: vec3u) {
                       usage = GPUBufferUsage.Storage ||| GPUBufferUsage.CopyDst }
 
             if outputsData.Length > 0 then
-                device.queue.writeBuffer(outputsBuf, 0, outputsData)
+                WebGpu.writeUint32Buffer device.queue outputsBuf 0 outputsData
 
             let varSlotNodeBuf =
                 device.createBuffer
@@ -187,7 +187,7 @@ fn reverse(@builtin(global_invocation_id) gid: vec3u) {
                       usage = GPUBufferUsage.Storage ||| GPUBufferUsage.CopyDst }
 
             if packed.VarSlotNodes.Length > 0 then
-                device.queue.writeBuffer(varSlotNodeBuf, 0, packed.VarSlotNodes)
+                WebGpu.writeUint32Buffer device.queue varSlotNodeBuf 0 packed.VarSlotNodes
 
             let paramsSize = floatBytes (maxBatch * nParams)
             let valuesSize = floatBytes (maxBatch * nNodes)
@@ -243,7 +243,7 @@ fn reverse(@builtin(global_invocation_id) gid: vec3u) {
                             if batch > maxBatch then
                                 failwithf "Batch %d exceeds solver capacity %d" batch maxBatch
 
-                            device.queue.writeBuffer(paramsBuf, 0, paramsBatched)
+                            WebGpu.writeFloat32Buffer device.queue paramsBuf 0 paramsBatched
                             let encoder = device.createCommandEncoder ()
 
                             let forwardPass = encoder.beginComputePass ()

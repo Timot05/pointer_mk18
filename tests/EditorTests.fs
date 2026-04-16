@@ -128,7 +128,7 @@ let ``Sketch drag messages update editor drag state and emit solve effects`` () 
     Assert.Single(moveEffects) |> ignore
     Assert.Equal(RunSketchSolve { drag with Target = { X = 3.0; Y = 4.0 } }, List.head moveEffects)
     Assert.Single(finishEffects) |> ignore
-    Assert.Equal(RunSketchSolve { drag with Target = { X = 3.0; Y = 4.0 } }, List.head finishEffects)
+    Assert.Equal(FinalizeSketchDrag { drag with Target = { X = 3.0; Y = 4.0 } }, List.head finishEffects)
     Assert.True(finished.PendingSketchDragCommit)
     Assert.Equal(Some { drag with Target = { X = 3.0; Y = 4.0 } }, finished.ActiveSketchDrag)
 
@@ -151,6 +151,54 @@ let ``Clear model cancels any active sketch drag`` () =
     let cleared = Editor.update ClearModel dragging |> fst
 
     Assert.True(cleared.ActiveSketchDrag.IsNone)
+
+[<Fact>]
+let ``ViewerPlaceConstraint stores a labelPosition on the new distance constraint`` () =
+    // Baseline: default sketch1 has two existing Distance constraints (both
+    // with labelPosition = None). We place a new one and verify its label
+    // position gets stored — otherwise ViewerPipeline.viewerState drops it
+    // from ConstraintLabelPositions and the viewer renders no number.
+    let baseline =
+        Editor.initState ()
+        |> updateMany
+            [ SelectAction "sketch1"
+              ToggleSketchEdit
+              ToggleConstraintPlacement DistancePlacement
+              SetSelectedTargets
+                  [ TargetPoint("sketch1", "p_bl")
+                    TargetPoint("sketch1", "p_tr") ] ]
+
+    let countDistances (state: EditorState) =
+        state.Doc.Actions
+        |> List.tryFind (fun a -> a.Id = "sketch1")
+        |> Option.map (fun action ->
+            match action.Kind with
+            | Sketch(_, _, sk) ->
+                sk.Constraints |> List.filter (function Distance _ -> true | _ -> false)
+            | _ -> [])
+        |> Option.defaultValue []
+
+    let before = countDistances baseline
+
+    let placed =
+        Editor.update (ViewerPlaceConstraint(5.5, 3.25)) baseline |> fst
+
+    let after = countDistances placed
+
+    // A new Distance constraint was actually added
+    Assert.Equal(before.Length + 1, after.Length)
+
+    // The newly-added one (last in the list, since placePendingConstraint
+    // appends) must carry a label position — otherwise viewer drops it
+    let newest = List.last after
+    match newest with
+    | Distance(_, _, _, Some pos) ->
+        Assert.Equal(5.5, pos.X, 6)
+        Assert.Equal(3.25, pos.Y, 6)
+    | Distance(_, _, _, None) ->
+        failwith "Distance constraint was placed without a labelPosition — viewer will drop it from ConstraintLabelPositions"
+    | other ->
+        failwithf "Expected a Distance constraint, got %A" other
 
 [<Fact>]
 let ``Applying a matching solved drag result during finish commits sketch params`` () =

@@ -111,3 +111,28 @@ let forTemplate (t: ActionTemplate) : Element =
 //Fallback icon when no specific kind/template is known.
 let fallback () : Element =
     buildSvg layers
+
+// Map a string kind name (as seen in PaletteItem.Kind) to an icon.
+// The command palette carries string case names for historical reasons.
+let private descriptorForKindName (name: string) : obj =
+    match name with
+    | "Origin" -> zAxis
+    | "Cylinder" -> db2Database
+    | "Sphere" -> circleOutline
+    | "Box" -> cube
+    | "HalfPlane" -> squareOutline
+    | "Translate" -> moveIcon
+    | "Rotate" -> rotateIcon
+    | "Move" -> moveIcon
+    | "Union" -> joinFull
+    | "Intersect" -> joinInner
+    | "Subtract" -> joinLeft
+    | "Sketch" -> pen
+    | "FromSketch" -> shapeUnite
+    | "Thicken" -> containerImage
+    | "Shell" -> circleDash
+    | "Mesh" -> triangleOutline
+    | _ -> layers
+
+let forKindName (name: string) : Element =
+    buildSvg (descriptorForKindName name)

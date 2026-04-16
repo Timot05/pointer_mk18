@@ -13,7 +13,9 @@
     <Compile Include="ActionList.fs" />
     <Compile Include="ParamsPanel.fs" />
     <Compile Include="SketchOverlay.fs" />
+    <Compile Include="CommandPalette.fs" />
     <Compile Include="Shell.fs" />
+    <Compile Include="Shortcuts.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

@@ -58,6 +58,78 @@ type DocAction =
       Display: DisplaySettings option
       FieldSlice: FieldSliceSettings option }
 
+type DisplayField =
+    | DisplayColor
+    | DisplayOpacity
+    | DisplayIsoValue
+
+type FieldSliceField =
+    | SlicePlane
+    | SliceOffset
+
+type SketchEntityField =
+    | PointX
+    | PointY
+    | CircleRadius
+    | ArcThroughX
+    | ArcThroughY
+
+type SketchConstraintField =
+    | ConstraintLabelX
+    | ConstraintLabelY
+    | ConstraintDistance
+    | ConstraintDiameter
+    | ConstraintAngle
+
+type FromSketchSelectionValue =
+    | SelectionLoopValue of string option
+    | SelectionElementsValue of string list
+
+type ActionParamField =
+    | CylinderRadius
+    | CylinderHeight
+    | SphereRadius
+    | BoxWidth
+    | BoxHeight
+    | BoxDepth
+    | TranslateChild
+    | TranslateX
+    | TranslateY
+    | TranslateZ
+    | RotateChild
+    | RotateAxisX
+    | RotateAxisY
+    | RotateAxisZ
+    | RotateAngle
+    | HalfPlaneAxis
+    | HalfPlaneOffset
+    | HalfPlaneFlip
+    | MoveChild
+    | MoveFrame
+    | UnionA
+    | UnionB
+    | UnionRadius
+    | SubtractA
+    | SubtractB
+    | SubtractRadius
+    | IntersectA
+    | IntersectB
+    | IntersectRadius
+    | SketchOrigin
+    | SketchPlane
+    | SketchEntityField of string * SketchEntityField
+    | SketchConstraintField of int * SketchConstraintField
+    | FromSketchChild
+    | FromSketchFlip
+    | FromSketchSelection
+    | ThickenChild
+    | ThickenAmount
+    | ShellChild
+    | ShellThickness
+    | MeshChild
+    | MeshSize
+    | MeshResolution
+
 type ParamValue =
     | VNull
     | VBool of bool
@@ -232,16 +304,15 @@ module Document =
                         { a with
                             Display = Some { d with Enabled = not d.Enabled } }) }
 
-    let patchDisplayValue (id: string) (key: string) (value: ParamValue) (doc: Document) : Document =
+    let patchDisplayValue (id: string) (field: DisplayField) (value: ParamValue) (doc: Document) : Document =
         mapActionById id
             (fun action ->
                 let display = action.Display |> Option.defaultValue DisplaySettings.defaults
                 let nextDisplay =
-                    match key with
-                    | "color" -> applyWhenSome ParamValue.asFloatArray (fun next -> { display with Color = next }) display value
-                    | "opacity" -> applyWhenSome ParamValue.asFloat (fun next -> { display with Opacity = next }) display value
-                    | "isoValue" -> applyWhenSome ParamValue.asFloat (fun next -> { display with IsoValue = next }) display value
-                    | _ -> display
+                    match field with
+                    | DisplayColor -> applyWhenSome ParamValue.asFloatArray (fun next -> { display with Color = next }) display value
+                    | DisplayOpacity -> applyWhenSome ParamValue.asFloat (fun next -> { display with Opacity = next }) display value
+                    | DisplayIsoValue -> applyWhenSome ParamValue.asFloat (fun next -> { display with IsoValue = next }) display value
                 { action with Display = Some nextDisplay })
             doc
 
@@ -252,15 +323,14 @@ module Document =
                 { action with FieldSlice = Some { fieldSlice with Enabled = not fieldSlice.Enabled } })
             doc
 
-    let patchFieldSliceValue (id: string) (key: string) (value: ParamValue) (doc: Document) : Document =
+    let patchFieldSliceValue (id: string) (field: FieldSliceField) (value: ParamValue) (doc: Document) : Document =
         mapActionById id
             (fun action ->
                 let fieldSlice = action.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
                 let nextFieldSlice =
-                    match key with
-                    | "plane" -> applyWhenSome ParamValue.asString (fun next -> { fieldSlice with Plane = next }) fieldSlice value
-                    | "offset" -> applyWhenSome ParamValue.asFloat (fun next -> { fieldSlice with Offset = next }) fieldSlice value
-                    | _ -> fieldSlice
+                    match field with
+                    | SlicePlane -> applyWhenSome ParamValue.asString (fun next -> { fieldSlice with Plane = next }) fieldSlice value
+                    | SliceOffset -> applyWhenSome ParamValue.asFloat (fun next -> { fieldSlice with Offset = next }) fieldSlice value
                 { action with FieldSlice = Some nextFieldSlice })
             doc
 
@@ -270,128 +340,162 @@ module Document =
         { doc with
             Actions = ids |> List.choose (fun id -> Map.tryFind id lookup) }
 
-    let private patchSketchEntityParam (key: string) (value: ParamValue) (sketch: ActionSketch) =
-        let parts = key.Split('.')
+    let private patchSketchEntityParam entityId field value (sketch: ActionSketch) =
+        let entities =
+            sketch.Entities
+            |> List.map (fun entity ->
+                match entity with
+                | REPoint(id, x, y) when id = entityId ->
+                    let number = ParamValue.asFloat value
+                    REPoint(
+                        id,
+                        (match field with | PointX -> number |> Option.defaultValue x | _ -> x),
+                        (match field with | PointY -> number |> Option.defaultValue y | _ -> y)
+                    )
+                | RECircle(id, center, radius) when id = entityId && field = CircleRadius ->
+                    RECircle(id, center, applyWhenSome ParamValue.asFloat (fun next -> next) radius value)
+                | REArc(id, startId, endId, ArcThreePoint through) when id = entityId ->
+                    let number = ParamValue.asFloat value
+                    let through' : FreePoint =
+                        { X = (match field with | ArcThroughX -> number |> Option.defaultValue through.X | _ -> through.X)
+                          Y = (match field with | ArcThroughY -> number |> Option.defaultValue through.Y | _ -> through.Y) }
+                    REArc(id, startId, endId, ArcThreePoint through')
+                | _ -> entity)
+        { sketch with Entities = entities }
 
-        if parts.Length <> 4 || parts.[0] <> "sketch" || parts.[1] <> "entity" then
-            sketch
-        else
-            let entityId = parts.[2]
-            let field = parts.[3]
+    let private patchFromSketchSelection current =
+        function
+        | SelectionElementsValue lineIds -> SelectionElements lineIds
+        | SelectionLoopValue loopId -> SelectionLoop loopId
 
-            let entities =
-                sketch.Entities
-                |> List.map (fun entity ->
-                    match entity with
-                    | REPoint(id, x, y) when id = entityId ->
-                        let number = ParamValue.asFloat value
-                        REPoint(id, (if field = "x" then number |> Option.defaultValue x else x), (if field = "y" then number |> Option.defaultValue y else y))
-                    | RECircle(id, center, radius) when id = entityId && field = "radius" ->
-                        RECircle(id, center, applyWhenSome ParamValue.asFloat (fun next -> next) radius value)
-                    | REArc(id, startId, endId, ArcThreePoint through) when id = entityId ->
-                        let number = ParamValue.asFloat value
-                        let through' : FreePoint =
-                            { X = if field = "throughX" then number |> Option.defaultValue through.X else through.X
-                              Y = if field = "throughY" then number |> Option.defaultValue through.Y else through.Y }
-                        REArc(id, startId, endId, ArcThreePoint through')
-                    | _ -> entity)
+    let private patchSketchConstraintParam index field value (sketch: ActionSketch) =
+        let constraints =
+            sketch.Constraints
+            |> List.mapi (fun i item ->
+                if i <> index then
+                    item
+                else
+                    match field with
+                    | ConstraintLabelX -> patchConstraintLabel "x" value item
+                    | ConstraintLabelY -> patchConstraintLabel "y" value item
+                    | ConstraintDistance
+                    | ConstraintDiameter
+                    | ConstraintAngle -> patchConstraintScalar value item)
+        { sketch with Constraints = constraints }
 
-            { sketch with Entities = entities }
-
-    let private patchSketchConstraintParam (key: string) (value: ParamValue) (sketch: ActionSketch) =
-        let parts = key.Split('.')
-
-        if parts.Length < 4 || parts.[0] <> "sketch" || parts.[1] <> "constraint" then
-            sketch
-        else
-            match System.Int32.TryParse(parts.[2]) with
-            | false, _ -> sketch
-            | true, index ->
-                let constraints =
-                    sketch.Constraints
-                    |> List.mapi (fun i item ->
-                        if i <> index then
-                            item
-                        else
-                            match parts.[3], item with
-                            | "labelPosition", _ when parts.Length = 5 ->
-                                patchConstraintLabel parts.[4] value item
-                            | "distance", _
-                            | "diameter", _
-                            | "angle", _ ->
-                                patchConstraintScalar value item
-                            | _ -> item)
-
-                { sketch with
-                    Constraints = constraints }
-
-    let patchParamValue (id: string) (key: string) (value: ParamValue) (doc: Document) : Document =
-        let patchFromSketchSelection current =
-            if key <> "selection" then
-                current
-            else
-                match ParamValue.tryField "case" value |> Option.bind ParamValue.asString with
-                | Some "SelectionElements" ->
-                    let lineIds =
-                        ParamValue.tryField "lineIds" value
-                        |> Option.bind (function
-                            | VArray items ->
-                                List.foldBack
-                                    (fun item acc ->
-                                        match item, acc with
-                                        | Some x, Some xs -> Some(x :: xs)
-                                        | _ -> None)
-                                    (items |> List.map ParamValue.asString)
-                                    (Some [])
-                            | _ -> None)
-                        |> Option.defaultValue []
-                    SelectionElements lineIds
-                | _ ->
-                    SelectionLoop(ParamValue.tryField "loopId" value |> Option.bind ParamValue.asStringOption)
+    let patchParamValue (id: string) (field: ActionParamField) (value: ParamValue) (doc: Document) : Document =
 
         mapActionById id
             (fun action ->
                 let nextKind =
                     match action.Kind with
-                    | Cylinder(r, h) -> Cylinder(floatOr r key "radius" value, floatOr h key "height" value)
-                    | Sphere r -> Sphere(floatOr r key "radius" value)
-                    | Box(w, h, d) -> Box(floatOr w key "width" value, floatOr h key "height" value, floatOr d key "depth" value)
+                    | Cylinder(r, h) ->
+                        Cylinder(
+                            (match field with | CylinderRadius -> value |> ParamValue.asFloat |> Option.defaultValue r | _ -> r),
+                            (match field with | CylinderHeight -> value |> ParamValue.asFloat |> Option.defaultValue h | _ -> h))
+                    | Sphere r ->
+                        Sphere(match field with | SphereRadius -> value |> ParamValue.asFloat |> Option.defaultValue r | _ -> r)
+                    | Box(w, h, d) ->
+                        Box(
+                            (match field with | BoxWidth -> value |> ParamValue.asFloat |> Option.defaultValue w | _ -> w),
+                            (match field with | BoxHeight -> value |> ParamValue.asFloat |> Option.defaultValue h | _ -> h),
+                            (match field with | BoxDepth -> value |> ParamValue.asFloat |> Option.defaultValue d | _ -> d))
                     | Translate(c, x, y, z) ->
-                        Translate(stringOptionOr c key "child" value, floatOr x key "x" value, floatOr y key "y" value, floatOr z key "z" value)
+                        Translate(
+                            (match field with | TranslateChild -> ParamValue.asStringOption value | _ -> c),
+                            (match field with | TranslateX -> value |> ParamValue.asFloat |> Option.defaultValue x | _ -> x),
+                            (match field with | TranslateY -> value |> ParamValue.asFloat |> Option.defaultValue y | _ -> y),
+                            (match field with | TranslateZ -> value |> ParamValue.asFloat |> Option.defaultValue z | _ -> z))
                     | Rotate(c, ax, ay, az, ang) ->
-                        Rotate(stringOptionOr c key "child" value, floatOr ax key "ax" value, floatOr ay key "ay" value, floatOr az key "az" value, floatOr ang key "angle" value)
+                        Rotate(
+                            (match field with | RotateChild -> ParamValue.asStringOption value | _ -> c),
+                            (match field with | RotateAxisX -> value |> ParamValue.asFloat |> Option.defaultValue ax | _ -> ax),
+                            (match field with | RotateAxisY -> value |> ParamValue.asFloat |> Option.defaultValue ay | _ -> ay),
+                            (match field with | RotateAxisZ -> value |> ParamValue.asFloat |> Option.defaultValue az | _ -> az),
+                            (match field with | RotateAngle -> value |> ParamValue.asFloat |> Option.defaultValue ang | _ -> ang))
                     | HalfPlane(ax, off, fl) ->
-                        HalfPlane(stringOr ax key "axis" value, floatOr off key "offset" value, boolOr fl key "flip" value)
+                        HalfPlane(
+                            (match field with | HalfPlaneAxis -> value |> ParamValue.asString |> Option.defaultValue ax | _ -> ax),
+                            (match field with | HalfPlaneOffset -> value |> ParamValue.asFloat |> Option.defaultValue off | _ -> off),
+                            (match field with | HalfPlaneFlip -> value |> ParamValue.asBool |> Option.defaultValue fl | _ -> fl))
                     | Move(c, f) ->
-                        Move(stringOptionOr c key "child" value, stringOptionOr f key "frame" value)
+                        Move(
+                            (match field with | MoveChild -> ParamValue.asStringOption value | _ -> c),
+                            (match field with | MoveFrame -> ParamValue.asStringOption value | _ -> f))
                     | Union(a, b, r) ->
-                        Union(stringOptionOr a key "a" value, stringOptionOr b key "b" value, floatOr r key "radius" value)
+                        Union(
+                            (match field with | UnionA -> ParamValue.asStringOption value | _ -> a),
+                            (match field with | UnionB -> ParamValue.asStringOption value | _ -> b),
+                            (match field with | UnionRadius -> value |> ParamValue.asFloat |> Option.defaultValue r | _ -> r))
                     | Subtract(a, b, r) ->
-                        Subtract(stringOptionOr a key "a" value, stringOptionOr b key "b" value, floatOr r key "radius" value)
+                        Subtract(
+                            (match field with | SubtractA -> ParamValue.asStringOption value | _ -> a),
+                            (match field with | SubtractB -> ParamValue.asStringOption value | _ -> b),
+                            (match field with | SubtractRadius -> value |> ParamValue.asFloat |> Option.defaultValue r | _ -> r))
                     | Intersect(a, b, r) ->
-                        Intersect(stringOptionOr a key "a" value, stringOptionOr b key "b" value, floatOr r key "radius" value)
+                        Intersect(
+                            (match field with | IntersectA -> ParamValue.asStringOption value | _ -> a),
+                            (match field with | IntersectB -> ParamValue.asStringOption value | _ -> b),
+                            (match field with | IntersectRadius -> value |> ParamValue.asFloat |> Option.defaultValue r | _ -> r))
                     | Sketch(origin, plane, sketch) ->
                         let nextPlane =
-                            if key = "plane" then
+                            match field with
+                            | SketchPlane ->
                                 match ParamValue.asString value with
                                 | Some "XZ" -> XZ
                                 | Some "YZ" -> YZ
                                 | _ -> XY
-                            else
-                                plane
+                            | _ -> plane
                         let nextSketch =
-                            if key.StartsWith("sketch.entity.") then patchSketchEntityParam key value sketch
-                            elif key.StartsWith("sketch.constraint.") then patchSketchConstraintParam key value sketch
-                            else sketch
-                        Sketch(stringOptionOr origin key "origin" value, nextPlane, nextSketch)
+                            match field with
+                            | SketchEntityField(entityId, entityField) -> patchSketchEntityParam entityId entityField value sketch
+                            | SketchConstraintField(index, constraintField) -> patchSketchConstraintParam index constraintField value sketch
+                            | _ -> sketch
+                        Sketch(
+                            (match field with | SketchOrigin -> ParamValue.asStringOption value | _ -> origin),
+                            nextPlane,
+                            nextSketch)
                     | FromSketch(c, flip, sel) ->
-                        FromSketch(stringOptionOr c key "child" value, boolOr flip key "flip" value, patchFromSketchSelection sel)
+                        FromSketch(
+                            (match field with | FromSketchChild -> ParamValue.asStringOption value | _ -> c),
+                            (match field with | FromSketchFlip -> value |> ParamValue.asBool |> Option.defaultValue flip | _ -> flip),
+                            (match field with
+                             | FromSketchSelection ->
+                                match value with
+                                | VRecord _ ->
+                                    match ParamValue.tryField "case" value |> Option.bind ParamValue.asString with
+                                    | Some "SelectionElements" ->
+                                        let lineIds =
+                                            ParamValue.tryField "lineIds" value
+                                            |> Option.bind (function
+                                                | VArray items ->
+                                                    List.foldBack
+                                                        (fun item acc ->
+                                                            match item, acc with
+                                                            | Some x, Some xs -> Some(x :: xs)
+                                                            | _ -> None)
+                                                        (items |> List.map ParamValue.asString)
+                                                        (Some [])
+                                                | _ -> None)
+                                            |> Option.defaultValue []
+                                        patchFromSketchSelection sel (SelectionElementsValue lineIds)
+                                    | _ ->
+                                        patchFromSketchSelection sel (SelectionLoopValue(ParamValue.tryField "loopId" value |> Option.bind ParamValue.asStringOption))
+                                | _ -> sel
+                             | _ -> sel))
                     | Thicken(c, amt) ->
-                        Thicken(stringOptionOr c key "child" value, floatOr amt key "amount" value)
+                        Thicken(
+                            (match field with | ThickenChild -> ParamValue.asStringOption value | _ -> c),
+                            (match field with | ThickenAmount -> value |> ParamValue.asFloat |> Option.defaultValue amt | _ -> amt))
                     | Shell(c, t) ->
-                        Shell(stringOptionOr c key "child" value, floatOr t key "thickness" value)
+                        Shell(
+                            (match field with | ShellChild -> ParamValue.asStringOption value | _ -> c),
+                            (match field with | ShellThickness -> value |> ParamValue.asFloat |> Option.defaultValue t | _ -> t))
                     | Mesh(c, s, res) ->
-                        Mesh(stringOptionOr c key "child" value, floatOr s key "size" value, intOr res key "resolution" value)
+                        Mesh(
+                            (match field with | MeshChild -> ParamValue.asStringOption value | _ -> c),
+                            (match field with | MeshSize -> value |> ParamValue.asFloat |> Option.defaultValue s | _ -> s),
+                            (match field with | MeshResolution -> value |> ParamValue.asInt |> Option.defaultValue res | _ -> res))
                     | other -> other
                 { action with Kind = nextKind })
             doc

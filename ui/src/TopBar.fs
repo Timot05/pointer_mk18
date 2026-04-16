@@ -27,7 +27,7 @@ let private dropdownItem (label: string) (shortcut: string option) : HTMLButtonE
     | None -> ()
     btn
 
-let render (dispatch: Message -> unit) : HTMLElement =
+let render (dispatch: Message -> unit) (onSave: unit -> unit) (onLoad: unit -> unit) : HTMLElement =
     let topbar = Dom.el "div" "topbar"
     topbar.appendChild (Dom.elText "span" "topbar-logo" "pointer mk18" :> Node) |> ignore
 
@@ -41,7 +41,7 @@ let render (dispatch: Message -> unit) : HTMLElement =
         "click",
         fun _ ->
             fileDropdown?style?display <- "none"
-            console.warn "save not implemented yet"
+            onSave ()
     )
 
     let loadBtn = dropdownItem "Load" (Some (modKey + "O"))
@@ -49,7 +49,7 @@ let render (dispatch: Message -> unit) : HTMLElement =
         "click",
         fun _ ->
             fileDropdown?style?display <- "none"
-            console.warn "load not implemented yet"
+            onLoad ()
     )
 
     let clearBtn = dropdownItem "Clear" None

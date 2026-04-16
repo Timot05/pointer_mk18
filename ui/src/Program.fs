@@ -47,22 +47,6 @@ let private viewerHost =
     host
 
 // --------------------------------------------------------------------------
-// Render loop.
-// --------------------------------------------------------------------------
-
-let private renderInto (root: Browser.Types.HTMLElement) =
-    let doc = DocumentPipeline.documentView store.State
-    let shell = Shell.render dispatch doc viewerHost
-    root.innerHTML <- ""
-    root.appendChild shell |> ignore
-
-let private onStateChange (root: Browser.Types.HTMLElement) () =
-    renderInto root
-    // The palette mounts directly to <body>, not inside the shell, so we
-    // resync it ourselves after every dispatch.
-    CommandPalette.sync dispatch getPaletteState getDocActionCount
-
-// --------------------------------------------------------------------------
 // Save / Load. Uses Fable's native JSON encoding (round-trips Fable→Fable).
 // Not wire-compatible with the old .NET server save format — new regime.
 // --------------------------------------------------------------------------
@@ -103,6 +87,22 @@ let private onLoad () =
                 reader.readAsText(file)
     )
     input.click ()
+
+// --------------------------------------------------------------------------
+// Render loop.
+// --------------------------------------------------------------------------
+
+let private renderInto (root: Browser.Types.HTMLElement) =
+    let doc = DocumentPipeline.documentView store.State
+    let shell = Shell.render dispatch doc viewerHost onSave onLoad
+    root.innerHTML <- ""
+    root.appendChild shell |> ignore
+
+let private onStateChange (root: Browser.Types.HTMLElement) () =
+    renderInto root
+    // The palette mounts directly to <body>, not inside the shell, so we
+    // resync it ourselves after every dispatch.
+    CommandPalette.sync dispatch getPaletteState getDocActionCount
 
 // --------------------------------------------------------------------------
 // Bootstrap.

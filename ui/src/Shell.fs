@@ -17,10 +17,12 @@ let render
         (dispatch: Message -> unit)
         (doc: DocumentView)
         (viewerHost: HTMLElement)
+        (onSave: unit -> unit)
+        (onLoad: unit -> unit)
         : HTMLElement =
     let root = Dom.el "div" "ui-root"
 
-    root.appendChild (TopBar.render dispatch :> Node) |> ignore
+    root.appendChild (TopBar.render dispatch onSave onLoad :> Node) |> ignore
 
     let layout = Dom.el "div" "layout"
     layout.appendChild (ActionList.render dispatch doc :> Node) |> ignore

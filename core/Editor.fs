@@ -88,10 +88,10 @@ type Message =
     | ReorderActions of string list
     | ToggleActionVisible of string
     | ToggleDisplay of string
-    | PatchDisplayValue of string * string * ParamValue
+    | PatchDisplayValue of string * DisplayField * ParamValue
     | ToggleFieldSlice of string
-    | PatchFieldSliceValue of string * string * ParamValue
-    | PatchActionParamValue of string * string * ParamValue
+    | PatchFieldSliceValue of string * FieldSliceField * ParamValue
+    | PatchActionParamValue of string * ActionParamField * ParamValue
     | DeleteIntent
     | ViewerHover of PickCandidateInput list
     | ViewerPick of string * PickCandidateInput list
@@ -100,7 +100,6 @@ type Message =
     | CommitEditingDimension of float
     | ViewerDimensionClickTarget
     | ReplaceSketch of string * ActionSketch
-    | PatchSketchParams of string * (string * float) list
     | ViewerToolClick of float * float
     | ViewerPlaceConstraint of float * float
     | ToggleSketchEdit
@@ -532,9 +531,14 @@ module Editor =
         | CommitEditingDimension value ->
             match state.EditingDimension with
             | Some current ->
-                let key = $"sketch.constraint.{current.ConstraintIndex}.{current.Key}"
+                let field =
+                    match current.Key with
+                    | "distance" -> ConstraintDistance
+                    | "diameter" -> ConstraintDiameter
+                    | "angle" -> ConstraintAngle
+                    | other -> failwithf "Unsupported editable dimension key: %s" other
                 { clearDrafts state with
-                    Doc = Document.patchParamValue current.SketchId key (VFloat value) state.Doc }
+                    Doc = Document.patchParamValue current.SketchId (SketchConstraintField(current.ConstraintIndex, field)) (VFloat value) state.Doc }
                 |> recompileState
             | None ->
                 state
@@ -560,11 +564,6 @@ module Editor =
                 |> recompileState
             | _ ->
                 state
-        | PatchSketchParams(actionId, updates) ->
-            let nextDoc =
-                updates
-                |> List.fold (fun current (key, value) -> Document.patchParamValue actionId key (VFloat value) current) state.Doc
-            { state with Doc = nextDoc } |> recompileState
         | ViewerToolClick(x, y) ->
             match SketchAuthoring.trySelectedSketch state.Doc with
             | Some selected when state.SketchEditMode && state.SketchTool <> "none" ->

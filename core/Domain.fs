@@ -29,6 +29,28 @@ type ActionKind =
     | Shell of child: ActionId option * thickness: float
     | Mesh of child: ActionId option * size: float * resolution: int
 
+module ActionKind =
+    /// Default ActionKind value for a kind name, used when the user adds a
+    /// new action from the command palette. Returns None for unknown names.
+    let defaultFor (name: string) : ActionKind option =
+        match name with
+        | "Sphere" -> Some(Sphere 8.0)
+        | "Cylinder" -> Some(Cylinder(5.0, 20.0))
+        | "Box" -> Some(Box(10.0, 10.0, 10.0))
+        | "HalfPlane" -> Some(HalfPlane("Z", 0.0, false))
+        | "Translate" -> Some(Translate(None, 0.0, 0.0, 0.0))
+        | "Rotate" -> Some(Rotate(None, 0.0, 0.0, 1.0, 0.0))
+        | "Move" -> Some(Move(None, None))
+        | "Union" -> Some(Union(None, None, 0.0))
+        | "Subtract" -> Some(Subtract(None, None, 0.0))
+        | "Intersect" -> Some(Intersect(None, None, 0.0))
+        | "Sketch" -> Some(Sketch(Some "origin", XY, ActionSketch.empty))
+        | "FromSketch" -> Some(FromSketch(None, false, FromSketchSelection.defaults))
+        | "Thicken" -> Some(Thicken(None, 2.0))
+        | "Shell" -> Some(Shell(None, 1.0))
+        | "Mesh" -> Some(Mesh(None, 0.2, 96))
+        | _ -> None
+
 type DisplaySettings =
     { Enabled: bool
       Color: float array // [r, g, b] normalized 0-1

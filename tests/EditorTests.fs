@@ -23,10 +23,10 @@ let ``Sketch tool and constraint placement are normalized through editor update`
     let state =
         Editor.initState ()
         |> updateMany
-            [ Editor.msgSelectAction "sketch1"
-              Editor.msgToggleSketchEdit
-              Editor.msgSetSketchTool "line"
-              Editor.msgToggleConstraintPlacement "distance" ]
+            [ SelectAction "sketch1"
+              ToggleSketchEdit
+              SetSketchTool "line"
+              ToggleConstraintPlacement "distance" ]
 
     Assert.Equal(Some "sketch1", state.Doc.SelectedId)
     Assert.True(state.SketchEditMode)
@@ -39,10 +39,10 @@ let ``Delete intent is a no-op in sketch edit mode with no selected sketch targe
     let before =
         Editor.initState ()
         |> updateMany
-            [ Editor.msgSelectAction "sketch1"
-              Editor.msgToggleSketchEdit ]
+            [ SelectAction "sketch1"
+              ToggleSketchEdit ]
 
-    let after = Editor.update Editor.msgDeleteIntent before
+    let after = Editor.update DeleteIntent before
 
     Assert.Equal(before.Doc, after.Doc)
     Assert.Equal(before.Compiled, after.Compiled)
@@ -54,8 +54,8 @@ let ``Frame pick during sketch edit keeps the active sketch selected`` () =
     let before =
         Editor.initState ()
         |> updateMany
-            [ Editor.msgSelectAction "sketch1"
-              Editor.msgToggleSketchEdit ]
+            [ SelectAction "sketch1"
+              ToggleSketchEdit ]
 
     let framePickId =
         before.Compiled.Pickables
@@ -63,7 +63,7 @@ let ``Frame pick during sketch edit keeps the active sketch selected`` () =
         |> Pickable.pickId
 
     let after =
-        Editor.update (Editor.msgViewerPick "replace" [ { PickId = framePickId; Score = 0.0f } ]) before
+        Editor.update (ViewerPick("replace", [ { PickId = framePickId; Score = 0.0f } ])) before
 
     Assert.Equal(Some "sketch1", after.Doc.SelectedId)
     Assert.Contains(TargetFrameOrigin "origin", after.SelectedTargets)
@@ -73,13 +73,13 @@ let ``Clear model resets editor transient state and leaves only origin`` () =
     let dirty =
         Editor.initState ()
         |> updateMany
-            [ Editor.msgSelectAction "sketch1"
-              Editor.msgToggleSketchEdit
-              Editor.msgSetSketchTool "line"
-              Editor.msgSetSelectedTargets [ TargetLine("sketch1", "l_bottom") ]
-              Editor.msgSetConstraintPlacementCursor (Some("sketch1", { X = 3.0; Y = 4.0 })) ]
+            [ SelectAction "sketch1"
+              ToggleSketchEdit
+              SetSketchTool "line"
+              SetSelectedTargets [ TargetLine("sketch1", "l_bottom") ]
+              SetConstraintPlacementCursor (Some("sketch1", { X = 3.0; Y = 4.0 })) ]
 
-    let cleared = Editor.update Editor.msgClearModel dirty
+    let cleared = Editor.update ClearModel dirty
 
     Assert.Equal(Some "origin", cleared.Doc.SelectedId)
     Assert.Single(cleared.Doc.Actions) |> ignore
@@ -94,8 +94,8 @@ let ``Editor selectors expose coherent document and viewer state`` () =
     let state =
         Editor.initState ()
         |> updateMany
-            [ Editor.msgSelectAction "sketch1"
-              Editor.msgToggleSketchEdit ]
+            [ SelectAction "sketch1"
+              ToggleSketchEdit ]
 
     let document = Editor.documentView state
     let viewerModel = Editor.viewerModel state
@@ -104,6 +104,6 @@ let ``Editor selectors expose coherent document and viewer state`` () =
     Assert.Equal(Some "sketch1", document.SelectedId)
     Assert.True(document.SketchUi.EditMode)
     Assert.Contains(viewerModel.Sketches, fun sketch -> sketch.Id = "sketch1")
-    Assert.Contains(viewerState.SketchFrames, fun frame -> frame.Id = "sketch1")
+    Assert.Contains(viewerState.SketchOriginFrames, fun frame -> frame.Id = "sketch1")
     Assert.Equal(Some "sketch1", viewerState.SelectedId)
     Assert.True(viewerState.SketchUi.EditMode)

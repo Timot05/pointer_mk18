@@ -94,7 +94,7 @@ type ViewerState =
       SketchUi: SketchUiState
       Frames: FrameView list
       SketchEditFrames: FrameView list
-      SketchFrames: FrameView list
+      SketchOriginFrames: FrameView list
       FieldSlices: FieldSliceView list
       Visible: Map<string, bool>
       ConstraintLabelPositions: ConstraintLabelPositionView list
@@ -136,10 +136,6 @@ type Message =
     | ToggleConstraintPlacement of string
     | AddConstraintFromSelection of string
     | DeleteSketchConstraint of int
-    | SetSketchToolPoints of LabelPos list
-    | SetEditingDimension of EditingDimension option
-    | SetConstraintPlacementMode of string option
-    | SetConstraintPlacementDraft of ConstraintPlacementDraft option
     | SetConstraintPlacementCursor of (string * LabelPos) option
     | PaletteOpen
     | PaletteSetQuery of string
@@ -206,26 +202,24 @@ module Editor =
             |> Option.defaultValue RigidTransform.Identity
         sketchPlaneTransform originFrame plane
 
-    let effectivePlacementTargets (state: EditorState) =
-        match state.HoveredTarget with
-        | Some target when state.SelectedTargets |> List.contains target |> not -> state.SelectedTargets @ [ target ]
-        | _ -> state.SelectedTargets
-
+    /// ID of the sketch currently being edited, if any.
     let activeSketchEditId (state: EditorState) =
         match state.SketchEditMode, state.Doc.SelectedId with
-        | true, Some selectedId ->
-            match state.Doc.Actions |> List.tryFind (fun a -> a.Id = selectedId) with
-            | Some { Kind = Sketch _ } -> Some selectedId
-            | _ -> None
+        | true, Some id ->
+            state.Doc.Actions
+            |> List.tryFind (fun a -> a.Id = id)
+            |> Option.bind (fun a -> match a.Kind with Sketch _ -> Some id | _ -> None)
         | _ -> None
 
+    /// Frame actions that appear before the active sketch, with their transforms.
+    /// These are the frame origins that sketch can legitimately reference.
     let sketchEditFrames (state: EditorState) =
         match activeSketchEditId state with
         | None -> []
         | Some sketchId ->
-            let sketchIndex = state.Doc.Actions |> List.findIndex (fun a -> a.Id = sketchId)
+            let i = state.Doc.Actions |> List.findIndex (fun a -> a.Id = sketchId)
             state.Doc.Actions
-            |> List.take sketchIndex
+            |> List.take i
             |> List.choose (fun a ->
                 match Map.tryFind a.Id state.Compiled.TypeMap with
                 | Some FieldType.Frame ->
@@ -233,36 +227,32 @@ module Editor =
                     |> Option.map (fun t -> { Id = a.Id; Transform = t })
                 | _ -> None)
 
-    let isAllowedSketchEditFrameTarget (state: EditorState) =
-        let allowedFrameIds =
-            sketchEditFrames state |> List.map (fun f -> f.Id) |> Set.ofList
-        function
-        | TargetFrameOrigin frameId ->
-            Set.contains frameId allowedFrameIds
-        | _ -> false
+    /// True when `target` belongs to the actively-edited sketch: either its
+    /// own geometry (point/line/circle/arc/loop/dimension) or a frame origin
+    /// the sketch is allowed to reference.
+    let belongsToActiveSketch (state: EditorState) (target: SelectionTarget) =
+        match activeSketchEditId state with
+        | None -> false
+        | Some sid ->
+            match target with
+            | TargetPoint(s, _) | TargetLine(s, _) | TargetCircle(s, _)
+            | TargetArc(s, _) | TargetLoop(s, _) | TargetDimension(s, _) -> s = sid
+            | TargetFrameOrigin f ->
+                sketchEditFrames state |> List.exists (fun frame -> frame.Id = f)
+            | _ -> false
 
     let isValidSelectionTarget (state: EditorState) target =
         match target with
-        | TargetFrameOrigin _ -> isAllowedSketchEditFrameTarget state target
+        | TargetFrameOrigin _ -> belongsToActiveSketch state target
         | _ -> state.Compiled.Pickables |> List.exists (Pickable.sameTarget target)
 
+    /// When clicking a target in sketch-edit mode, keep the active sketch
+    /// selected if the target belongs to it (geometry or allowed frame);
+    /// otherwise fall back to whichever action the target normally belongs to.
     let actionSelectionForTarget (state: EditorState) target actionId =
-        match state.SketchEditMode, activeSketchEditId state with
-        | true, Some sketchId ->
-            match target with
-            | TargetPoint(targetSketchId, _)
-            | TargetLine(targetSketchId, _)
-            | TargetCircle(targetSketchId, _)
-            | TargetArc(targetSketchId, _)
-            | TargetLoop(targetSketchId, _)
-            | TargetDimension(targetSketchId, _) when targetSketchId = sketchId ->
-                Some sketchId
-            | TargetFrameOrigin _ when isAllowedSketchEditFrameTarget state target ->
-                Some sketchId
-            | _ ->
-                actionId
-        | _ ->
-            actionId
+        match activeSketchEditId state with
+        | Some sketchId when belongsToActiveSketch state target -> Some sketchId
+        | _ -> actionId
 
     let trySketchContext (state: EditorState) (sketchId: string) =
         state.Doc.Actions
@@ -290,21 +280,6 @@ module Editor =
         | Some a, Some b -> Some(a, b)
         | _ -> None
 
-    let pointLineDistance ((px, py): float * float) ((ax, ay): float * float) ((bx, by): float * float) =
-        let dx = bx - ax
-        let dy = by - ay
-        let len = sqrt (dx * dx + dy * dy)
-        if len < 1e-9 then 0.0
-        else abs ((dx * (py - ay) - dy * (px - ax)) / len)
-
-    let pointDistance ((ax, ay): float * float) ((bx, by): float * float) =
-        let dx = bx - ax
-        let dy = by - ay
-        sqrt (dx * dx + dy * dy)
-
-    let slotValue (state: EditorState) (slot: Slot) =
-        state.Compiled.Slots.Values.[slot]
-
     let localSliceBasis plane =
         match plane with
         | "X" -> { X = 0.0; Y = 1.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }, { X = 1.0; Y = 0.0; Z = 0.0 }
@@ -312,15 +287,13 @@ module Editor =
         | _ -> { X = 1.0; Y = 0.0; Z = 0.0 }, { X = 0.0; Y = 1.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }
 
     let rec leadingFieldTransform (state: EditorState) (field: FieldNode) (acc: RigidTransform) =
+        let slot (s: Slot) = state.Compiled.Slots.Values.[s]
         match field with
         | FTranslate(x, y, z, child) ->
-            let step = RigidTransform.translate { X = slotValue state x; Y = slotValue state y; Z = slotValue state z }
+            let step = RigidTransform.translate { X = slot x; Y = slot y; Z = slot z }
             leadingFieldTransform state child (acc * step)
         | FRotate(ax, ay, az, angle, child) ->
-            let step =
-                RigidTransform.fromAxisAngle
-                    { X = slotValue state ax; Y = slotValue state ay; Z = slotValue state az }
-                    (slotValue state angle)
+            let step = RigidTransform.fromAxisAngle { X = slot ax; Y = slot ay; Z = slot az } (slot angle)
             leadingFieldTransform state child (acc * step)
         | FFieldOp(_, _, child) ->
             leadingFieldTransform state child acc
@@ -375,11 +348,11 @@ module Editor =
                         match pending.Constraint with
                         | FrameDistance(pointId, frameId, "origin", _distance, lp) ->
                             match tryPoint2 sketch pointId, tryFrameOrigin2 state sketchOrigin frameId with
-                            | Some p, Some fp -> FrameDistance(pointId, frameId, "origin", pointDistance p fp, lp)
+                            | Some p, Some fp -> FrameDistance(pointId, frameId, "origin", Vec2.distance p fp, lp)
                             | _ -> pending.Constraint
                         | FrameLineDistance(lineId, aStart, aEnd, frameId, "origin", _distance, lp) ->
                             match tryLine2 sketch aStart aEnd, tryFrameOrigin2 state sketchOrigin frameId with
-                            | Some(a, b), Some fp -> FrameLineDistance(lineId, aStart, aEnd, frameId, "origin", pointLineDistance fp a b, lp)
+                            | Some(a, b), Some fp -> FrameLineDistance(lineId, aStart, aEnd, frameId, "origin", Vec2.pointLineDistance fp a b, lp)
                             | _ -> pending.Constraint
                         | _ -> pending.Constraint
                     { pending with Constraint = nextConstraint }))
@@ -391,9 +364,11 @@ module Editor =
             | Some(sketchId, position), Some selectedId when state.SketchEditMode && selectedId = sketchId -> Some(position.X, position.Y)
             | _ -> None
         let placementTargets =
-            match state.ConstraintPlacementMode with
-            | Some _ -> effectivePlacementTargets state
-            | None -> state.SelectedTargets
+            match state.ConstraintPlacementMode, state.HoveredTarget with
+            | Some _, Some hover when not (List.contains hover state.SelectedTargets) ->
+                state.SelectedTargets @ [ hover ]
+            | Some _, _ -> state.SelectedTargets
+            | None, _ -> state.SelectedTargets
         let baseState =
             SketchAuthoring.availabilityForSelection
                 state.Doc
@@ -444,14 +419,56 @@ module Editor =
                 SelectedTargets = state.SelectedTargets |> List.filter (isValidSelectionTarget { state with Compiled = compiled }) }
         normalizeState next
 
-    let clearEditorTransientState (state: EditorState) =
+    /// Clear only the "in-progress placement" scratch state — dimension
+    /// being edited and the constraint-placement draft/cursor. Used when
+    /// cancelling or committing a single widget while leaving tool and mode
+    /// selection alone.
+    let clearDrafts (state: EditorState) =
+        { state with
+            EditingDimension = None
+            ConstraintPlacementDraft = None
+            ConstraintPlacementCursor = None }
+
+    /// Clear tool-related transient state (tool points, pending edits,
+    /// placement mode/draft/cursor) while preserving selection and hover.
+    /// Used when switching tool or placement mode.
+    let clearToolState (state: EditorState) =
+        { state with
+            SketchToolPoints = []
+            EditingDimension = None
+            ConstraintPlacementMode = None
+            ConstraintPlacementDraft = None
+            ConstraintPlacementCursor = None }
+
+    /// Full reset of transient UI state after a committing action (add
+    /// constraint, delete, replace sketch, etc.). Leaves SketchEditMode
+    /// and SketchTool intact; everything else goes back to idle.
+    let clearTransient (state: EditorState) =
         { state with
             HoveredTarget = None
             SelectedTargets = []
             SketchToolPoints = []
             EditingDimension = None
+            ConstraintPlacementMode = None
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None }
+
+    /// Wholesale document replacement with a full UI reset. Used by
+    /// LoadModel and ClearModel.
+    let loadDoc (doc: Document) (state: EditorState) =
+        { state with
+            Doc = doc
+            PaletteSession = Palette.empty
+            HoveredTarget = None
+            SelectedTargets = []
+            SketchEditMode = false
+            SketchTool = "none"
+            SketchToolPoints = []
+            EditingDimension = None
+            ConstraintPlacementMode = None
+            ConstraintPlacementDraft = None
+            ConstraintPlacementCursor = None }
+        |> recompileState
 
     let applySelectionIntent intent target current =
         match intent with
@@ -481,7 +498,7 @@ module Editor =
                 let nextDoc =
                     SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.deleteTargets state.SelectedTargets ctx.Sketch)
                 { state with Doc = nextDoc }
-                |> clearEditorTransientState
+                |> clearTransient
                 |> recompileState
             | _ ->
                 state
@@ -489,7 +506,7 @@ module Editor =
             match state.Doc.SelectedId with
             | Some id when id <> "origin" ->
                 { state with Doc = Document.removeAction id state.Doc }
-                |> clearEditorTransientState
+                |> clearTransient
                 |> recompileState
             | _ ->
                 state
@@ -548,25 +565,7 @@ module Editor =
         | SetSelectedTargets selectedTargets ->
             { state with SelectedTargets = selectedTargets }
         | AddDefaultAction(kindCase, id) ->
-            let actionKind =
-                match kindCase with
-                | "Sphere" -> Some(ActionKind.Sphere 8.0)
-                | "Cylinder" -> Some(ActionKind.Cylinder(5.0, 20.0))
-                | "Box" -> Some(ActionKind.Box(10.0, 10.0, 10.0))
-                | "HalfPlane" -> Some(ActionKind.HalfPlane("Z", 0.0, false))
-                | "Translate" -> Some(ActionKind.Translate(None, 0.0, 0.0, 0.0))
-                | "Rotate" -> Some(ActionKind.Rotate(None, 0.0, 0.0, 1.0, 0.0))
-                | "Move" -> Some(ActionKind.Move(None, None))
-                | "Union" -> Some(ActionKind.Union(None, None, 0.0))
-                | "Subtract" -> Some(ActionKind.Subtract(None, None, 0.0))
-                | "Intersect" -> Some(ActionKind.Intersect(None, None, 0.0))
-                | "Sketch" -> Some(ActionKind.Sketch(Some "origin", XY, ActionSketch.empty))
-                | "FromSketch" -> Some(ActionKind.FromSketch(None, false, FromSketchSelection.defaults))
-                | "Thicken" -> Some(ActionKind.Thicken(None, 2.0))
-                | "Shell" -> Some(ActionKind.Shell(None, 1.0))
-                | "Mesh" -> Some(ActionKind.Mesh(None, 0.2, 96))
-                | _ -> None
-            match actionKind with
+            match ActionKind.defaultFor kindCase with
             | Some kind ->
                 let action =
                     { Id = id
@@ -623,33 +622,23 @@ module Editor =
                     SelectedTargets = if intent = "replace" then [] else state.SelectedTargets }
                 |> normalizeState
         | StartEditingDimension index ->
-            { state with
-                EditingDimension =
-                    match SketchAuthoring.trySelectedSketch state.Doc with
-                    | Some selected when state.SketchEditMode && state.Doc.SelectedId = Some selected.Action.Id ->
-                        SketchAuthoring.tryEditableDimension selected.Action.Id selected.Sketch index
-                    | _ -> None
+            let editing =
+                match SketchAuthoring.trySelectedSketch state.Doc with
+                | Some selected when state.SketchEditMode && state.Doc.SelectedId = Some selected.Action.Id ->
+                    SketchAuthoring.tryEditableDimension selected.Action.Id selected.Sketch index
+                | _ -> None
+            { clearToolState state with
                 SketchTool = "none"
-                SketchToolPoints = []
-                ConstraintPlacementDraft = None
-                ConstraintPlacementMode = None
-                ConstraintPlacementCursor = None }
+                EditingDimension = editing }
             |> normalizeState
         | CancelEditingDimension ->
-            { state with
-                EditingDimension = None
-                ConstraintPlacementDraft = None
-                ConstraintPlacementCursor = None }
-            |> normalizeState
+            clearDrafts state |> normalizeState
         | CommitEditingDimension value ->
             match state.EditingDimension with
             | Some current ->
                 let key = $"sketch.constraint.{current.ConstraintIndex}.{current.Key}"
-                { state with
-                    Doc = Document.patchParamValue current.SketchId key (VFloat value) state.Doc
-                    EditingDimension = None
-                    ConstraintPlacementDraft = None
-                    ConstraintPlacementCursor = None }
+                { clearDrafts state with
+                    Doc = Document.patchParamValue current.SketchId key (VFloat value) state.Doc }
                 |> recompileState
             | None ->
                 state
@@ -667,7 +656,7 @@ module Editor =
             | Some { Kind = Sketch(_, _, _) } ->
                 { state with
                     Doc = SketchAuthoring.withUpdatedSketch state.Doc actionId sketch }
-                |> clearEditorTransientState
+                |> clearTransient
                 |> recompileState
             | _ ->
                 state
@@ -677,21 +666,15 @@ module Editor =
                 |> List.fold (fun current (key, value) -> Document.patchParamValue actionId key (VFloat value) current) state.Doc
             { state with Doc = nextDoc } |> recompileState
         | ViewerToolClick(x, y) ->
-            let nextPoint = { X = x; Y = y }
             match SketchAuthoring.trySelectedSketch state.Doc with
             | Some selected when state.SketchEditMode && state.SketchTool <> "none" ->
-                let nextPoints = state.SketchToolPoints @ [ nextPoint ]
+                let nextPoints = state.SketchToolPoints @ [ { X = x; Y = y } ]
                 if nextPoints.Length >= SketchAuthoring.requiredToolPoints state.SketchTool then
                     match SketchAuthoring.applyToolClick state.SketchTool nextPoints selected.Sketch with
                     | Some nextSketch ->
-                        { state with
+                        { clearTransient state with
                             Doc = SketchAuthoring.withUpdatedSketch state.Doc selected.Action.Id nextSketch
-                            SketchToolPoints = []
-                            HoveredTarget = None
-                            SelectedTargets = []
-                            EditingDimension = None
-                            ConstraintPlacementDraft = None
-                            ConstraintPlacementCursor = None }
+                            ConstraintPlacementMode = state.ConstraintPlacementMode }
                         |> recompileState
                     | None ->
                         state
@@ -704,59 +687,35 @@ module Editor =
             | Some pending ->
                 match SketchAuthoring.placePendingConstraint state.Doc pending { X = x; Y = y } with
                 | Some nextDoc ->
-                    { state with
-                        Doc = nextDoc
-                        HoveredTarget = None
-                        SelectedTargets = []
-                        SketchToolPoints = []
-                        EditingDimension = None
-                        ConstraintPlacementDraft = None
-                        ConstraintPlacementMode = None
-                        ConstraintPlacementCursor = None }
+                    { clearTransient state with Doc = nextDoc }
                     |> recompileState
                 | None ->
                     state
             | None ->
                 state
         | ToggleSketchEdit ->
-            let nextEditMode = not state.SketchEditMode
-            { state with
-                SketchEditMode = nextEditMode
-                SketchTool = if nextEditMode then state.SketchTool else "none"
-                SketchToolPoints = if nextEditMode then state.SketchToolPoints else []
-                EditingDimension = if nextEditMode then state.EditingDimension else None
-                ConstraintPlacementMode = if nextEditMode then state.ConstraintPlacementMode else None
-                ConstraintPlacementDraft = if nextEditMode then state.ConstraintPlacementDraft else None
-                ConstraintPlacementCursor = if nextEditMode then state.ConstraintPlacementCursor else None }
+            { state with SketchEditMode = not state.SketchEditMode }
             |> normalizeState
         | SetSketchTool tool ->
-            { state with
+            { clearToolState state with
                 SketchEditMode = true
-                SketchTool = if String.IsNullOrWhiteSpace(tool) then "none" else tool
-                SketchToolPoints = []
-                EditingDimension = None
-                ConstraintPlacementMode = None
-                ConstraintPlacementDraft = None
-                ConstraintPlacementCursor = None }
+                SketchTool = if String.IsNullOrWhiteSpace(tool) then "none" else tool }
             |> normalizeState
         | ToggleConstraintPlacement kind ->
-            { state with
+            let nextMode =
+                match state.ConstraintPlacementMode with
+                | Some active when active = kind -> None
+                | _ -> Some kind
+            { clearToolState state with
                 SketchEditMode = true
                 SketchTool = "none"
-                SketchToolPoints = []
-                EditingDimension = None
-                ConstraintPlacementDraft = None
-                ConstraintPlacementMode =
-                    match state.ConstraintPlacementMode with
-                    | Some active when active = kind -> None
-                    | _ -> Some kind
-                ConstraintPlacementCursor = None }
+                ConstraintPlacementMode = nextMode }
             |> normalizeState
         | AddConstraintFromSelection kind ->
             match SketchAuthoring.addConstraintFromSelection state.Doc state.SelectedTargets kind with
             | Some nextDoc ->
                 { state with Doc = nextDoc }
-                |> clearEditorTransientState
+                |> clearTransient
                 |> recompileState
             | None ->
                 state
@@ -766,18 +725,10 @@ module Editor =
                 let nextDoc =
                     SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.removeConstraintAt index ctx.Sketch)
                 { state with Doc = nextDoc }
-                |> clearEditorTransientState
+                |> clearTransient
                 |> recompileState
             | None ->
                 state
-        | SetSketchToolPoints toolPoints ->
-            { state with SketchToolPoints = toolPoints }
-        | SetEditingDimension editingDimension ->
-            { state with EditingDimension = editingDimension } |> normalizeState
-        | SetConstraintPlacementMode placementMode ->
-            { state with ConstraintPlacementMode = placementMode } |> normalizeState
-        | SetConstraintPlacementDraft draft ->
-            { state with ConstraintPlacementDraft = draft } |> normalizeState
         | SetConstraintPlacementCursor cursor ->
             { state with ConstraintPlacementCursor = cursor } |> normalizeState
         | PaletteOpen ->
@@ -806,82 +757,12 @@ module Editor =
         | LoadModel model ->
             let selectedId =
                 model.Actions
-                |> List.tryFind (fun action -> action.Id = "origin")
-                |> Option.map (fun action -> action.Id)
-                |> Option.orElseWith (fun () -> model.Actions |> List.tryHead |> Option.map (fun action -> action.Id))
-            let next =
-                { Name = model.Name
-                  Actions = model.Actions
-                  SelectedId = selectedId }
-            { state with
-                Doc = next
-                PaletteSession = Palette.empty
-                HoveredTarget = None
-                SelectedTargets = []
-                SketchEditMode = false
-                SketchTool = "none"
-                SketchToolPoints = []
-                EditingDimension = None
-                ConstraintPlacementMode = None
-                ConstraintPlacementDraft = None
-                ConstraintPlacementCursor = None }
-            |> recompileState
+                |> List.tryFind (fun a -> a.Id = "origin")
+                |> Option.orElseWith (fun () -> model.Actions |> List.tryHead)
+                |> Option.map (fun a -> a.Id)
+            loadDoc { Name = model.Name; Actions = model.Actions; SelectedId = selectedId } state
         | ClearModel ->
-            let next = Document.emptyDocument ()
-            { state with
-                Doc = next
-                PaletteSession = Palette.empty
-                HoveredTarget = None
-                SelectedTargets = []
-                SketchEditMode = false
-                SketchTool = "none"
-                SketchToolPoints = []
-                EditingDimension = None
-                ConstraintPlacementMode = None
-                ConstraintPlacementDraft = None
-                ConstraintPlacementCursor = None }
-            |> recompileState
-
-    let msgSelectAction id = SelectAction id
-    let msgSetSelectedTargets targets = SetSelectedTargets targets
-    let msgAddDefaultAction kindCase id = AddDefaultAction(kindCase, id)
-    let msgAddAction action = AddAction action
-    let msgRemoveAction id = RemoveAction id
-    let msgUpdateAction id action = UpdateAction(id, action)
-    let msgReorderActions ids = ReorderActions ids
-    let msgToggleActionVisible id = ToggleActionVisible id
-    let msgToggleDisplay id = ToggleDisplay id
-    let msgPatchDisplayValue id key value = PatchDisplayValue(id, key, value)
-    let msgToggleFieldSlice id = ToggleFieldSlice id
-    let msgPatchFieldSliceValue id key value = PatchFieldSliceValue(id, key, value)
-    let msgPatchActionParamValue id key value = PatchActionParamValue(id, key, value)
-    let msgDeleteIntent = DeleteIntent
-    let msgViewerHover candidates = ViewerHover candidates
-    let msgViewerPick intent candidates = ViewerPick(intent, candidates)
-    let msgStartEditingDimension index = StartEditingDimension index
-    let msgCancelEditingDimension = CancelEditingDimension
-    let msgCommitEditingDimension value = CommitEditingDimension value
-    let msgViewerDimensionClickTarget = ViewerDimensionClickTarget
-    let msgReplaceSketch actionId sketch = ReplaceSketch(actionId, sketch)
-    let msgPatchSketchParams actionId updates = PatchSketchParams(actionId, updates)
-    let msgViewerToolClick x y = ViewerToolClick(x, y)
-    let msgViewerPlaceConstraint x y = ViewerPlaceConstraint(x, y)
-    let msgToggleSketchEdit = ToggleSketchEdit
-    let msgSetSketchTool tool = SetSketchTool tool
-    let msgSetConstraintPlacementCursor cursor = SetConstraintPlacementCursor cursor
-    let msgToggleConstraintPlacement kind = ToggleConstraintPlacement kind
-    let msgAddConstraintFromSelection kind = AddConstraintFromSelection kind
-    let msgDeleteSketchConstraint index = DeleteSketchConstraint index
-    let msgPaletteOpen = PaletteOpen
-    let msgPaletteSetQuery query = PaletteSetQuery query
-    let msgPalettePick id = PalettePick id
-    let msgPaletteSetScalarField key value = PaletteSetScalarField(key, value)
-    let msgPaletteCommitScalars = PaletteCommitScalars
-    let msgPaletteFinish idSuffix = PaletteFinish idSuffix
-    let msgPaletteBack = PaletteBack
-    let msgPaletteClose = PaletteClose
-    let msgLoadModel model = LoadModel model
-    let msgClearModel = ClearModel
+            loadDoc (Document.emptyDocument ()) state
 
     let documentView (state: EditorState) =
         let tm = state.Compiled.TypeMap
@@ -974,34 +855,19 @@ module Editor =
           Pickables = state.Compiled.Pickables }
 
     let viewerState (state: EditorState) =
-        let dragTarget =
-            let isActiveSketchTarget =
-                function
-                | TargetPoint(sketchId, _)
-                | TargetDimension(sketchId, _) ->
-                    state.SketchEditMode && state.Doc.SelectedId = Some sketchId
-                | _ -> false
-            state.HoveredTarget |> Option.filter isActiveSketchTarget
-
-        let highlightedTargetAllowed =
-            let frameHighlightAllowed =
-                match state.ConstraintPlacementMode with
-                | Some "angle" -> false
-                | _ -> true
+        let isDraggable =
             function
-            | TargetPoint(sketchId, _)
-            | TargetLine(sketchId, _)
-            | TargetCircle(sketchId, _)
-            | TargetArc(sketchId, _)
-            | TargetLoop(sketchId, _)
-            | TargetDimension(sketchId, _) ->
-                state.SketchEditMode && state.Doc.SelectedId = Some sketchId
-            | TargetFrameOrigin _ as target ->
-                frameHighlightAllowed && activeSketchEditId state |> Option.isSome && isAllowedSketchEditFrameTarget state target
-            | TargetFrameAxis _ ->
-                false
-            | TargetSurface _ ->
-                true
+            | TargetPoint _ | TargetDimension _ as t -> belongsToActiveSketch state t
+            | _ -> false
+        let dragTarget = state.HoveredTarget |> Option.filter isDraggable
+
+        let frameHighlightAllowed = state.ConstraintPlacementMode <> Some "angle"
+        let highlightedTargetAllowed target =
+            match target with
+            | TargetSurface _ -> true
+            | TargetFrameAxis _ -> false
+            | TargetFrameOrigin _ -> frameHighlightAllowed && belongsToActiveSketch state target
+            | _ -> belongsToActiveSketch state target
 
         let visibleDimensionSketchIds =
             match state.SketchEditMode, state.Doc.SelectedId with
@@ -1044,29 +910,15 @@ module Editor =
 
         let constraintLabelPositions =
             state.Doc.Actions
-            |> List.choose (fun a ->
+            |> List.collect (fun a ->
                 match a.Kind with
                 | Sketch(_, _, sk) ->
                     sk.Constraints
                     |> List.mapi (fun i c ->
-                        let lp =
-                            match c with
-                            | Distance(_, _, _, lp)
-                            | FrameDistance(_, _, _, _, lp)
-                            | LineDistance(_, _, _, _, _, _, _, lp)
-                            | FrameLineDistance(_, _, _, _, _, _, lp)
-                            | PointLineDistance(_, _, _, _, _, lp)
-                            | PointCircleDistance(_, _, _, _, lp)
-                            | LineCircleDistance(_, _, _, _, _, _, lp)
-                            | CircleCircleDistance(_, _, _, _, _, _, lp)
-                            | CircleDiameter(_, _, _, lp)
-                            | Angle(_, _, _, _, _, _, _, _, _, _, lp) -> lp
-                            | _ -> None
-                        lp |> Option.map (fun pos -> { SketchId = a.Id; ConstraintIndex = i; Position = pos }))
+                        SketchConstraint.labelPos c
+                        |> Option.map (fun pos -> { SketchId = a.Id; ConstraintIndex = i; Position = pos }))
                     |> List.choose id
-                    |> Some
-                | _ -> None)
-            |> List.concat
+                | _ -> [])
 
         { Params = state.Compiled.Slots.Values
           SelectedId = state.Doc.SelectedId
@@ -1079,7 +931,7 @@ module Editor =
           SketchUi = sketchUiState state
           Frames = frames
           SketchEditFrames = sketchEditFrames state
-          SketchFrames = sketchFrames
+          SketchOriginFrames = sketchFrames
           FieldSlices = activeFieldSlices state
           Visible = visibleByAction
           ConstraintLabelPositions = constraintLabelPositions

@@ -138,3 +138,20 @@ module RigidTransform =
         let s = sin half
         { Rot = { W = cos half; X = a.X * s; Y = a.Y * s; Z = a.Z * s }
           Trans = Vec3.Zero }
+
+module Vec2 =
+
+    /// Euclidean distance between two 2D points represented as (x, y) tuples.
+    let distance ((ax, ay): float * float) ((bx, by): float * float) =
+        let dx = bx - ax
+        let dy = by - ay
+        sqrt (dx * dx + dy * dy)
+
+    /// Perpendicular distance from point p to the line through a–b.
+    /// Returns 0 if a and b coincide.
+    let pointLineDistance ((px, py): float * float) ((ax, ay): float * float) ((bx, by): float * float) =
+        let dx = bx - ax
+        let dy = by - ay
+        let len = sqrt (dx * dx + dy * dy)
+        if len < 1e-9 then 0.0
+        else abs ((dx * (py - ay) - dy * (px - ax)) / len)

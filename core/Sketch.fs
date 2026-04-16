@@ -57,6 +57,37 @@ type SketchConstraint =
     | CircleCircleDistance of circleA: string * centerA: string * circleB: string * centerB: string * distance: float * ``internal``: bool * labelPosition: LabelPos option
     | Angle of aStart: string * aEnd: string * bStart: string * bEnd: string * lineA: string * lineB: string * angle: float * aReverse: bool * bReverse: bool * ccwFromAToB: bool * labelPosition: LabelPos option
 
+module SketchConstraint =
+    /// Extract the optional label position from any constraint variant.
+    /// Exhaustive: when a new variant is added, this match forces a decision here.
+    let labelPos (c: SketchConstraint) : LabelPos option =
+        match c with
+        | Distance(_, _, _, lp)
+        | FrameDistance(_, _, _, _, lp)
+        | LineDistance(_, _, _, _, _, _, _, lp)
+        | FrameLineDistance(_, _, _, _, _, _, lp)
+        | PointLineDistance(_, _, _, _, _, lp)
+        | PointCircleDistance(_, _, _, _, lp)
+        | LineCircleDistance(_, _, _, _, _, _, lp)
+        | CircleCircleDistance(_, _, _, _, _, _, lp)
+        | CircleDiameter(_, _, _, lp)
+        | Angle(_, _, _, _, _, _, _, _, _, _, lp) -> lp
+        | Fixed _
+        | Coincident _
+        | FrameCoincident _
+        | Concentric _
+        | Horizontal _
+        | Vertical _
+        | Equal _
+        | EqualRadius _
+        | Midpoint _
+        | Parallel _
+        | FrameParallel _
+        | Perpendicular _
+        | FramePerpendicular _
+        | Tangent _
+        | CurveTangent _ -> None
+
 /// The full content of a Sketch action: a set of entities and the
 /// constraints between them.
 type ActionSketch =

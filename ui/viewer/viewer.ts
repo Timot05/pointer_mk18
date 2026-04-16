@@ -17,21 +17,21 @@ import {
   selectionCandidatesFromJs,
   subscribeViewerModel,
   subscribeViewerState,
-} from "../../app/src/editor-store";
+} from "../src/viewer-bridge";
 import {
-  Editor_msgCancelEditingDimension,
-  Editor_msgCommitEditingDimension,
-  Editor_msgPatchActionParamValue,
-  Editor_msgPatchSketchParams,
-  Editor_msgSetConstraintPlacementCursor,
-  Editor_msgStartEditingDimension,
-  Editor_msgViewerDimensionClickTarget,
-  Editor_msgViewerHover,
-  Editor_msgViewerPick,
-  Editor_msgViewerPlaceConstraint,
-  Editor_msgViewerToolClick,
-} from "../../app/src-gen/core/Editor";
-import { ofArray as listOfArray } from "../../app/src-gen/core/fable_modules/fable-library-js.4.24.0/List";
+  cancelEditingDimension,
+  commitEditingDimension,
+  patchActionParamValue,
+  patchSketchParams,
+  setConstraintPlacementCursor,
+  startEditingDimension,
+  viewerDimensionClickTarget,
+  viewerHover,
+  viewerPick,
+  viewerPlaceConstraint,
+  viewerToolClick,
+} from "../src/viewer-bridge";
+import { ofArray as listOfArray } from "../src-gen/fable_modules/fable-library-js.4.24.0/List.js";
 
 type PickKind = "point" | "line" | "circle" | "arc" | "loop" | "dimension";
 
@@ -908,7 +908,7 @@ export class ViewerApp {
       return;
     }
     const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
-    dispatchEditor(Editor_msgViewerHover(selectionCandidatesFromJs(toPickRequest(candidates))));
+    dispatchEditor(viewerHover(selectionCandidatesFromJs(toPickRequest(candidates))));
     this.applyViewerState(selectViewerState() as ViewerState);
     this.rebuildRenderData();
     this.queueRender();
@@ -956,14 +956,14 @@ export class ViewerApp {
     if (!this.state?.sketchUi.editMode || this.drag || this.interaction) return;
     const target = this.state.hoveredTarget;
     if (!target || target.case !== "TargetDimension") return;
-    dispatchEditor(Editor_msgStartEditingDimension(target.constraintIndex));
+    dispatchEditor(startEditingDimension(target.constraintIndex));
     this.applyViewerState(selectViewerState() as ViewerState);
     this.rebuildRenderData();
     this.queueRender();
   }
 
   private async cancelDimensionEdit(): Promise<void> {
-    dispatchEditor(Editor_msgCancelEditingDimension);
+    dispatchEditor(cancelEditingDimension);
     this.applyViewerState(selectViewerState() as ViewerState);
     this.rebuildRenderData();
     this.queueRender();
@@ -975,7 +975,7 @@ export class ViewerApp {
       await this.cancelDimensionEdit();
       return;
     }
-    dispatchEditor(Editor_msgCommitEditingDimension(value));
+    dispatchEditor(commitEditingDimension(value));
     this.applyViewerState(selectViewerState() as ViewerState);
     await this.solveSketches();
     this.rebuildRenderData();
@@ -1073,17 +1073,17 @@ export class ViewerApp {
       const placementCursor = this.currentPlacementCursor();
       if (placementCursor) {
         dispatchEditor(
-          Editor_msgSetConstraintPlacementCursor(
+          setConstraintPlacementCursor(
             placementCursor ? [placementCursor.sketchId, { X: placementCursor.x, Y: placementCursor.y }] : undefined,
           ),
         );
         this.applyViewerState(selectViewerState() as ViewerState);
       }
-      dispatchEditor(Editor_msgViewerHover(selectionCandidatesFromJs(toPickRequest(candidates))));
+      dispatchEditor(viewerHover(selectionCandidatesFromJs(toPickRequest(candidates))));
       this.applyViewerState(selectViewerState() as ViewerState);
       const hovered = this.state?.hoveredTarget;
       if (hovered && hovered.case !== "TargetDimension" && hovered.case !== "TargetLoop" && hovered.case !== "TargetSurface") {
-        dispatchEditor(Editor_msgViewerDimensionClickTarget);
+        dispatchEditor(viewerDimensionClickTarget);
         this.applyViewerState(selectViewerState() as ViewerState);
         this.rebuildRenderData();
         this.queueRender();
@@ -1092,7 +1092,7 @@ export class ViewerApp {
       if (!this.state?.sketchUi.pendingConstraintPlacement) {
         return false;
       }
-      dispatchEditor(Editor_msgViewerPlaceConstraint(local[0], local[1]));
+      dispatchEditor(viewerPlaceConstraint(local[0], local[1]));
       this.applyViewerState(selectViewerState() as ViewerState);
       await this.reloadModel(false);
       return true;
@@ -1102,7 +1102,7 @@ export class ViewerApp {
     if (tool === "none") {
       return false;
     }
-    dispatchEditor(Editor_msgViewerToolClick(local[0], local[1]));
+    dispatchEditor(viewerToolClick(local[0], local[1]));
     this.applyViewerState(selectViewerState() as ViewerState);
     await this.reloadModel(false);
     return true;
@@ -1124,8 +1124,8 @@ export class ViewerApp {
     await this.solveSketches();
     this.drag = null;
     if (drag.kind === "label") {
-      dispatchEditor(Editor_msgPatchActionParamValue(drag.sketchId, drag.xPath, paramValueFromJs(drag.target[0])));
-      dispatchEditor(Editor_msgPatchActionParamValue(drag.sketchId, drag.yPath, paramValueFromJs(drag.target[1])));
+      dispatchEditor(patchActionParamValue(drag.sketchId, drag.xPath, paramValueFromJs(drag.target[0])));
+      dispatchEditor(patchActionParamValue(drag.sketchId, drag.yPath, paramValueFromJs(drag.target[1])));
       await this.reloadState();
       return;
     }
@@ -1143,7 +1143,7 @@ export class ViewerApp {
       return;
     }
     dispatchEditor(
-      Editor_msgPatchSketchParams(
+      patchSketchParams(
         drag.sketchId,
         listOfArray(params.map((param) => [param.key, param.value] as [string, number])),
       ),
@@ -1694,7 +1694,7 @@ export class ViewerApp {
       const placementCursor = this.currentPlacementCursor();
       if (!event && placementCursor) {
         dispatchEditor(
-          Editor_msgSetConstraintPlacementCursor(
+          setConstraintPlacementCursor(
             placementCursor ? [placementCursor.sketchId, { X: placementCursor.x, Y: placementCursor.y }] : undefined,
           ),
         );
@@ -1716,10 +1716,10 @@ export class ViewerApp {
       }
       if (event) {
         const intent = event.shiftKey ? "toggle" : "replace";
-        dispatchEditor(Editor_msgViewerPick(intent, selectionCandidatesFromJs(toPickRequest(candidates))));
+        dispatchEditor(viewerPick(intent, selectionCandidatesFromJs(toPickRequest(candidates))));
         this.applyViewerState(selectViewerState() as ViewerState);
       } else {
-        dispatchEditor(Editor_msgViewerHover(selectionCandidatesFromJs(toPickRequest(candidates))));
+        dispatchEditor(viewerHover(selectionCandidatesFromJs(toPickRequest(candidates))));
         this.applyViewerState(selectViewerState() as ViewerState);
       }
       this.rebuildRenderData();

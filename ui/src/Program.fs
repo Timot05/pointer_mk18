@@ -1,55 +1,131 @@
 module PointerMk18.Ui.Program
 
+open Fable.Core
+open Fable.Core.JsInterop
 open Browser.Dom
+open Browser.Types
 open Server
 open PointerMk18.Ui
 
+// --- Minimal globals Fable's Browser.Dom doesn't expose directly ---
+
+[<Emit("new Blob($0, $1)")>]
+let private newBlob (parts: obj[]) (opts: obj) : obj = jsNative
+
+[<Emit("URL.createObjectURL($0)")>]
+let private urlCreateObjectUrl (blob: obj) : string = jsNative
+
+[<Emit("URL.revokeObjectURL($0)")>]
+let private urlRevokeObjectUrl (url: string) : unit = jsNative
+
 // --------------------------------------------------------------------------
-// Entry point: owns the F# editor store, subscribes, rebuilds the Shell on
-// every dispatch. Pure pull-based re-render, same pattern the TS code used
-// but without the normalization layer in between.
+// Entry point. Owns:
+//   - the singleton F# editor store (via AppStore)
+//   - the viewer host element (long-lived so WebGPU context survives renders)
+//   - the subscription that re-renders the shell on every dispatch
 // --------------------------------------------------------------------------
 
-let private store =
-    Store.create Editor.update (Editor.initState ())
+let private store = AppStore.store
 
 let private dispatch msg = Store.dispatch store msg
 
 let private getPaletteState () = DocumentPipeline.paletteView store.State
 let private getDocActionCount () =
     (DocumentPipeline.documentView store.State).Actions.Length
+let private getPaletteOpen () = (getPaletteState ()).IsOpen
+
+// --------------------------------------------------------------------------
+// TS viewer mount — the one interop call into the WebGPU viewer.
+// --------------------------------------------------------------------------
+
+[<Import("mountViewer", "../viewer/mount.ts")>]
+let private mountViewer (root: Browser.Types.HTMLElement) : JS.Promise<obj> = jsNative
+
+let private viewerHost =
+    let host = document.createElement "div"
+    host.className <- "panel-center-host"
+    host
+
+// --------------------------------------------------------------------------
+// Render loop.
+// --------------------------------------------------------------------------
 
 let private renderInto (root: Browser.Types.HTMLElement) =
     let doc = DocumentPipeline.documentView store.State
-    let shell = Shell.render dispatch doc
+    let shell = Shell.render dispatch doc viewerHost
     root.innerHTML <- ""
     root.appendChild shell |> ignore
 
 let private onStateChange (root: Browser.Types.HTMLElement) () =
     renderInto root
-    // The palette lives outside the shell DOM tree so it owns its own
-    // mount/unmount. Re-sync after every dispatch.
+    // The palette mounts directly to <body>, not inside the shell, so we
+    // resync it ourselves after every dispatch.
     CommandPalette.sync dispatch getPaletteState getDocActionCount
 
-let private getPaletteOpen () = (getPaletteState ()).IsOpen
+// --------------------------------------------------------------------------
+// Save / Load. Uses Fable's native JSON encoding (round-trips Fable→Fable).
+// Not wire-compatible with the old .NET server save format — new regime.
+// --------------------------------------------------------------------------
 
 let private onSave () =
-    Browser.Dom.console.warn "save: JSON serialization not yet implemented (Phase 7)"
+    let model = Editor.serializedModel store.State
+    let json = Fable.Core.JS.JSON.stringify(model, space = 2)
+    let baseName =
+        let trimmed = model.Name.Trim().ToLower()
+        if trimmed = "" || trimmed = "untitled" then "pointer-model" else trimmed
+    let blob = newBlob [| json :> obj |] {| ``type`` = "application/json" |}
+    let url = urlCreateObjectUrl blob
+    let link = document.createElement "a" :?> HTMLAnchorElement
+    link.href <- url
+    link?download <- sprintf "%s.json" baseName
+    link.click ()
+    urlRevokeObjectUrl url
 
 let private onLoad () =
-    Browser.Dom.console.warn "load: JSON deserialization not yet implemented (Phase 7)"
+    let input = document.createElement "input" :?> Browser.Types.HTMLInputElement
+    input.``type`` <- "file"
+    input.accept <- "application/json,.json"
+    input.addEventListener (
+        "change",
+        fun _ ->
+            let files = input.files
+            if files.length > 0 then
+                let file = files.[0]
+                let reader = FileReader.Create()
+                reader.onload <- (fun _ ->
+                    let text : string = unbox reader.result
+                    try
+                        let parsed = Fable.Core.JS.JSON.parse(text)
+                        let model : SerializedModel = unbox parsed
+                        dispatch (LoadModel model)
+                    with ex ->
+                        console.error ("Failed to load: " + ex.Message))
+                reader.readAsText(file)
+    )
+    input.click ()
+
+// --------------------------------------------------------------------------
+// Bootstrap.
+// --------------------------------------------------------------------------
 
 let private mount () =
     let root = document.getElementById "app"
     if isNull root then
         failwith "Missing #app element"
+
     Store.subscribe store (onStateChange root)
+
     Shortcuts.register
         dispatch
         (fun () -> DocumentPipeline.documentView store.State)
         getPaletteOpen
         onSave
         onLoad
+
     renderInto root
+
+    // Mount the viewer AFTER the shell so viewerHost is already in the DOM.
+    // The viewer uses shadow DOM so our styles don't leak into its canvas.
+    mountViewer viewerHost |> ignore
 
 mount ()

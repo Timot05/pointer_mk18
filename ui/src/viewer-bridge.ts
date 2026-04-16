@@ -1,19 +1,22 @@
-import {
-  Editor_documentView,
-  Editor_initState,
-  Editor_paletteView,
-  Editor_serializedModel,
-  Editor_update,
-  Editor_viewerModel,
-  Editor_viewerState,
-  SerializedModel,
-  type EditorState,
-  type Message,
-} from "../src-gen/core/Editor";
-import { ParamValue } from "../src-gen/core/server/Domain";
-import { ofArray as listOfArray } from "../src-gen/core/fable_modules/fable-library-js.4.24.0/List";
-import { ofArray as mapOfArray } from "../src-gen/core/fable_modules/fable-library-js.4.24.0/Map";
-import { createStore } from "./store";
+// ---------------------------------------------------------------------------
+// viewer-bridge — the single TS↔F# boundary for the 3D viewer.
+//
+// The F# UI code in this folder is the primary consumer of the store; TS
+// viewer code imports from here to read and dispatch. This file exists
+// because the viewer is still TS and needs a way to consume F# union/
+// record values as plain JS objects.
+//
+// NOTE: The app's store is owned by F# (see src/AppStore.fs). We import
+// the singleton and wrap it. Do not create another store here.
+// ---------------------------------------------------------------------------
+import { store as editorStore } from "../src-gen/AppStore.js";
+import { dispatch as storeDispatch, subscribe as storeSubscribe } from "../src-gen/Store.js";
+import { ParamValue } from "../src-gen/core/Domain.js";
+import { ViewerPipeline_viewerModel, ViewerPipeline_viewerState } from "../src-gen/core/ViewerPipeline.js";
+import { ofArray as listOfArray } from "../src-gen/fable_modules/fable-library-js.4.24.0/List.js";
+import { ofArray as mapOfArray } from "../src-gen/fable_modules/fable-library-js.4.24.0/Map.js";
+
+// ── Normalization helpers (Fable-encoded → plain JS) ──────────────────
 
 function toPlain<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -66,7 +69,7 @@ function normalizeArcData(value: unknown): unknown {
     case "ArcCenter":
       return { case: tag, center: rest[0], clockwise: rest[1] };
     case "ArcThreePoint":
-      return { case: tag, through: { x: rest[0]?.X ?? rest[0]?.x ?? 0, y: rest[0]?.Y ?? rest[0]?.y ?? 0 } };
+      return { case: tag, through: { x: (rest[0] as any)?.X ?? (rest[0] as any)?.x ?? 0, y: (rest[0] as any)?.Y ?? (rest[0] as any)?.y ?? 0 } };
     default:
       return { case: tag, values: rest };
   }
@@ -82,6 +85,12 @@ function normalizeRenderEntity(value: unknown): unknown {
     case "REArc": return { case: tag, id: rest[0], startId: rest[1], endId: rest[2], data: normalizeArcData(rest[3]) };
     default: return { case: tag, values: rest };
   }
+}
+
+function normalizeLabelPos(value: unknown): unknown {
+  if (!value) return null;
+  if (!isRecord(value)) return value;
+  return { x: value.X ?? value.x ?? 0, y: value.Y ?? value.y ?? 0 };
 }
 
 function normalizeSketchConstraint(value: unknown): unknown {
@@ -127,87 +136,6 @@ function normalizeActionSketch(value: unknown): unknown {
   };
 }
 
-function normalizeFromSketchSelection(value: unknown): unknown {
-  if (!Array.isArray(value) || typeof value[0] !== "string") return value;
-  const [tag, ...rest] = value;
-  switch (tag) {
-    case "SelectionLoop": return { case: tag, loopId: rest[0] ?? null };
-    case "SelectionElements": return { case: tag, lineIds: Array.isArray(rest[0]) ? rest[0] : [] };
-    default: return { case: tag, values: rest };
-  }
-}
-
-function normalizeActionKind(value: unknown): unknown {
-  if (typeof value === "string") return { case: value };
-  if (!Array.isArray(value) || typeof value[0] !== "string") return value;
-  const [tag, ...rest] = value;
-  switch (tag) {
-    case "Cylinder": return { case: tag, radius: rest[0], height: rest[1] };
-    case "Sphere": return { case: tag, radius: rest[0] };
-    case "Box": return { case: tag, width: rest[0], height: rest[1], depth: rest[2] };
-    case "HalfPlane": return { case: tag, axis: rest[0], offset: rest[1], flip: rest[2] };
-    case "Translate": return { case: tag, child: rest[0] ?? null, x: rest[1], y: rest[2], z: rest[3] };
-    case "Rotate": return { case: tag, child: rest[0] ?? null, ax: rest[1], ay: rest[2], az: rest[3], angle: rest[4] };
-    case "Move": return { case: tag, child: rest[0] ?? null, frame: rest[1] ?? null };
-    case "Union":
-    case "Subtract":
-    case "Intersect":
-      return { case: tag, a: rest[0] ?? null, b: rest[1] ?? null, radius: rest[2] };
-    case "Sketch": return { case: tag, origin: rest[0] ?? null, plane: rest[1], sketch: normalizeActionSketch(rest[2]) };
-    case "FromSketch": return { case: tag, child: rest[0] ?? null, flip: rest[1], selection: normalizeFromSketchSelection(rest[2]) };
-    case "Thicken": return { case: tag, child: rest[0] ?? null, amount: rest[1] };
-    case "Shell": return { case: tag, child: rest[0] ?? null, thickness: rest[1] };
-    case "Mesh": return { case: tag, child: rest[0] ?? null, size: rest[1], resolution: rest[2] };
-    default: return { case: tag, values: rest };
-  }
-}
-
-function normalizeDisplay(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  return {
-    enabled: Boolean(value.Enabled),
-    color: toNumberArray(value.Color),
-    opacity: Number(value.Opacity ?? 0),
-    isoValue: Number(value.IsoValue ?? 0),
-  };
-}
-
-function normalizeFieldSliceSettings(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  return {
-    enabled: Boolean(value.Enabled),
-    plane: value.Plane ?? "Z",
-    offset: Number(value.Offset ?? 0),
-    extent: Number(value.Extent ?? 0),
-  };
-}
-
-function normalizeAction(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  return {
-    id: value.Id,
-    name: value.Name ?? null,
-    kind: normalizeActionKind(value.Kind),
-    visible: Boolean(value.Visible),
-    display: value.Display ? normalizeDisplay(value.Display) : null,
-    fieldSlice: value.FieldSlice ? normalizeFieldSliceSettings(value.FieldSlice) : null,
-  };
-}
-
-function normalizeSketchLoop(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  return {
-    id: value.Id,
-    entityIds: Array.isArray(value.EntityIds) ? value.EntityIds : [],
-  };
-}
-
-function normalizeLabelPos(value: unknown): unknown {
-  if (!value) return null;
-  if (!isRecord(value)) return value;
-  return { x: value.X ?? value.x ?? 0, y: value.Y ?? value.y ?? 0 };
-}
-
 function normalizeJsonVec3(value: unknown): unknown {
   if (!isRecord(value)) return value;
   return { x: value.X ?? 0, y: value.Y ?? 0, z: value.Z ?? 0 };
@@ -223,6 +151,14 @@ function normalizeTransform(value: unknown): unknown {
   return {
     rot: normalizeJsonQuat(value.Rot),
     trans: normalizeJsonVec3(value.Trans),
+  };
+}
+
+function normalizeSketchLoop(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  return {
+    id: value.Id,
+    entityIds: Array.isArray(value.EntityIds) ? value.EntityIds : [],
   };
 }
 
@@ -257,25 +193,6 @@ function normalizePickable(value: unknown): unknown {
     case "PickSurface": return { case: tag, pickId: rest[0], actionId: rest[1] };
     default: return { case: tag, values: rest };
   }
-}
-
-function normalizeDocumentView(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  return {
-    name: value.Name,
-    actions: Array.isArray(value.Actions) ? value.Actions.map(normalizeAction) : [],
-    selectedId: value.SelectedId ?? null,
-    selectedTargets: Array.isArray(value.SelectedTargets) ? value.SelectedTargets.map(normalizeSelectionTarget) : [],
-    sketchUi: normalizeSketchUi(value.SketchUi),
-    refOptions: toMapObject(value.RefOptions, (entryValue) => Array.isArray(entryValue) ? entryValue : []),
-    sketchLoops: toMapObject(value.SketchLoops, (entryValue) => Array.isArray(entryValue) ? entryValue.map(normalizeSketchLoop) : []),
-    errors: Array.isArray(value.Errors) ? value.Errors.map(normalizeActionError) : [],
-  };
-}
-
-function normalizeActionError(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  return { actionId: value.ActionId, key: value.Key, error: value.Error };
 }
 
 function normalizeSketchUi(value: unknown): unknown {
@@ -335,29 +252,6 @@ function normalizeViewerModel(value: unknown): unknown {
   };
 }
 
-function normalizeViewerState(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  return {
-    params: Array.isArray(value.Params) ? value.Params : [],
-    selectedId: value.SelectedId ?? null,
-    hoveredTarget: normalizeSelectionTarget(value.HoveredTarget),
-    highlightedTarget: normalizeSelectionTarget(value.HighlightedTarget),
-    dragTarget: normalizeSelectionTarget(value.DragTarget),
-    selectedTargets: Array.isArray(value.SelectedTargets) ? value.SelectedTargets.map(normalizeSelectionTarget) : [],
-    highlightedTargets: Array.isArray(value.HighlightedTargets) ? value.HighlightedTargets.map(normalizeSelectionTarget) : [],
-    visibleDimensionSketchIds: Array.isArray(value.VisibleDimensionSketchIds) ? value.VisibleDimensionSketchIds : [],
-    sketchUi: normalizeSketchUi(value.SketchUi),
-    frames: Array.isArray(value.Frames) ? value.Frames.map(normalizeFrameView) : [],
-    sketchEditFrames: Array.isArray(value.SketchEditFrames) ? value.SketchEditFrames.map(normalizeFrameView) : [],
-    sketchFrames: Array.isArray(value.SketchFrames) ? value.SketchFrames.map(normalizeFrameView) : [],
-    fieldSlices: Array.isArray(value.FieldSlices) ? value.FieldSlices.map(normalizeFieldSliceView) : [],
-    visible: toMapObject(value.Visible, (entryValue) => Boolean(entryValue)),
-    constraintLabelPositions: Array.isArray(value.ConstraintLabelPositions) ? value.ConstraintLabelPositions.map(normalizeConstraintLabelPosition) : [],
-    display: toMapObject(value.Display, normalizeDisplayStateView),
-    errors: Array.isArray(value.Errors) ? value.Errors.map(normalizeActionError) : [],
-  };
-}
-
 function normalizeFrameView(value: unknown): unknown {
   if (!isRecord(value)) return value;
   return { id: value.Id, transform: normalizeTransform(value.Transform) };
@@ -383,6 +277,26 @@ function normalizeConstraintLabelPosition(value: unknown): unknown {
   };
 }
 
+function normalizeDisplay(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  return {
+    enabled: Boolean(value.Enabled),
+    color: toNumberArray(value.Color),
+    opacity: Number(value.Opacity ?? 0),
+    isoValue: Number(value.IsoValue ?? 0),
+  };
+}
+
+function normalizeFieldSliceSettings(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  return {
+    enabled: Boolean(value.Enabled),
+    plane: value.Plane ?? "Z",
+    offset: Number(value.Offset ?? 0),
+    extent: Number(value.Extent ?? 0),
+  };
+}
+
 function normalizeDisplayStateView(value: unknown): unknown {
   if (!isRecord(value)) return value;
   return {
@@ -391,29 +305,37 @@ function normalizeDisplayStateView(value: unknown): unknown {
   };
 }
 
-function normalizePaletteView(value: unknown): unknown {
+function normalizeActionError(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  return { actionId: value.ActionId, key: value.Key, error: value.Error };
+}
+
+function normalizeViewerState(value: unknown): unknown {
   if (!isRecord(value)) return value;
   return {
-    isOpen: Boolean(value.IsOpen),
-    mode: value.Mode ?? "command",
-    pickedKind: value.PickedKind ?? null,
-    chips: Array.isArray(value.Chips) ? value.Chips.map((chip) => isRecord(chip) ? { label: chip.Label, value: chip.Value } : chip) : [],
-    prompt: value.Prompt ?? "",
-    items: Array.isArray(value.Items) ? value.Items.map((item) => isRecord(item) ? { id: item.Id, label: item.Label, kind: item.Kind } : item) : [],
-    scalarFields: Array.isArray(value.ScalarFields) ? value.ScalarFields.map((field) => isRecord(field) ? { key: field.Key, label: field.Label, value: field.Value } : field) : [],
-    hintBar: Array.isArray(value.HintBar) ? value.HintBar : [],
+    params: Array.isArray(value.Params) ? value.Params : [],
+    selectedId: value.SelectedId ?? null,
+    hoveredTarget: normalizeSelectionTarget(value.HoveredTarget),
+    highlightedTarget: normalizeSelectionTarget(value.HighlightedTarget),
+    dragTarget: normalizeSelectionTarget(value.DragTarget),
+    selectedTargets: Array.isArray(value.SelectedTargets) ? value.SelectedTargets.map(normalizeSelectionTarget) : [],
+    highlightedTargets: Array.isArray(value.HighlightedTargets) ? value.HighlightedTargets.map(normalizeSelectionTarget) : [],
+    visibleDimensionSketchIds: Array.isArray(value.VisibleDimensionSketchIds) ? value.VisibleDimensionSketchIds : [],
+    sketchUi: normalizeSketchUi(value.SketchUi),
+    frames: Array.isArray(value.Frames) ? value.Frames.map(normalizeFrameView) : [],
+    sketchEditFrames: Array.isArray(value.SketchEditFrames) ? value.SketchEditFrames.map(normalizeFrameView) : [],
+    sketchFrames: Array.isArray(value.SketchOriginFrames) ? value.SketchOriginFrames.map(normalizeFrameView) : [],
+    fieldSlices: Array.isArray(value.FieldSlices) ? value.FieldSlices.map(normalizeFieldSliceView) : [],
+    visible: toMapObject(value.Visible, (entryValue) => Boolean(entryValue)),
+    constraintLabelPositions: Array.isArray(value.ConstraintLabelPositions) ? value.ConstraintLabelPositions.map(normalizeConstraintLabelPosition) : [],
+    display: toMapObject(value.Display, normalizeDisplayStateView),
+    errors: Array.isArray(value.Errors) ? value.Errors.map(normalizeActionError) : [],
   };
 }
 
-function normalizeSerializedModel(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  return {
-    name: value.Name,
-    actions: Array.isArray(value.Actions) ? value.Actions.map(normalizeAction) : [],
-  };
-}
+// ── ParamValue construction (TS → F# value) ───────────────────────────
 
-export function paramValueFromJs(value: unknown): ParamValue {
+export function paramValueFromJs(value: unknown): unknown {
   if (value === null || value === undefined) return new ParamValue(0, []);
   if (typeof value === "boolean") return new ParamValue(1, [value]);
   if (typeof value === "number") {
@@ -427,34 +349,6 @@ export function paramValueFromJs(value: unknown): ParamValue {
   throw new Error("Unsupported param value");
 }
 
-function normalizeSketchPlaneValue(value: unknown): unknown {
-  if (typeof value === "string") return { case: value };
-  return value;
-}
-
-function normalizeActionForLoad(action: unknown): unknown {
-  if (!action || typeof action !== "object") return action;
-  const kind = (action as { kind?: unknown }).kind;
-  if (!kind || typeof kind !== "object") return action;
-  const kindCase = (kind as { case?: unknown }).case;
-  if (kindCase !== "Sketch") return action;
-  return {
-    ...(action as Record<string, unknown>),
-    kind: {
-      ...(kind as Record<string, unknown>),
-      plane: normalizeSketchPlaneValue((kind as { plane?: unknown }).plane),
-    },
-  };
-}
-
-export function normalizeSerializedModelForLoad(model: unknown): SerializedModel {
-  const record = (model ?? {}) as { name?: unknown; actions?: unknown[] };
-  return new SerializedModel(
-    typeof record.name === "string" ? record.name : "untitled",
-    listOfArray((record.actions ?? []).map(normalizeActionForLoad) as never[]),
-  );
-}
-
 export function selectionCandidatesFromJs(candidates: Array<{ pickId: number; score: number }>) {
   return listOfArray(candidates.map((candidate) => ({
     PickId: candidate.pickId,
@@ -462,54 +356,69 @@ export function selectionCandidatesFromJs(candidates: Array<{ pickId: number; sc
   })));
 }
 
-export const editorStore = createStore<EditorState, Message>(Editor_initState(), Editor_update);
+// ── Public dispatch + selectors ───────────────────────────────────────
 
-const viewerStateListeners = new Set<() => void>();
-const viewerModelListeners = new Set<() => void>();
-
-export function dispatchEditor(message: Message, _kind?: "state" | "model") {
-  const before = editorStore.getState();
-  editorStore.dispatch(message);
-  const after = editorStore.getState();
-  if (before.Doc !== after.Doc || before.Compiled !== after.Compiled) {
-    for (const listener of viewerModelListeners) listener();
-    return;
-  }
-  if (before !== after) {
-    for (const listener of viewerStateListeners) listener();
-  }
+export function dispatchEditor(message: unknown) {
+  storeDispatch(editorStore, message);
 }
 
-export function subscribeViewerState(listener: () => void) {
-  viewerStateListeners.add(listener);
-  return () => {
-    viewerStateListeners.delete(listener);
-  };
-}
-
-export function subscribeViewerModel(listener: () => void) {
-  viewerModelListeners.add(listener);
-  return () => {
-    viewerModelListeners.delete(listener);
-  };
-}
-
-export function selectDocumentView() {
-  return normalizeDocumentView(toPlain(Editor_documentView(editorStore.getState())));
-}
+const state = (editorStore as unknown as { State: { Doc: unknown; Compiled: unknown } });
 
 export function selectViewerModel() {
-  return normalizeViewerModel(toPlain(Editor_viewerModel(editorStore.getState())));
+  return normalizeViewerModel(toPlain(ViewerPipeline_viewerModel(state.State)));
 }
-
 export function selectViewerState() {
-  return normalizeViewerState(toPlain(Editor_viewerState(editorStore.getState())));
+  return normalizeViewerState(toPlain(ViewerPipeline_viewerState(state.State)));
 }
 
-export function selectPaletteView() {
-  return normalizePaletteView(toPlain(Editor_paletteView(editorStore.getState())));
+// ── Viewer listeners (model vs state split for efficiency) ────────────
+//
+// Model listeners fire when Doc or Compiled changes — the viewer rebuilds
+// its GPU buffers. State listeners fire on other changes (hover, drag
+// target, etc.) — the viewer only needs to update derived rendering.
+// We diff the state ourselves inside the single F# store subscription so
+// F# dispatches and TS dispatches both route through the same path.
+
+const viewerModelListeners = new Set<() => void>();
+const viewerStateListeners = new Set<() => void>();
+
+let lastDoc = state.State.Doc;
+let lastCompiled = state.State.Compiled;
+
+storeSubscribe(editorStore, () => {
+  const newDoc = state.State.Doc;
+  const newCompiled = state.State.Compiled;
+  const modelChanged = newDoc !== lastDoc || newCompiled !== lastCompiled;
+  lastDoc = newDoc;
+  lastCompiled = newCompiled;
+  if (modelChanged) {
+    for (const l of viewerModelListeners) l();
+  } else {
+    for (const l of viewerStateListeners) l();
+  }
+});
+
+export function subscribeViewerModel(listener: () => void): () => void {
+  viewerModelListeners.add(listener);
+  return () => { viewerModelListeners.delete(listener); };
+}
+export function subscribeViewerState(listener: () => void): () => void {
+  viewerStateListeners.add(listener);
+  return () => { viewerStateListeners.delete(listener); };
 }
 
-export function selectSerializedModel() {
-  return normalizeSerializedModel(toPlain(Editor_serializedModel(editorStore.getState())));
-}
+// ── Re-export the F# message factories for viewer.ts ──────────────────
+
+export {
+  viewerHover,
+  viewerPick,
+  viewerToolClick,
+  viewerPlaceConstraint,
+  viewerDimensionClickTarget,
+  startEditingDimension,
+  commitEditingDimension,
+  cancelEditingDimension,
+  setConstraintPlacementCursor,
+  patchActionParamValue,
+  patchSketchParams,
+} from "../src-gen/ViewerMessages.js";

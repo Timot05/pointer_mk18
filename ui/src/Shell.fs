@@ -5,11 +5,19 @@ open PointerMk18.Ui
 open Browser.Types
 
 // ---------------------------------------------------------------------------
-// Overall layout: top bar + main layout (left panel only for Phase 2 —
-// center viewport and right panel land in later phases).
+// Overall layout: top bar + three-panel layout (actions / viewport / params).
+//
+// The `viewerHost` is created once at app startup and re-parented on every
+// render. WebGPU canvas state persists across detach/reattach, so the
+// viewer keeps its pipelines and textures intact even though the shell
+// wipes and rebuilds the rest of the DOM every dispatch.
 // ---------------------------------------------------------------------------
 
-let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
+let render
+        (dispatch: Message -> unit)
+        (doc: DocumentView)
+        (viewerHost: HTMLElement)
+        : HTMLElement =
     let root = Dom.el "div" "ui-root"
 
     root.appendChild (TopBar.render dispatch :> Node) |> ignore
@@ -17,10 +25,8 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     let layout = Dom.el "div" "layout"
     layout.appendChild (ActionList.render dispatch doc :> Node) |> ignore
 
-    // Center: placeholder for the WebGPU viewport (wired in Phase 7),
-    // plus the sketch-authoring overlay when edit mode is active.
     let center = Dom.el "div" "panel panel-center"
-    center.appendChild (Dom.elText "div" "viewport-placeholder" "(viewport — Phase 7)" :> Node) |> ignore
+    center.appendChild (viewerHost :> Node) |> ignore
     match SketchOverlay.render dispatch doc with
     | Some overlay -> center.appendChild (overlay :> Node) |> ignore
     | None -> ()

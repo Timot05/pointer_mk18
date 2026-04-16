@@ -22,7 +22,6 @@ import {
   cancelEditingDimension,
   commitEditingDimension,
   patchActionParamValue,
-  patchSketchParams,
   setConstraintPlacementCursor,
   startEditingDimension,
   viewerDimensionClickTarget,
@@ -1142,12 +1141,11 @@ export class ViewerApp {
       await this.reloadState();
       return;
     }
-    dispatchEditor(
-      patchSketchParams(
-        drag.sketchId,
-        listOfArray(params.map((param) => [param.key, param.value] as [string, number])),
-      ),
-    );
+    // NOTE: sketch-drag patch path temporarily disabled. PatchSketchParams
+    // was removed in favour of typed ActionParamField; the solver's raw
+    // string keys need mapping through SlotIndex before dispatch can work
+    // again. TODO: reimplement on top of patchActionParamValue.
+    console.warn("sketch drag not wired to dispatch yet (params:", params, ")");
     this.applyViewerState(selectViewerState() as ViewerState);
     await this.solveSketches();
     this.rebuildRenderData();

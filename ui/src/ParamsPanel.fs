@@ -9,12 +9,9 @@ open Browser.Types
 
 // ---------------------------------------------------------------------------
 // Right panel: properties / parameter editor for the selected action.
-// Ported from user-interface/src/render.ts:635–1056.
 // ---------------------------------------------------------------------------
 
-// ── Kind subtitle / label (kindLabel lives in ActionList) ──────────────
-
-// ── ParamValue helpers — how the F# reducer expects payloads ───────────
+// ── ParamValue helpers ─────────────────────────────────────────────────
 
 let private vFloat (x: float) = VFloat x
 let private vString (s: string) = VString s
@@ -23,27 +20,14 @@ let private vBool (b: bool) = VBool b
 let private vColor (rgb: float[]) : ParamValue =
     rgb |> Array.map VFloat |> Array.toList |> VArray
 
-let private vSelectionLoop (loopId: string option) : ParamValue =
-    let loopField =
-        match loopId with
-        | Some id when id <> "" -> VString id
-        | _ -> VNull
-    VRecord (Map.ofList [ "case", VString "SelectionLoop"; "loopId", loopField ])
-
-// ── Control builders ───────────────────────────────────────────────────
-
-let private controlStatic (label: string) (value: string) : HTMLElement =
-    let row = Dom.el "div" "control-row"
-    row.appendChild (Dom.elText "span" "control-name" label :> Node) |> ignore
-    row.appendChild (Dom.elText "span" "" value :> Node) |> ignore
-    row
+// ── Control builders — each takes a typed field, not a string key ─────
 
 let private controlDrag
         (dispatch: Message -> unit)
         (label: string)
         (value: float)
         (actionId: string)
-        (key: string)
+        (field: ActionParamField)
         : HTMLElement =
     let row = Dom.el "div" "control-row"
     row.appendChild (Dom.elText "span" "control-name" label :> Node) |> ignore
@@ -51,8 +35,8 @@ let private controlDrag
     Dom.setupDraggable
         valSpan
         value
-        (fun v -> dispatch (PatchActionParamValue(actionId, key, vFloat v)))
-        (fun v -> dispatch (PatchActionParamValue(actionId, key, vFloat v)))
+        (fun v -> dispatch (PatchActionParamValue(actionId, field, vFloat v)))
+        (fun v -> dispatch (PatchActionParamValue(actionId, field, vFloat v)))
     row.appendChild (valSpan :> Node) |> ignore
     row
 
@@ -69,7 +53,7 @@ let private controlRef
         (current: string option)
         (options: DocAction list)
         (actionId: string)
-        (key: string)
+        (field: ActionParamField)
         : HTMLElement =
     let row = Dom.el "div" "control-row"
     row.appendChild (Dom.elText "span" "control-name" label :> Node) |> ignore
@@ -82,7 +66,7 @@ let private controlRef
     select.addEventListener (
         "change",
         fun _ ->
-            dispatch (PatchActionParamValue(actionId, key, vString select.value))
+            dispatch (PatchActionParamValue(actionId, field, vString select.value))
     )
     row.appendChild (select :> Node) |> ignore
     row
@@ -93,7 +77,7 @@ let private controlSelect
         (current: string)
         (choices: string list)
         (actionId: string)
-        (key: string)
+        (field: ActionParamField)
         : HTMLElement =
     let row = Dom.el "div" "control-row"
     row.appendChild (Dom.elText "span" "control-name" label :> Node) |> ignore
@@ -104,7 +88,7 @@ let private controlSelect
     select.addEventListener (
         "change",
         fun _ ->
-            dispatch (PatchActionParamValue(actionId, key, vString select.value))
+            dispatch (PatchActionParamValue(actionId, field, vString select.value))
     )
     row.appendChild (select :> Node) |> ignore
     row
@@ -114,7 +98,7 @@ let private controlCheck
         (label: string)
         (checked_: bool)
         (actionId: string)
-        (key: string)
+        (field: ActionParamField)
         : HTMLElement =
     let row = Dom.el "div" "control-row control-check"
     let input = document.createElement "input" :?> HTMLInputElement
@@ -123,10 +107,16 @@ let private controlCheck
     input.addEventListener (
         "change",
         fun _ ->
-            dispatch (PatchActionParamValue(actionId, key, vBool input.``checked``))
+            dispatch (PatchActionParamValue(actionId, field, vBool input.``checked``))
     )
     row.appendChild (input :> Node) |> ignore
     row.appendChild (Dom.elText "label" "" label :> Node) |> ignore
+    row
+
+let private controlStatic (label: string) (value: string) : HTMLElement =
+    let row = Dom.el "div" "control-row"
+    row.appendChild (Dom.elText "span" "control-name" label :> Node) |> ignore
+    row.appendChild (Dom.elText "span" "" value :> Node) |> ignore
     row
 
 let private planeOfSketchPlane (p: SketchPlane) : string =
@@ -160,27 +150,48 @@ let private controlFromSketchLoop
     select.appendChild (option "" "first (auto)" (currentLoopId = "") :> Node) |> ignore
     loops
     |> List.iteri (fun i loop ->
-        select.appendChild (option loop.Id (sprintf "loop %d" (i + 1)) (loop.Id = currentLoopId) :> Node)
-        |> ignore)
+            select.appendChild (option loop.Id (sprintf "loop %d" (i + 1)) (loop.Id = currentLoopId) :> Node)
+            |> ignore)
 
     select.disabled <- Option.isNone childId || loops.IsEmpty
     select.addEventListener (
         "change",
         fun _ ->
             let loopId = if select.value = "" then None else Some select.value
-            dispatch (PatchActionParamValue(actionId, "selection", vSelectionLoop loopId))
+            // FromSketchSelection is its own VRecord-encoded payload.
+            let record =
+                let loopField =
+                    match loopId with
+                    | Some id when id <> "" -> VString id
+                    | _ -> VNull
+                VRecord (Map.ofList [ "case", VString "SelectionLoop"; "loopId", loopField ])
+            dispatch (PatchActionParamValue(actionId, ActionParamField.FromSketchSelection, record))
     )
     row.appendChild (select :> Node) |> ignore
     row
 
-// ── Kind → controls strip ──────────────────────────────────────────────
+// ── refOptions index is keyed by ActionParamField name ──────────────────
 
-let private refOptsFor (doc: DocumentView) (key: string) : DocAction list =
+let private refOptsFor
+        (doc: DocumentView)
+        (field: ActionParamField)
+        : DocAction list =
     let byId = doc.Actions |> List.map (fun a -> a.Id, a) |> Map.ofList
+    let key =
+        match field with
+        | TranslateChild | RotateChild | MoveChild | ThickenChild | ShellChild
+        | MeshChild | FromSketchChild -> "child"
+        | MoveFrame -> "frame"
+        | UnionA | SubtractA | IntersectA -> "a"
+        | UnionB | SubtractB | IntersectB -> "b"
+        | SketchOrigin -> "origin"
+        | _ -> ""
     doc.RefOptions
     |> Map.tryFind key
     |> Option.defaultValue []
     |> List.choose (fun id -> Map.tryFind id byId)
+
+// ── Kind → controls strip ──────────────────────────────────────────────
 
 let private renderKindControls
         (dispatch: Message -> unit)
@@ -188,10 +199,12 @@ let private renderKindControls
         (selected: DocAction)
         : HTMLElement =
     let strip = Dom.el "div" "controls-strip"
-    let cDrag = controlDrag dispatch
-    let cRef label current key = controlRef dispatch label current (refOptsFor doc key) selected.Id key
-    let cSelect label current choices key = controlSelect dispatch label current choices selected.Id key
-    let cCheck label b key = controlCheck dispatch label b selected.Id key
+    let drag label v field = controlDrag dispatch label v selected.Id field
+    let ref label current field =
+        controlRef dispatch label current (refOptsFor doc field) selected.Id field
+    let select label current choices field =
+        controlSelect dispatch label current choices selected.Id field
+    let check label b field = controlCheck dispatch label b selected.Id field
 
     let append (e: HTMLElement) = strip.appendChild (e :> Node) |> ignore
 
@@ -199,61 +212,61 @@ let private renderKindControls
     | Origin ->
         append (controlStatic "frame" "world")
     | Sphere r ->
-        append (cDrag "radius" r selected.Id "radius")
+        append (drag "radius" r SphereRadius)
     | Cylinder(r, h) ->
-        append (cDrag "radius" r selected.Id "radius")
-        append (cDrag "height" h selected.Id "height")
+        append (drag "radius" r CylinderRadius)
+        append (drag "height" h CylinderHeight)
     | Box(w, h, d) ->
-        append (cDrag "width" w selected.Id "width")
-        append (cDrag "height" h selected.Id "height")
-        append (cDrag "depth" d selected.Id "depth")
+        append (drag "width" w BoxWidth)
+        append (drag "height" h BoxHeight)
+        append (drag "depth" d BoxDepth)
     | HalfPlane(axis, offset, flip) ->
-        append (cSelect "axis" axis [ "X"; "Y"; "Z" ] "axis")
-        append (cDrag "offset" offset selected.Id "offset")
-        append (cCheck "flip" flip "flip")
+        append (select "axis" axis [ "X"; "Y"; "Z" ] HalfPlaneAxis)
+        append (drag "offset" offset HalfPlaneOffset)
+        append (check "flip" flip HalfPlaneFlip)
     | Translate(child, x, y, z) ->
-        append (cRef "child" child "child")
-        append (cDrag "x" x selected.Id "x")
-        append (cDrag "y" y selected.Id "y")
-        append (cDrag "z" z selected.Id "z")
+        append (ref "child" child TranslateChild)
+        append (drag "x" x TranslateX)
+        append (drag "y" y TranslateY)
+        append (drag "z" z TranslateZ)
     | Rotate(child, ax, ay, az, angle) ->
-        append (cRef "child" child "child")
-        append (cDrag "ax" ax selected.Id "ax")
-        append (cDrag "ay" ay selected.Id "ay")
-        append (cDrag "az" az selected.Id "az")
-        append (cDrag "angle" angle selected.Id "angle")
+        append (ref "child" child RotateChild)
+        append (drag "ax" ax RotateAxisX)
+        append (drag "ay" ay RotateAxisY)
+        append (drag "az" az RotateAxisZ)
+        append (drag "angle" angle RotateAngle)
     | Move(child, frame) ->
-        append (cRef "child" child "child")
-        append (cRef "frame" frame "frame")
+        append (ref "child" child MoveChild)
+        append (ref "frame" frame MoveFrame)
     | Union(a, b, r) ->
-        append (cRef "tool" a "a")
-        append (cRef "target" b "b")
-        append (cDrag "radius" r selected.Id "radius")
+        append (ref "tool" a UnionA)
+        append (ref "target" b UnionB)
+        append (drag "radius" r UnionRadius)
     | Subtract(a, b, r) ->
-        append (cRef "tool" a "a")
-        append (cRef "target" b "b")
-        append (cDrag "radius" r selected.Id "radius")
+        append (ref "tool" a SubtractA)
+        append (ref "target" b SubtractB)
+        append (drag "radius" r SubtractRadius)
     | Intersect(a, b, r) ->
-        append (cRef "tool" a "a")
-        append (cRef "target" b "b")
-        append (cDrag "radius" r selected.Id "radius")
+        append (ref "tool" a IntersectA)
+        append (ref "target" b IntersectB)
+        append (drag "radius" r IntersectRadius)
     | Sketch(origin, plane, _) ->
-        append (cRef "origin" origin "origin")
-        append (cSelect "plane" (planeOfSketchPlane plane) [ "XY"; "XZ"; "YZ" ] "plane")
+        append (ref "origin" origin SketchOrigin)
+        append (select "plane" (planeOfSketchPlane plane) [ "XY"; "XZ"; "YZ" ] ActionParamField.SketchPlane)
     | FromSketch(child, flip, selection) ->
-        append (cRef "sketch" child "child")
-        append (cCheck "flip" flip "flip")
+        append (ref "sketch" child FromSketchChild)
+        append (check "flip" flip FromSketchFlip)
         append (controlFromSketchLoop dispatch doc child selection selected.Id)
     | Thicken(child, amount) ->
-        append (cRef "child" child "child")
-        append (cDrag "amount" amount selected.Id "amount")
+        append (ref "child" child ThickenChild)
+        append (drag "amount" amount ThickenAmount)
     | Shell(child, t) ->
-        append (cRef "child" child "child")
-        append (cDrag "thickness" t selected.Id "thickness")
+        append (ref "child" child ShellChild)
+        append (drag "thickness" t ShellThickness)
     | Mesh(child, size, res) ->
-        append (cRef "child" child "child")
-        append (cDrag "size" size selected.Id "size")
-        append (cDrag "res" (float res) selected.Id "resolution")
+        append (ref "child" child MeshChild)
+        append (drag "size" size MeshSize)
+        append (drag "res" (float res) MeshResolution)
 
     strip
 
@@ -323,7 +336,7 @@ let private renderDisplaySection
                 swatch.addEventListener (
                     "click",
                     fun _ ->
-                        dispatch (PatchDisplayValue(selected.Id, "color", vColor rgb))
+                        dispatch (PatchDisplayValue(selected.Id, DisplayColor, vColor rgb))
                 )
                 swatches.appendChild (swatch :> Node) |> ignore
             colorRow.appendChild (swatches :> Node) |> ignore
@@ -337,7 +350,7 @@ let private renderDisplaySection
                 offsetVal
                 d.IsoValue
                 (fun _ -> ())
-                (fun v -> dispatch (PatchDisplayValue(selected.Id, "isoValue", vFloat v)))
+                (fun v -> dispatch (PatchDisplayValue(selected.Id, DisplayIsoValue, vFloat v)))
             offsetRow.appendChild (offsetVal :> Node) |> ignore
             controls.appendChild (offsetRow :> Node) |> ignore
 
@@ -366,7 +379,7 @@ let private renderDisplaySection
                     planeSelect.appendChild (option value label (fs.Plane = value) :> Node) |> ignore
                 planeSelect.addEventListener (
                     "change",
-                    fun _ -> dispatch (PatchFieldSliceValue(selected.Id, "plane", vString planeSelect.value))
+                    fun _ -> dispatch (PatchFieldSliceValue(selected.Id, SlicePlane, vString planeSelect.value))
                 )
                 planeRow.appendChild (planeSelect :> Node) |> ignore
                 controls.appendChild (planeRow :> Node) |> ignore
@@ -379,21 +392,9 @@ let private renderDisplaySection
                     sOffsetVal
                     fs.Offset
                     (fun _ -> ())
-                    (fun v -> dispatch (PatchFieldSliceValue(selected.Id, "offset", vFloat v)))
+                    (fun v -> dispatch (PatchFieldSliceValue(selected.Id, SliceOffset, vFloat v)))
                 sOffsetRow.appendChild (sOffsetVal :> Node) |> ignore
                 controls.appendChild (sOffsetRow :> Node) |> ignore
-
-                // Extent (clamped to 0.1+)
-                let sExtentRow = Dom.el "div" "control-row"
-                sExtentRow.appendChild (Dom.elText "span" "control-name" "extent" :> Node) |> ignore
-                let sExtentVal = Dom.elText "span" "control-value" (sprintf "%.1f" fs.Extent)
-                Dom.setupDraggable
-                    sExtentVal
-                    fs.Extent
-                    (fun _ -> ())
-                    (fun v -> dispatch (PatchFieldSliceValue(selected.Id, "extent", vFloat (max 0.1 v))))
-                sExtentRow.appendChild (sExtentVal :> Node) |> ignore
-                controls.appendChild (sExtentRow :> Node) |> ignore
 
         section.appendChild (controls :> Node) |> ignore
         Some section
@@ -443,7 +444,7 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
         header.appendChild (headerInfo :> Node) |> ignore
         container.appendChild (header :> Node) |> ignore
 
-        // Errors for this action
+        // Errors
         let actionErrors = doc.Errors |> List.filter (fun e -> e.ActionId = selected.Id)
         if not actionErrors.IsEmpty then
             let errSection = Dom.el "div" "error-section"
@@ -460,12 +461,12 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
         section.appendChild (renderKindControls dispatch doc selected :> Node) |> ignore
         container.appendChild (section :> Node) |> ignore
 
-        // Sketch edit toggle (only for Sketch kind)
+        // Sketch edit toggle
         match renderSketchEditToggle dispatch doc selected.Kind with
         | Some s -> container.appendChild (s :> Node) |> ignore
         | None -> ()
 
-        // Field display section (only when Display is populated, i.e. Field type)
+        // Field display
         match renderDisplaySection dispatch selected with
         | Some s -> container.appendChild (s :> Node) |> ignore
         | None -> ()

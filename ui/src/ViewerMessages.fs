@@ -19,4 +19,3 @@ let commitEditingDimension value = CommitEditingDimension value
 let cancelEditingDimension = CancelEditingDimension
 let setConstraintPlacementCursor cursor = SetConstraintPlacementCursor cursor
 let patchActionParamValue id key value = PatchActionParamValue(id, key, value)
-let patchSketchParams id updates = PatchSketchParams(id, updates)

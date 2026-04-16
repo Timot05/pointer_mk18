@@ -420,5 +420,4 @@ export {
   cancelEditingDimension,
   setConstraintPlacementCursor,
   patchActionParamValue,
-  patchSketchParams,
 } from "../src-gen/ViewerMessages.js";

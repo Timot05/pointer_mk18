@@ -33,6 +33,7 @@ type ViewerSketchView =
       Graph: Graph
       Loops: SketchLoopView list }
 
+// The topology of the model, takes longer to compute
 type ViewerModel =
     { Surfaces: FieldSurface list
       FieldWgsl: string option
@@ -40,9 +41,13 @@ type ViewerModel =
       FieldSurfaceActionIds: string list
       Sketches: ViewerSketchView list
       NumSlots: int
-      SlotIndex: {| ActionId: string; Path: string; Slot: int |} list
+      SlotIndex:
+          {| ActionId: string
+             Path: string
+             Slot: int |} list
       Pickables: Pickable list }
 
+// The variable state of the model, fast to compute
 type ViewerState =
     { Params: float array
       SelectedId: string option
@@ -75,17 +80,22 @@ module ViewerPipeline =
     /// the field slice can be rendered in world space.
     let rec private leadingFieldTransform (state: EditorState) (field: FieldNode) (acc: RigidTransform) =
         let slot (s: Slot) = state.Compiled.Slots.Values.[s]
+
         match field with
         | FTranslate(x, y, z, child) ->
             let step = RigidTransform.translate { X = slot x; Y = slot y; Z = slot z }
             leadingFieldTransform state child (acc * step)
         | FRotate(ax, ay, az, angle, child) ->
-            let step = RigidTransform.fromAxisAngle { X = slot ax; Y = slot ay; Z = slot az } (slot angle)
+            let step =
+                RigidTransform.fromAxisAngle
+                    { X = slot ax
+                      Y = slot ay
+                      Z = slot az }
+                    (slot angle)
+
             leadingFieldTransform state child (acc * step)
-        | FFieldOp(_, _, child) ->
-            leadingFieldTransform state child acc
-        | _ ->
-            acc
+        | FFieldOp(_, _, child) -> leadingFieldTransform state child acc
+        | _ -> acc
 
     /// Per-surface field-slice placement (origin + basis) for every visible
     /// surface with a slice enabled.
@@ -98,6 +108,7 @@ module ViewerPipeline =
         state.Doc.Actions
         |> List.choose (fun action ->
             let fs = action.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
+
             if not action.Visible || not fs.Enabled then
                 None
             else
@@ -110,6 +121,7 @@ module ViewerPipeline =
                     let planeY = frame.Rot.Rotate(localY)
                     let planeN = frame.Rot.Rotate(localN)
                     let origin = frame.Trans + fs.Offset * planeN
+
                     Some
                         { SurfaceIndex = surfaceIndex
                           PlaneOrigin = origin
@@ -131,19 +143,28 @@ module ViewerPipeline =
         let indexList =
             state.Compiled.Slots.Index
             |> Map.toList
-            |> List.map (fun (r, s) -> {| ActionId = r.ActionId; Path = r.Path; Slot = s |})
+            |> List.map (fun (r, s) ->
+                {| ActionId = r.ActionId
+                   Path = r.Path
+                   Slot = s |})
+
         let sketches =
             state.Doc.Actions
             |> List.choose (fun a ->
                 match a.Kind with
                 | Sketch(origin, plane, sk) ->
                     let sketchOrigin = Editor.resolveSketchTransform state origin plane
+
                     let ctx: SketchCompileContext =
-                        { SketchOrigin = sketchOrigin; Frames = state.Compiled.Frames }
+                        { SketchOrigin = sketchOrigin
+                          Frames = state.Compiled.Frames }
+
                     let graph = SketchCompile.compile sk ctx
+
                     let loops =
                         SketchLoops.detectLoops sk.Entities
                         |> List.map (fun l -> { Id = l.Id; EntityIds = l.EntityIds })
+
                     Some
                         { Id = a.Id
                           Origin = origin
@@ -152,6 +173,7 @@ module ViewerPipeline =
                           Graph = graph
                           Loops = loops }
                 | _ -> None)
+
         { Surfaces = state.Compiled.Surfaces
           FieldWgsl = GpuIsosurface.combinedIsosurfaceWgsl state.Compiled.Surfaces
           FieldSliceWgsl = GpuFieldSlice.combinedFieldSliceWgsl state.Compiled.Surfaces
@@ -164,11 +186,14 @@ module ViewerPipeline =
     let viewerState (state: EditorState) : ViewerState =
         let isDraggable =
             function
-            | TargetPoint _ | TargetDimension _ as t -> Editor.belongsToActiveSketch state t
+            | TargetPoint _
+            | TargetDimension _ as t -> Editor.belongsToActiveSketch state t
             | _ -> false
+
         let dragTarget = state.HoveredTarget |> Option.filter isDraggable
 
         let frameHighlightAllowed = state.ConstraintPlacementMode <> Some AnglePlacement
+
         let highlightedTargetAllowed target =
             match target with
             | TargetSurface _ -> true
@@ -209,7 +234,9 @@ module ViewerPipeline =
             |> List.choose (fun a ->
                 match a.Kind with
                 | Sketch(origin, plane, _) ->
-                    Some { Id = a.Id; Transform = Editor.resolveSketchTransform state origin plane }
+                    Some
+                        { Id = a.Id
+                          Transform = Editor.resolveSketchTransform state origin plane }
                 | _ -> None)
 
         let visibleByAction =
@@ -223,7 +250,10 @@ module ViewerPipeline =
                     sk.Constraints
                     |> List.mapi (fun i c ->
                         SketchConstraint.labelPos c
-                        |> Option.map (fun pos -> { SketchId = a.Id; ConstraintIndex = i; Position = pos }))
+                        |> Option.map (fun pos ->
+                            { SketchId = a.Id
+                              ConstraintIndex = i
+                              Position = pos }))
                     |> List.choose id
                 | _ -> [])
 

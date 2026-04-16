@@ -3,7 +3,7 @@ obj/
 node_modules/
 dist/
 .vite/
-app/src-gen/
+ui/src-gen/
 *.user
 
 archive/

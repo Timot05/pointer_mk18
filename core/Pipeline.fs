@@ -183,6 +183,22 @@ module Pipeline =
                 | _ -> []
             | _ -> [])
 
+    let private allocActionSlots
+        (typeMap: Map<ActionId, FieldType>)
+        (b: SlotTable.Builder)
+        (action: DocAction)
+        : SlotTable.Builder =
+        match Map.tryFind action.Id typeMap, action.Kind with
+        | Some FieldType.Field, _ ->
+            allocDisplaySlots b action
+            allocFieldSliceSlots b action
+            b
+        | Some FieldType.Sketch, Sketch(_, _, sketch) ->
+            allocSketchSlots b action.Id sketch
+            b
+        | _ ->
+            b
+
     // ── Full pipeline ─────────────────────────────────────────────────────
 
     let compile (actions: DocAction list) : PipelineResult =
@@ -195,18 +211,10 @@ module Pipeline =
         // Compile field surfaces (allocates primitive/transform/boolean slots)
         let surfaces = FieldCompile.compile actions buildResult.Elements b
 
-        // Allocate display + fieldSlice slots for Field-type actions,
-        // and sketch slots for Sketch-type actions.
-        for action in actions do
-            match Map.tryFind action.Id typeMap with
-            | Some FieldType.Field ->
-                allocDisplaySlots b action
-                allocFieldSliceSlots b action
-            | Some FieldType.Sketch ->
-                match action.Kind with
-                | Sketch(_, _, s) -> allocSketchSlots b action.Id s
-                | _ -> ()
-            | _ -> ()
+        // Allocate action-owned runtime slots from the typed action stream:
+        // field actions contribute display/field-slice slots, and sketch
+        // actions contribute entity/constraint slots.
+        actions |> List.fold (allocActionSlots typeMap) b |> ignore
 
         let pickables = buildPickables b actions typeMap
 

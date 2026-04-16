@@ -6,23 +6,23 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../server/Math.fs" Link="Math.fs" />
-    <Compile Include="../server/Sketch.fs" Link="Sketch.fs" />
-    <Compile Include="../server/SketchLoops.fs" Link="SketchLoops.fs" />
-    <Compile Include="../server/Domain.fs" Link="Domain.fs" />
-    <Compile Include="../server/TypeCheck.fs" Link="TypeCheck.fs" />
-    <Compile Include="../server/GraphIR.fs" Link="GraphIR.fs" />
-    <Compile Include="../server/SketchCompile.fs" Link="SketchCompile.fs" />
-    <Compile Include="../server/SlotTable.fs" Link="SlotTable.fs" />
-    <Compile Include="../server/Element.fs" Link="Element.fs" />
-    <Compile Include="../server/FieldIR.fs" Link="FieldIR.fs" />
-    <Compile Include="../server/GpuSdf.fs" Link="GpuSdf.fs" />
-    <Compile Include="../server/GpuIsosurface.fs" Link="GpuIsosurface.fs" />
-    <Compile Include="../server/GpuFieldSlice.fs" Link="GpuFieldSlice.fs" />
-    <Compile Include="../server/Pickable.fs" Link="Pickable.fs" />
-    <Compile Include="../server/SketchAuthoring.fs" Link="SketchAuthoring.fs" />
-    <Compile Include="../server/Pipeline.fs" Link="Pipeline.fs" />
-    <Compile Include="../server/Palette.fs" Link="Palette.fs" />
+    <Compile Include="Math.fs" />
+    <Compile Include="Sketch.fs" />
+    <Compile Include="SketchLoops.fs" />
+    <Compile Include="Domain.fs" />
+    <Compile Include="TypeCheck.fs" />
+    <Compile Include="GraphIR.fs" />
+    <Compile Include="SketchCompile.fs" />
+    <Compile Include="SlotTable.fs" />
+    <Compile Include="Element.fs" />
+    <Compile Include="FieldIR.fs" />
+    <Compile Include="GpuSdf.fs" />
+    <Compile Include="GpuIsosurface.fs" />
+    <Compile Include="GpuFieldSlice.fs" />
+    <Compile Include="Pickable.fs" />
+    <Compile Include="SketchAuthoring.fs" />
+    <Compile Include="Pipeline.fs" />
+    <Compile Include="Palette.fs" />
     <Compile Include="Editor.fs" />
   </ItemGroup>
 

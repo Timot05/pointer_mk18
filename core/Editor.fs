@@ -560,7 +560,7 @@ module Editor =
                 | "Union" -> Some(ActionKind.Union(None, None, 0.0))
                 | "Subtract" -> Some(ActionKind.Subtract(None, None, 0.0))
                 | "Intersect" -> Some(ActionKind.Intersect(None, None, 0.0))
-                | "Sketch" -> Some(ActionKind.Sketch(None, XY, ActionSketch.empty))
+                | "Sketch" -> Some(ActionKind.Sketch(Some "origin", XY, ActionSketch.empty))
                 | "FromSketch" -> Some(ActionKind.FromSketch(None, false, FromSketchSelection.defaults))
                 | "Thicken" -> Some(ActionKind.Thicken(None, 2.0))
                 | "Shell" -> Some(ActionKind.Shell(None, 1.0))
@@ -843,6 +843,7 @@ module Editor =
             |> recompileState
 
     let msgSelectAction id = SelectAction id
+    let msgSetSelectedTargets targets = SetSelectedTargets targets
     let msgAddDefaultAction kindCase id = AddDefaultAction(kindCase, id)
     let msgAddAction action = AddAction action
     let msgRemoveAction id = RemoveAction id

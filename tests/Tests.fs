@@ -165,21 +165,14 @@ let ``Clearing a document leaves only the origin action`` () =
         failwithf "Expected exactly one action after clear, got %A" other
 
 [<Fact>]
-let ``Adding a sketch without origin ties it to origin on the backend`` () =
-    let doc = Document.emptyDocument ()
-    let sketchAction =
-        { Id = "sketch_new"
-          Name = None
-          Kind = Sketch(None, XY, ActionSketch.empty)
-          Visible = true
-          Display = None
-          FieldSlice = None }
+let ``AddDefaultAction "Sketch" attaches the new sketch to the origin frame`` () =
+    let state =
+        Editor.initState ()
+        |> Editor.update (Editor.msgAddDefaultAction "Sketch" "sketch_new")
 
-    let next = Document.addAction sketchAction doc
-
-    match next.Actions |> List.find (fun action -> action.Id = "sketch_new") with
+    match state.Doc.Actions |> List.find (fun action -> action.Id = "sketch_new") with
     | { Kind = Sketch(Some "origin", XY, _) } -> ()
-    | other -> failwithf "Expected backend to attach sketch origin automatically, got %A" other
+    | other -> failwithf "Expected default sketch to be tied to origin, got %A" other
 
 [<Fact>]
 let ``Serialized model import accepts plain string sketch plane`` () =

@@ -168,7 +168,7 @@ module ViewerPipeline =
             | _ -> false
         let dragTarget = state.HoveredTarget |> Option.filter isDraggable
 
-        let frameHighlightAllowed = state.ConstraintPlacementMode <> Some "angle"
+        let frameHighlightAllowed = state.ConstraintPlacementMode <> Some AnglePlacement
         let highlightedTargetAllowed target =
             match target with
             | TargetSurface _ -> true

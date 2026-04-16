@@ -723,6 +723,45 @@ module SketchAuthoring =
                 let nextSketch = { ctx.Sketch with Constraints = ctx.Sketch.Constraints @ [ withLabel ] }
                 withUpdatedSketch doc ctx.Action.Id nextSketch))
 
+    /// A pending placement's constraint may carry a placeholder distance
+    /// (0.0) when the user is about to click; fix it up with the real
+    /// distance from the sketch geometry so the preview reads correctly.
+    /// Currently only frame-distance and frame-line-distance constraints
+    /// need this — others carry their final distance at draft time.
+    let withResolvedPendingConstraintValue
+            (resolveSketchContext: string -> (ActionSketch * RigidTransform) option)
+            (frames: Map<string, RigidTransform>)
+            (sketchUi: SketchUiState) : SketchUiState =
+        let tryLinePoints (sketch: ActionSketch) startId endId =
+            match tryPoint sketch startId, tryPoint sketch endId with
+            | Some a, Some b -> Some(a, b)
+            | _ -> None
+        let tryFrameOrigin (sketchOrigin: RigidTransform) frameId =
+            Map.tryFind frameId frames
+            |> Option.map (fun frameT ->
+                let local = sketchOrigin.Inverse.Apply frameT.Trans
+                local.X, local.Y)
+        let resolved =
+            sketchUi.PendingConstraintPlacement
+            |> Option.bind (fun pending ->
+                resolveSketchContext pending.SketchId
+                |> Option.map (fun (sketch, sketchOrigin) ->
+                    let nextConstraint =
+                        match pending.Constraint with
+                        | FrameDistance(pointId, frameId, "origin", _, lp) ->
+                            match tryPoint sketch pointId, tryFrameOrigin sketchOrigin frameId with
+                            | Some p, Some fp ->
+                                FrameDistance(pointId, frameId, "origin", Vec2.distance p fp, lp)
+                            | _ -> pending.Constraint
+                        | FrameLineDistance(lineId, aStart, aEnd, frameId, "origin", _, lp) ->
+                            match tryLinePoints sketch aStart aEnd, tryFrameOrigin sketchOrigin frameId with
+                            | Some(a, b), Some fp ->
+                                FrameLineDistance(lineId, aStart, aEnd, frameId, "origin", Vec2.pointLineDistance fp a b, lp)
+                            | _ -> pending.Constraint
+                        | _ -> pending.Constraint
+                    { pending with Constraint = nextConstraint }))
+        { sketchUi with PendingConstraintPlacement = resolved }
+
     let placePendingConstraint doc pending labelPosition =
         let withLabel =
             match pending.Constraint with

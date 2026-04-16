@@ -1,10 +1,5 @@
 namespace Server
 
-#if !FABLE_COMPILER
-open System.Text.Json
-#endif
-open System.Text.Json.Serialization
-
 // ---------------------------------------------------------------------------
 // Domain types — the document model that the frontend renders
 // ---------------------------------------------------------------------------
@@ -28,28 +23,6 @@ type ActionKind =
     | Thicken of child: ActionId option * amount: float
     | Shell of child: ActionId option * thickness: float
     | Mesh of child: ActionId option * size: float * resolution: int
-
-module ActionKind =
-    /// Default ActionKind value for a kind name, used when the user adds a
-    /// new action from the command palette. Returns None for unknown names.
-    let defaultFor (name: string) : ActionKind option =
-        match name with
-        | "Sphere" -> Some(Sphere 8.0)
-        | "Cylinder" -> Some(Cylinder(5.0, 20.0))
-        | "Box" -> Some(Box(10.0, 10.0, 10.0))
-        | "HalfPlane" -> Some(HalfPlane("Z", 0.0, false))
-        | "Translate" -> Some(Translate(None, 0.0, 0.0, 0.0))
-        | "Rotate" -> Some(Rotate(None, 0.0, 0.0, 1.0, 0.0))
-        | "Move" -> Some(Move(None, None))
-        | "Union" -> Some(Union(None, None, 0.0))
-        | "Subtract" -> Some(Subtract(None, None, 0.0))
-        | "Intersect" -> Some(Intersect(None, None, 0.0))
-        | "Sketch" -> Some(Sketch(Some "origin", XY, ActionSketch.empty))
-        | "FromSketch" -> Some(FromSketch(None, false, FromSketchSelection.defaults))
-        | "Thicken" -> Some(Thicken(None, 2.0))
-        | "Shell" -> Some(Shell(None, 1.0))
-        | "Mesh" -> Some(Mesh(None, 0.2, 96))
-        | _ -> None
 
 type DisplaySettings =
     { Enabled: bool
@@ -95,26 +68,6 @@ type ParamValue =
     | VRecord of Map<string, ParamValue>
 
 module ParamValue =
-
-#if !FABLE_COMPILER
-    let rec ofJsonElement (value: JsonElement) =
-        match value.ValueKind with
-        | JsonValueKind.Null
-        | JsonValueKind.Undefined -> VNull
-        | JsonValueKind.True -> VBool true
-        | JsonValueKind.False -> VBool false
-        | JsonValueKind.Number ->
-            match value.TryGetInt32() with
-            | true, i -> VInt i
-            | _ -> VFloat(value.GetDouble())
-        | JsonValueKind.String -> VString(value.GetString())
-        | JsonValueKind.Array -> value.EnumerateArray() |> Seq.map ofJsonElement |> Seq.toList |> VArray
-        | JsonValueKind.Object ->
-            value.EnumerateObject()
-            |> Seq.map (fun prop -> prop.Name, ofJsonElement prop.Value)
-            |> Map.ofSeq
-            |> VRecord
-#endif
 
     let asFloat =
         function

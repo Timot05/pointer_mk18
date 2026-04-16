@@ -25,13 +25,13 @@ let ``Sketch tool and constraint placement are normalized through editor update`
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit
-              SetSketchTool "line"
-              ToggleConstraintPlacement "distance" ]
+              SetSketchTool LineTool
+              ToggleConstraintPlacement DistancePlacement ]
 
     Assert.Equal(Some "sketch1", state.Doc.SelectedId)
     Assert.True(state.SketchEditMode)
     Assert.Equal("none", state.SketchTool)
-    Assert.Equal(Some "distance", state.ConstraintPlacementMode)
+    Assert.Equal(Some DistancePlacement, state.ConstraintPlacementMode)
     Assert.Empty(state.SketchToolPoints)
 
 [<Fact>]
@@ -75,7 +75,7 @@ let ``Clear model resets editor transient state and leaves only origin`` () =
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit
-              SetSketchTool "line"
+              SetSketchTool LineTool
               SetSelectedTargets [ TargetLine("sketch1", "l_bottom") ]
               SetConstraintPlacementCursor (Some("sketch1", { X = 3.0; Y = 4.0 })) ]
 

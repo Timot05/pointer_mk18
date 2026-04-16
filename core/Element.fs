@@ -135,7 +135,7 @@ module Element =
             | Cylinder(r, h) -> ECylinder(id, r, h), state
             | Box(w, h, d) -> EBox(id, w, h, d), state
             | HalfPlane(ax, off, fl) -> EHalfPlane(id, ax, off, fl), state
-            | Sketch _ -> EEmpty, state  // TODO: sketch → field
+            | Sketch _ -> EEmpty, state
 
             | Translate(child, x, y, z) ->
                 // If this Translate is part of a frame chain, its field output

@@ -168,7 +168,7 @@ let ``Clearing a document leaves only the origin action`` () =
 let ``AddDefaultAction "Sketch" attaches the new sketch to the origin frame`` () =
     let state =
         Editor.initState ()
-        |> Editor.update (AddDefaultAction("Sketch", "sketch_new"))
+        |> Editor.update (AddDefaultAction(SketchTemplate, "sketch_new"))
 
     match state.Doc.Actions |> List.find (fun action -> action.Id = "sketch_new") with
     | { Kind = Sketch(Some "origin", XY, _) } -> ()

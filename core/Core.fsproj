@@ -15,6 +15,7 @@
     <Compile Include="SketchCompile.fs" />
     <Compile Include="SlotTable.fs" />
     <Compile Include="Element.fs" />
+    <Compile Include="Frames.fs" />
     <Compile Include="FieldIR.fs" />
     <Compile Include="GpuSdf.fs" />
     <Compile Include="GpuIsosurface.fs" />

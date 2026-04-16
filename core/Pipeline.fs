@@ -218,19 +218,7 @@ module Pipeline =
 
         let pickables = buildPickables b actions typeMap
 
-        // Fold each FrameChain into a concrete RigidTransform. Chain is
-        // child/local-first, so left-fold with `*` gives world-from-local.
-        let foldChain (chain: FrameChain) : RigidTransform =
-            chain
-            |> List.fold (fun acc step ->
-                let step' =
-                    match step with
-                    | FrameTranslate(_, x, y, z) ->
-                        RigidTransform.translate { X = x; Y = y; Z = z }
-                    | FrameRotate(_, ax, ay, az, angle) ->
-                        RigidTransform.fromAxisAngle { X = ax; Y = ay; Z = az } angle
-                acc * step') RigidTransform.Identity
-        let frames = buildResult.Frames |> Map.map (fun _ c -> foldChain c)
+        let frames = buildResult.Frames |> Map.map (fun _ chain -> Frames.foldChain chain)
 
         { Surfaces = surfaces
           TypeMap = typeMap

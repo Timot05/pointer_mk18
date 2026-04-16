@@ -86,6 +86,17 @@ let ``Translate then rotate frame chain preserves translated origin`` () =
     Assert.Equal(0.0, frame.Trans.Z, 6)
 
 [<Fact>]
+let ``Frames foldChain composes frame steps into a rigid transform`` () =
+    let chain =
+        [ FrameTranslate("t", 5.0, 0.0, 0.0)
+          FrameRotate("r", 0.0, 0.0, 1.0, quarterTurn) ]
+
+    let frame = Frames.foldChain chain
+    Assert.Equal(5.0, frame.Trans.X, 6)
+    Assert.Equal(0.0, frame.Trans.Y, 6)
+    Assert.Equal(0.0, frame.Trans.Z, 6)
+
+[<Fact>]
 let ``Union builds EUnion with both children`` () =
     let actions = [ action "a" (Sphere 5.0); action "b" (Sphere 3.0); action "u" (Union(Some "a", Some "b", 0.5)) ]
     let elements = (buildElements actions).Elements

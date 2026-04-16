@@ -79,6 +79,18 @@ let frameConstraintDoc () =
           { Id = "f1"; Name = None; Kind = Translate(Some "origin", 5.0, 0.0, 0.0); Visible = true; Display = None; FieldSlice = None }
           { Id = "sketchF"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visible = true; Display = None; FieldSlice = None } ] }
 
+let pendingPlacementDoc () =
+    let sketch =
+        { Entities =
+            [ REPoint("p0", 0.0, 0.0)
+              REPoint("p1", 10.0, 0.0) ]
+          Constraints = [] }
+    { Name = "pending-placement"
+      SelectedId = Some "sketchP"
+      Actions =
+        [ { Id = "origin"; Name = None; Kind = Origin; Visible = true; Display = None; FieldSlice = None }
+          { Id = "sketchP"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visible = true; Display = None; FieldSlice = None } ] }
+
 [<Fact>]
 let ``Dimension placement buttons stay enabled in sketch edit mode`` () =
     let doc = Document.defaultDocument () |> Document.select "sketch1"
@@ -221,6 +233,83 @@ let ``Deleting two sketch lines also removes their now-unused endpoint points`` 
         |> List.exists (function
             | REPoint("p_bl", _, _) -> true
             | _ -> false))
+
+[<Fact>]
+let ``removeConstraintAt removes exactly the indexed constraint`` () =
+    let sketch =
+        { Entities = []
+          Constraints =
+            [ Horizontal("a", "b")
+              Vertical("c", "d")
+              Coincident("e", "f") ] }
+
+    let next = SketchAuthoring.removeConstraintAt 1 sketch
+
+    Assert.Equal<SketchConstraint list>(
+        [ Horizontal("a", "b")
+          Coincident("e", "f") ],
+        next.Constraints)
+
+[<Fact>]
+let ``tryEditableDimension recognizes distance diameter and angle constraints`` () =
+    let sketch =
+        { Entities = []
+          Constraints =
+            [ Distance("p0", "p1", 12.0, None)
+              CircleDiameter("c0", "center0", 8.0, None)
+              Angle("a0", "a1", "b0", "b1", "la", "lb", System.Math.PI * 0.25, false, false, true, None) ] }
+
+    let distance = SketchAuthoring.tryEditableDimension "sketchX" sketch 0
+    let diameter = SketchAuthoring.tryEditableDimension "sketchX" sketch 1
+    let angle = SketchAuthoring.tryEditableDimension "sketchX" sketch 2
+
+    Assert.Equal(Some { SketchId = "sketchX"; ConstraintIndex = 0; Key = "distance"; Value = 12.0 }, distance)
+    Assert.Equal(Some { SketchId = "sketchX"; ConstraintIndex = 1; Key = "diameter"; Value = 8.0 }, diameter)
+    Assert.Equal(Some { SketchId = "sketchX"; ConstraintIndex = 2; Key = "angle"; Value = System.Math.PI * 0.25 }, angle)
+
+[<Fact>]
+let ``updatePlacementDraft upgrades clicked line with hovered frame origin in distance mode`` () =
+    let draft = Some { SketchId = "sketchF"; Kind = "distance"; ClickedRefs = [ RefLine "l1" ] }
+
+    let next =
+        SketchAuthoring.updatePlacementDraft
+            "sketchF"
+            "distance"
+            (Some(TargetFrameOrigin("f1")))
+            draft
+
+    Assert.Equal(
+        Some { SketchId = "sketchF"; Kind = "distance"; ClickedRefs = [ RefLine "l1"; RefFrameOrigin "f1" ] },
+        next)
+
+[<Fact>]
+let ``placePendingConstraint writes the chosen label position onto the committed constraint`` () =
+    let doc = pendingPlacementDoc ()
+    let pending =
+        { SketchId = "sketchP"
+          Constraint = Distance("p0", "p1", 10.0, None) }
+
+    let next =
+        SketchAuthoring.placePendingConstraint doc pending { X = 3.0; Y = 4.0 }
+        |> Option.defaultWith (fun () -> failwith "Expected pending constraint to be committed")
+
+    let sketch =
+        match next.Actions |> List.find (fun a -> a.Id = "sketchP") with
+        | { Kind = Sketch(_, _, sketch) } -> sketch
+        | _ -> failwith "Expected sketchP to be a sketch"
+
+    match List.last sketch.Constraints with
+    | Distance("p0", "p1", 10.0, Some { X = 3.0; Y = 4.0 }) -> ()
+    | other -> failwithf "Expected committed labeled Distance, got %A" other
+
+[<Fact>]
+let ``requiredToolPoints matches the supported sketch tools`` () =
+    Assert.Equal(2, SketchAuthoring.requiredToolPoints "line")
+    Assert.Equal(2, SketchAuthoring.requiredToolPoints "rectangle")
+    Assert.Equal(2, SketchAuthoring.requiredToolPoints "roundedRectangle")
+    Assert.Equal(2, SketchAuthoring.requiredToolPoints "circle")
+    Assert.Equal(3, SketchAuthoring.requiredToolPoints "arc")
+    Assert.Equal(0, SketchAuthoring.requiredToolPoints "none")
 
 [<Fact>]
 let ``Distance draft with one clicked line yields immediate endpoint distance preview`` () =

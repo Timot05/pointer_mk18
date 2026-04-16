@@ -38,6 +38,8 @@ and ConstraintPlacementDraft =
 
 module SketchAuthoring =
 
+    // ── Session state ────────────────────────────────────────────────────
+
     let emptyUiState =
         { EditMode = false
           Tool = "none"
@@ -83,6 +85,8 @@ module SketchAuthoring =
                 sketch.Constraints
                 |> List.mapi (fun i constraint_ -> i, constraint_)
                 |> List.choose (fun (i, constraint_) -> if i = index then None else Some constraint_) }
+
+    // ── Sketch queries ───────────────────────────────────────────────────
 
     let private entityIdOf =
         function
@@ -243,6 +247,8 @@ module SketchAuthoring =
                     |> List.filter (fun constraint_ ->
                         constraintRefsAnyEntity orphanCandidatePointIds Set.empty constraint_ |> not) }
 
+    // ── Geometric queries ────────────────────────────────────────────────
+
     let private tryPoint (sketch: ActionSketch) id =
         match entityMap sketch |> Map.tryFind id with
         | Some(REPoint(_, x, y)) -> Some(x, y)
@@ -256,11 +262,6 @@ module SketchAuthoring =
     let private tryCircle (sketch: ActionSketch) id =
         match entityMap sketch |> Map.tryFind id with
         | Some(RECircle(_, centerId, radius)) -> Some(centerId, radius)
-        | _ -> None
-
-    let private tryArcCenter (sketch: ActionSketch) id =
-        match entityMap sketch |> Map.tryFind id with
-        | Some(REArc(_, _, _, ArcCenter(centerId, _))) -> Some centerId
         | _ -> None
 
     let private tryDiameterEntity (sketch: ActionSketch) id =
@@ -291,6 +292,8 @@ module SketchAuthoring =
     let private clamp minv maxv value = max minv (min maxv value)
     let private angleOf (x, y) = Math.Atan2(y, x)
     let private tau = Math.PI * 2.0
+
+    // ── Constraint selection and construction ────────────────────────────
 
     let private normalizePositive angle =
         let mutable a = angle
@@ -335,21 +338,26 @@ module SketchAuthoring =
         | _ -> Math.PI * 0.5
 
     let private selectionForSketch sketchId (targets: SelectionTarget list) =
-        let matching =
+        {| Points =
             targets
-            |> List.choose (fun target ->
-                match target with
-                | TargetPoint(id, entityId) when id = sketchId -> Some("point", entityId)
-                | TargetLine(id, entityId) when id = sketchId -> Some("line", entityId)
-                | TargetCircle(id, entityId) when id = sketchId -> Some("circle", entityId)
-                | TargetArc(id, entityId) when id = sketchId -> Some("arc", entityId)
-                | TargetLoop(id, loopId) when id = sketchId -> Some("loop", loopId)
-                | TargetDimension(id, index) when id = sketchId -> Some("dimension", string index)
+            |> List.choose (function
+                | TargetPoint(id, entityId) when id = sketchId -> Some entityId
                 | _ -> None)
-        {| Points = matching |> List.choose (fun (kind, id) -> if kind = "point" then Some id else None)
-           Lines = matching |> List.choose (fun (kind, id) -> if kind = "line" then Some id else None)
-           Circles = matching |> List.choose (fun (kind, id) -> if kind = "circle" then Some id else None)
-           Arcs = matching |> List.choose (fun (kind, id) -> if kind = "arc" then Some id else None) |}
+           Lines =
+            targets
+            |> List.choose (function
+                | TargetLine(id, entityId) when id = sketchId -> Some entityId
+                | _ -> None)
+           Circles =
+            targets
+            |> List.choose (function
+                | TargetCircle(id, entityId) when id = sketchId -> Some entityId
+                | _ -> None)
+           Arcs =
+            targets
+            |> List.choose (function
+                | TargetArc(id, entityId) when id = sketchId -> Some entityId
+                | _ -> None) |}
 
     let private selectionForFrames (targets: SelectionTarget list) =
         {| Origins =
@@ -370,6 +378,8 @@ module SketchAuthoring =
         with
         | [ frameId ] -> Some frameId
         | _ -> None
+
+    // ── Editable dimensions and placement drafts ────────────────────────
 
     let tryEditableDimension (sketchId: string) (sketch: ActionSketch) (index: int) =
         sketch.Constraints
@@ -650,6 +660,8 @@ module SketchAuthoring =
         | "angle" -> buildAngleConstraintFromDraft sketch draft hoveredRef cursor
         | _ -> None
 
+    // ── Selection-driven document mutations ─────────────────────────────
+
     let placementRefFromTarget sketchId =
         function
         | TargetPoint(id, entityId) when id = sketchId -> Some(RefPoint entityId)
@@ -775,6 +787,8 @@ module SketchAuthoring =
                 [ "distance"; "angle" ]
                 |> List.map (fun kind -> kind, editMode)
                 |> Map.ofList }
+
+    // ── Sketch drawing tools ─────────────────────────────────────────────
 
     let requiredToolPoints tool =
         match tool with

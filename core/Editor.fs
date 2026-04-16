@@ -31,6 +31,21 @@ type ConstraintPlacementKind =
     | DistancePlacement
     | AnglePlacement
 
+/// Constraints applied immediately from the current selection (no cursor
+/// placement needed). Distinct from ConstraintPlacementKind, which covers
+/// dimension constraints that require a label position click.
+type GeometricConstraintKind =
+    | CoincidentConstraint
+    | HorizontalConstraint
+    | VerticalConstraint
+    | MidpointConstraint
+    | ParallelConstraint
+    | PerpendicularConstraint
+    | EqualConstraint
+    | TangentConstraint
+    | ConcentricConstraint
+    | FixedConstraint
+
 type EditorState =
     { Doc: Document
       Compiled: PipelineResult
@@ -91,7 +106,7 @@ type Message =
     | ToggleSketchEdit
     | SetSketchTool of SketchToolKind
     | ToggleConstraintPlacement of ConstraintPlacementKind
-    | AddConstraintFromSelection of ConstraintPlacementKind
+    | AddConstraintFromSelection of GeometricConstraintKind
     | DeleteSketchConstraint of int
     | SetConstraintPlacementCursor of (string * LabelPos) option
     | PaletteOpen
@@ -145,6 +160,21 @@ module Editor =
         | "distance" -> Some DistancePlacement
         | "angle" -> Some AnglePlacement
         | _ -> None
+
+    /// String key the sketch authoring module expects for each geometric
+    /// constraint kind (must match SketchAuthoring.buildConstraint's match).
+    let geometricConstraintName =
+        function
+        | CoincidentConstraint -> "Coincident"
+        | HorizontalConstraint -> "Horizontal"
+        | VerticalConstraint -> "Vertical"
+        | MidpointConstraint -> "Midpoint"
+        | ParallelConstraint -> "Parallel"
+        | PerpendicularConstraint -> "Perpendicular"
+        | EqualConstraint -> "Equal"
+        | TangentConstraint -> "Tangent"
+        | ConcentricConstraint -> "Concentric"
+        | FixedConstraint -> "Fixed"
 
     let initState () =
         let doc = Document.defaultDocument ()
@@ -582,7 +612,7 @@ module Editor =
                 ConstraintPlacementMode = nextMode }
             |> normalizeState
         | AddConstraintFromSelection kind ->
-            match SketchAuthoring.addConstraintFromSelection state.Doc state.SelectedTargets (constraintPlacementName kind) with
+            match SketchAuthoring.addConstraintFromSelection state.Doc state.SelectedTargets (geometricConstraintName kind) with
             | Some nextDoc ->
                 { state with Doc = nextDoc }
                 |> clearTransient

@@ -11,10 +11,8 @@
 // ---------------------------------------------------------------------------
 import { store as editorStore } from "../src-gen/AppStore.js";
 import { dispatch as storeDispatch, subscribe as storeSubscribe } from "../src-gen/Store.js";
-import { ParamValue } from "../src-gen/core/Domain.js";
 import { ViewerPipeline_viewerModel, ViewerPipeline_viewerState } from "../src-gen/core/ViewerPipeline.js";
 import { ofArray as listOfArray } from "../src-gen/fable_modules/fable-library-js.4.24.0/List.js";
-import { ofArray as mapOfArray } from "../src-gen/fable_modules/fable-library-js.4.24.0/Map.js";
 
 // ── Normalization helpers (Fable-encoded → plain JS) ──────────────────
 
@@ -333,22 +331,6 @@ function normalizeViewerState(value: unknown): unknown {
   };
 }
 
-// ── ParamValue construction (TS → F# value) ───────────────────────────
-
-export function paramValueFromJs(value: unknown): unknown {
-  if (value === null || value === undefined) return new ParamValue(0, []);
-  if (typeof value === "boolean") return new ParamValue(1, [value]);
-  if (typeof value === "number") {
-    return Number.isInteger(value) ? new ParamValue(2, [value]) : new ParamValue(3, [value]);
-  }
-  if (typeof value === "string") return new ParamValue(4, [value]);
-  if (Array.isArray(value)) return new ParamValue(5, [listOfArray(value.map(paramValueFromJs))]);
-  if (typeof value === "object") {
-    return new ParamValue(6, [mapOfArray(Object.entries(value).map(([k, v]) => [k, paramValueFromJs(v)]))]);
-  }
-  throw new Error("Unsupported param value");
-}
-
 export function selectionCandidatesFromJs(candidates: Array<{ pickId: number; score: number }>) {
   return listOfArray(candidates.map((candidate) => ({
     PickId: candidate.pickId,
@@ -412,6 +394,11 @@ export function subscribeViewerState(listener: () => void): () => void {
 export {
   viewerHover,
   viewerPick,
+  beginPointDrag,
+  beginConstraintLabelDrag,
+  updateSketchDrag,
+  finishSketchDrag,
+  cancelSketchDrag,
   viewerToolClick,
   viewerPlaceConstraint,
   viewerDimensionClickTarget,
@@ -419,5 +406,4 @@ export {
   commitEditingDimension,
   cancelEditingDimension,
   setConstraintPlacementCursor,
-  patchActionParamValue,
 } from "../src-gen/ViewerMessages.js";

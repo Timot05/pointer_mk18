@@ -39,7 +39,7 @@ ui/
 │   ├── viewer.ts           # main render loop + pick + camera + sketch render
 │   ├── mount.ts            # attaches the viewer to a host div (shadow DOM)
 │   ├── pipeline-*.ts       # WebGPU pipelines (isosurface, field slice, MSDF)
-│   ├── gpu-solver.ts       # constraint solver on GPU
+│   ├── api.ts              # plain TS types for normalized viewer payloads
 │   └── …
 ├── src-gen/                # Fable output (gitignored)
 ├── index.html
@@ -57,6 +57,11 @@ to notify viewer-model listeners (expensive GPU rebuild) or
 viewer-state listeners (cheap re-render). The viewer's WebGPU canvas
 stays alive across shell re-renders because `viewerHost` is created once
 in `Program.fs` and re-parented on each render.
+
+Sketch solving now also runs through the same F# store:
+- core emits `RunSketchSolve`
+- `AppStore.fs` runs the GPU solver and dispatches the solved result back
+- `viewer.ts` only renders `ViewerState.params` and local drag previews
 
 ## Build
 

@@ -113,8 +113,8 @@ module Pipeline =
         (sketch: ActionSketch)
         : Pickable list =
         let nextId () =
-            let id = !counter
-            counter := id + 1
+            let id = counter.Value
+            counter.Value <- id + 1
             id
 
         let entityPickables =
@@ -166,8 +166,8 @@ module Pipeline =
         : Pickable list =
         let counter = ref 0
         let nextId () =
-            let id = !counter
-            counter := id + 1
+            let id = counter.Value
+            counter.Value <- id + 1
             id
 
         actions

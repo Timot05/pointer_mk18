@@ -145,6 +145,20 @@ let private isDimensionConstraint (c: SketchConstraint) : bool =
     | CircleCircleDistance _ | Angle _ | CircleDiameter _ -> true
     | _ -> false
 
+let private constraintValueText (c: SketchConstraint) : string option =
+    match c with
+    | Distance(_, _, distance, _)
+    | FrameDistance(_, _, _, distance, _)
+    | LineDistance(_, _, _, _, _, _, distance, _)
+    | FrameLineDistance(_, _, _, _, _, distance, _)
+    | PointLineDistance(_, _, _, _, distance, _)
+    | PointCircleDistance(_, _, _, distance, _)
+    | LineCircleDistance(_, _, _, _, _, distance, _)
+    | CircleCircleDistance(_, _, _, _, distance, _, _) -> Some(sprintf "%.2f" distance)
+    | CircleDiameter(_, _, diameter, _) -> Some(sprintf "%.2f" diameter)
+    | Angle(_, _, _, _, _, _, angle, _, _, _, _) -> Some(sprintf "%.2f" angle)
+    | _ -> None
+
 // ── Sections ───────────────────────────────────────────────────────────
 
 let private renderExistingConstraints
@@ -169,6 +183,10 @@ let private renderExistingConstraints
             row.appendChild (Dom.elText "span" "sym" (constraintSymbol c) :> Node) |> ignore
             row.appendChild (Dom.elText "span" "constraint-kind" (constraintLabel c) :> Node) |> ignore
             row.appendChild (Dom.elText "span" "constraint-summary" (constraintSummary c) :> Node) |> ignore
+            match constraintValueText c with
+            | Some value ->
+                row.appendChild (Dom.elText "span" "constraint-value" value :> Node) |> ignore
+            | None -> ()
             let del = Dom.elText "button" "constraint-delete" "\u00D7" :?> HTMLButtonElement
             del.``type`` <- "button"
             del.addEventListener ("click", fun _ -> dispatch (DeleteSketchConstraint index))

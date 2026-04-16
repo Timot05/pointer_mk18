@@ -46,9 +46,21 @@ type GeometricConstraintKind =
     | ConcentricConstraint
     | FixedConstraint
 
+type SketchDragKind =
+    | DragPoint of pointId: string
+    | DragConstraintLabel of constraintIndex: int
+
+type SketchDrag =
+    { SketchId: string
+      Kind: SketchDragKind
+      XField: ActionParamField
+      YField: ActionParamField
+      Target: LabelPos }
+
 type EditorState =
     { Doc: Document
       Compiled: PipelineResult
+      SolvedSketchParams: Map<string, float32[]>
       PaletteSession: PaletteSession
       HoveredTarget: SelectionTarget option
       SelectedTargets: SelectionTarget list
@@ -56,6 +68,8 @@ type EditorState =
       SketchTool: string
       SketchToolPoints: LabelPos list
       EditingDimension: EditingDimension option
+      ActiveSketchDrag: SketchDrag option
+      PendingSketchDragCommit: bool
       ConstraintPlacementMode: ConstraintPlacementKind option
       ConstraintPlacementDraft: ConstraintPlacementDraft option
       ConstraintPlacementCursor: (string * LabelPos) option }
@@ -76,6 +90,9 @@ type SketchLoopView =
 type PickCandidateInput =
     { PickId: int
       Score: float32 }
+
+type Effect =
+    | RunSketchSolve of SketchDrag
 
 type Message =
     | SelectAction of string
@@ -100,6 +117,11 @@ type Message =
     | CommitEditingDimension of float
     | ViewerDimensionClickTarget
     | ReplaceSketch of string * ActionSketch
+    | BeginSketchDrag of SketchDrag
+    | UpdateSketchDragTarget of LabelPos
+    | ApplySketchSolveResult of SketchDrag * float32[]
+    | FinishSketchDrag
+    | CancelSketchDrag
     | ViewerToolClick of float * float
     | ViewerPlaceConstraint of float * float
     | ToggleSketchEdit
@@ -179,6 +201,7 @@ module Editor =
         let doc = Document.defaultDocument ()
         { Doc = doc
           Compiled = Pipeline.compile doc.Actions
+          SolvedSketchParams = Map.empty
           PaletteSession = Palette.empty
           HoveredTarget = None
           SelectedTargets = []
@@ -186,6 +209,8 @@ module Editor =
           SketchTool = "none"
           SketchToolPoints = []
           EditingDimension = None
+          ActiveSketchDrag = None
+          PendingSketchDragCommit = false
           ConstraintPlacementMode = None
           ConstraintPlacementDraft = None
           ConstraintPlacementCursor = None }
@@ -327,11 +352,17 @@ module Editor =
             match next.ConstraintPlacementMode |> Option.bind tryConstraintPlacementKind, state.ConstraintPlacementDraft, state.Doc.SelectedId with
             | Some kind, Some draft, Some selectedId when next.EditMode && next.Tool = "none" && draft.SketchId = selectedId && draft.Kind = constraintPlacementName kind -> Some draft
             | _ -> None
+        let activeSketchDrag =
+            match state.ActiveSketchDrag, state.Doc.SelectedId with
+            | Some drag, Some selectedId when next.EditMode && selectedId = drag.SketchId -> Some drag
+            | _ -> None
         { state with
             SketchEditMode = next.EditMode
             SketchTool = next.Tool
             SketchToolPoints = if next.Tool = "none" then [] else state.SketchToolPoints
             EditingDimension = editingDimension
+            ActiveSketchDrag = activeSketchDrag
+            PendingSketchDragCommit = if activeSketchDrag.IsSome then state.PendingSketchDragCommit else false
             ConstraintPlacementMode = next.ConstraintPlacementMode |> Option.bind tryConstraintPlacementKind
             ConstraintPlacementCursor = constraintPlacementCursor
             ConstraintPlacementDraft = constraintPlacementDraft }
@@ -341,6 +372,7 @@ module Editor =
         let next =
             { state with
                 Compiled = compiled
+                SolvedSketchParams = Map.empty
                 HoveredTarget = state.HoveredTarget |> Option.filter (isValidSelectionTarget { state with Compiled = compiled })
                 SelectedTargets = state.SelectedTargets |> List.filter (isValidSelectionTarget { state with Compiled = compiled }) }
         normalizeState next
@@ -352,6 +384,9 @@ module Editor =
     let clearDrafts (state: EditorState) =
         { state with
             EditingDimension = None
+            ActiveSketchDrag = None
+            PendingSketchDragCommit = false
+            SolvedSketchParams = Map.empty
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None }
 
@@ -362,6 +397,9 @@ module Editor =
         { state with
             SketchToolPoints = []
             EditingDimension = None
+            ActiveSketchDrag = None
+            PendingSketchDragCommit = false
+            SolvedSketchParams = Map.empty
             ConstraintPlacementMode = None
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None }
@@ -375,6 +413,9 @@ module Editor =
             SelectedTargets = []
             SketchToolPoints = []
             EditingDimension = None
+            ActiveSketchDrag = None
+            PendingSketchDragCommit = false
+            SolvedSketchParams = Map.empty
             ConstraintPlacementMode = None
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None }
@@ -391,6 +432,9 @@ module Editor =
             SketchTool = "none"
             SketchToolPoints = []
             EditingDimension = None
+            ActiveSketchDrag = None
+            PendingSketchDragCommit = false
+            SolvedSketchParams = Map.empty
             ConstraintPlacementMode = None
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None }
@@ -455,210 +499,254 @@ module Editor =
         { Name = state.Doc.Name
           Actions = state.Doc.Actions }
 
-    let update (message: Message) (state: EditorState) =
+    let noEffects : Effect list = []
+
+    let update (message: Message) (state: EditorState) : EditorState * Effect list =
         match message with
-        | SelectAction id ->
-            { state with Doc = Document.select id state.Doc }
-        | SetHoveredTarget hoveredTarget ->
-            { state with HoveredTarget = hoveredTarget }
-        | SetSelectedTargets selectedTargets ->
-            { state with SelectedTargets = selectedTargets }
-        | AddDefaultAction(template, id) ->
-            let action =
-                { Id = id
-                  Name = None
-                  Kind = actionTemplateKind template
-                  Visible = true
-                  Display = None
-                  FieldSlice = None }
-            { state with Doc = Document.addAction action state.Doc } |> recompileState
-        | AddAction action ->
-            { state with Doc = Document.addAction action state.Doc } |> recompileState
-        | UpdateAction(id, action) ->
-            { state with Doc = Document.updateAction id action state.Doc } |> recompileState
-        | RemoveAction id ->
-            { state with Doc = Document.removeAction id state.Doc } |> recompileState
-        | ReorderActions ids ->
-            { state with Doc = Document.reorder ids state.Doc } |> recompileState
-        | ToggleActionVisible id ->
-            { state with Doc = Document.toggleVisible id state.Doc } |> recompileState
-        | ToggleDisplay id ->
-            { state with Doc = Document.toggleDisplay id state.Doc } |> recompileState
-        | PatchDisplayValue(id, key, value) ->
-            { state with Doc = Document.patchDisplayValue id key value state.Doc } |> recompileState
-        | ToggleFieldSlice id ->
-            { state with Doc = Document.toggleFieldSlice id state.Doc } |> recompileState
-        | PatchFieldSliceValue(id, key, value) ->
-            { state with Doc = Document.patchFieldSliceValue id key value state.Doc } |> recompileState
-        | PatchActionParamValue(id, key, value) ->
-            { state with Doc = Document.patchParamValue id key value state.Doc } |> recompileState
-        | DeleteIntent ->
-            applyDeleteIntent state
-        | ViewerHover candidates ->
-            { state with
-                HoveredTarget =
-                    reduceSelectionCandidates state candidates
-                    |> Option.map (fun (target, _score, _action) -> target) }
-            |> normalizeState
-        | ViewerPick(intent, candidates) ->
-            match reduceSelectionCandidates state candidates with
-            | Some(target, _score, actionId) ->
-                { state with
-                    HoveredTarget = Some target
-                    SelectedTargets = applySelectionIntent intent target state.SelectedTargets
-                    Doc =
-                        match actionSelectionForTarget state target actionId with
-                        | Some id -> Document.select id state.Doc
-                        | None -> state.Doc }
-                |> recompileState
+        | BeginSketchDrag drag ->
+            { clearDrafts state with ActiveSketchDrag = Some drag; PendingSketchDragCommit = false }, [ RunSketchSolve drag ]
+        | UpdateSketchDragTarget target ->
+            match state.ActiveSketchDrag with
+            | Some drag ->
+                let nextDrag = { drag with Target = target }
+                { state with ActiveSketchDrag = Some nextDrag; PendingSketchDragCommit = false }, [ RunSketchSolve nextDrag ]
             | None ->
-                { state with
-                    HoveredTarget = None
-                    SelectedTargets = if intent = "replace" then [] else state.SelectedTargets }
-                |> normalizeState
-        | StartEditingDimension index ->
-            let editing =
-                match SketchAuthoring.trySelectedSketch state.Doc with
-                | Some selected when state.SketchEditMode && state.Doc.SelectedId = Some selected.Action.Id ->
-                    SketchAuthoring.tryEditableDimension selected.Action.Id selected.Sketch index
-                | _ -> None
-            { clearToolState state with
-                SketchTool = "none"
-                EditingDimension = editing }
-            |> normalizeState
-        | CancelEditingDimension ->
-            clearDrafts state |> normalizeState
-        | CommitEditingDimension value ->
-            match state.EditingDimension with
-            | Some current ->
-                let field =
-                    match current.Key with
-                    | "distance" -> ConstraintDistance
-                    | "diameter" -> ConstraintDiameter
-                    | "angle" -> ConstraintAngle
-                    | other -> failwithf "Unsupported editable dimension key: %s" other
-                { clearDrafts state with
-                    Doc = Document.patchParamValue current.SketchId (SketchConstraintField(current.ConstraintIndex, field)) (VFloat value) state.Doc }
-                |> recompileState
+                state, noEffects
+        | ApplySketchSolveResult(drag, solvedLocal) ->
+            match state.ActiveSketchDrag with
+            | Some active when active = drag ->
+                if state.PendingSketchDragCommit then
+                    { state with
+                        Doc = SketchSolve.commitSolvedSketch drag.SketchId solvedLocal state.Doc
+                        ActiveSketchDrag = None
+                        PendingSketchDragCommit = false
+                        SolvedSketchParams = Map.empty }
+                    |> recompileState,
+                    noEffects
+                else
+                    { state with SolvedSketchParams = state.SolvedSketchParams |> Map.add drag.SketchId solvedLocal }, noEffects
+            | _ ->
+                state, noEffects
+        | FinishSketchDrag ->
+            match state.ActiveSketchDrag with
+            | Some drag ->
+                { state with PendingSketchDragCommit = true }, [ RunSketchSolve drag ]
             | None ->
-                state
-        | ViewerDimensionClickTarget ->
-            match state.ConstraintPlacementMode, SketchAuthoring.trySelectedSketch state.Doc with
-            | Some kind, Some selected when state.SketchEditMode ->
-                { state with
-                    ConstraintPlacementDraft =
-                        SketchAuthoring.updatePlacementDraft
-                            selected.Action.Id
-                            (constraintPlacementName kind)
-                            state.HoveredTarget
-                            state.ConstraintPlacementDraft }
-                |> normalizeState
-            | _ ->
-                state
-        | ReplaceSketch(actionId, sketch) ->
-            match state.Doc.Actions |> List.tryFind (fun action -> action.Id = actionId) with
-            | Some { Kind = Sketch(_, _, _) } ->
-                { state with
-                    Doc = SketchAuthoring.withUpdatedSketch state.Doc actionId sketch }
-                |> clearTransient
-                |> recompileState
-            | _ ->
-                state
-        | ViewerToolClick(x, y) ->
-            match SketchAuthoring.trySelectedSketch state.Doc with
-            | Some selected when state.SketchEditMode && state.SketchTool <> "none" ->
-                let nextPoints = state.SketchToolPoints @ [ { X = x; Y = y } ]
-                if nextPoints.Length >= SketchAuthoring.requiredToolPoints state.SketchTool then
-                    match SketchAuthoring.applyToolClick state.SketchTool nextPoints selected.Sketch with
-                    | Some nextSketch ->
-                        { clearTransient state with
-                            Doc = SketchAuthoring.withUpdatedSketch state.Doc selected.Action.Id nextSketch
-                            ConstraintPlacementMode = state.ConstraintPlacementMode }
+                { state with PendingSketchDragCommit = false; SolvedSketchParams = Map.empty }, noEffects
+        | CancelSketchDrag ->
+            { state with ActiveSketchDrag = None; PendingSketchDragCommit = false; SolvedSketchParams = Map.empty }, noEffects
+        | _ ->
+            let next =
+                match message with
+                | SelectAction id ->
+                    { state with Doc = Document.select id state.Doc }
+                | SetHoveredTarget hoveredTarget ->
+                    { state with HoveredTarget = hoveredTarget }
+                | SetSelectedTargets selectedTargets ->
+                    { state with SelectedTargets = selectedTargets }
+                | AddDefaultAction(template, id) ->
+                    let action =
+                        { Id = id
+                          Name = None
+                          Kind = actionTemplateKind template
+                          Visible = true
+                          Display = None
+                          FieldSlice = None }
+                    { state with Doc = Document.addAction action state.Doc } |> recompileState
+                | AddAction action ->
+                    { state with Doc = Document.addAction action state.Doc } |> recompileState
+                | UpdateAction(id, action) ->
+                    { state with Doc = Document.updateAction id action state.Doc } |> recompileState
+                | RemoveAction id ->
+                    { state with Doc = Document.removeAction id state.Doc } |> recompileState
+                | ReorderActions ids ->
+                    { state with Doc = Document.reorder ids state.Doc } |> recompileState
+                | ToggleActionVisible id ->
+                    { state with Doc = Document.toggleVisible id state.Doc } |> recompileState
+                | ToggleDisplay id ->
+                    { state with Doc = Document.toggleDisplay id state.Doc } |> recompileState
+                | PatchDisplayValue(id, key, value) ->
+                    { state with Doc = Document.patchDisplayValue id key value state.Doc } |> recompileState
+                | ToggleFieldSlice id ->
+                    { state with Doc = Document.toggleFieldSlice id state.Doc } |> recompileState
+                | PatchFieldSliceValue(id, key, value) ->
+                    { state with Doc = Document.patchFieldSliceValue id key value state.Doc } |> recompileState
+                | PatchActionParamValue(id, key, value) ->
+                    { state with Doc = Document.patchParamValue id key value state.Doc } |> recompileState
+                | DeleteIntent ->
+                    applyDeleteIntent state
+                | ViewerHover candidates ->
+                    { state with
+                        HoveredTarget =
+                            reduceSelectionCandidates state candidates
+                            |> Option.map (fun (target, _score, _action) -> target) }
+                    |> normalizeState
+                | ViewerPick(intent, candidates) ->
+                    match reduceSelectionCandidates state candidates with
+                    | Some(target, _score, actionId) ->
+                        { state with
+                            HoveredTarget = Some target
+                            SelectedTargets = applySelectionIntent intent target state.SelectedTargets
+                            Doc =
+                                match actionSelectionForTarget state target actionId with
+                                | Some id -> Document.select id state.Doc
+                                | None -> state.Doc }
+                        |> recompileState
+                    | None ->
+                        { state with
+                            HoveredTarget = None
+                            SelectedTargets = if intent = "replace" then [] else state.SelectedTargets }
+                        |> normalizeState
+                | StartEditingDimension index ->
+                    let editing =
+                        match SketchAuthoring.trySelectedSketch state.Doc with
+                        | Some selected when state.SketchEditMode && state.Doc.SelectedId = Some selected.Action.Id ->
+                            SketchAuthoring.tryEditableDimension selected.Action.Id selected.Sketch index
+                        | _ -> None
+                    { clearToolState state with
+                        SketchTool = "none"
+                        EditingDimension = editing }
+                    |> normalizeState
+                | CancelEditingDimension ->
+                    clearDrafts state |> normalizeState
+                | CommitEditingDimension value ->
+                    match state.EditingDimension with
+                    | Some current ->
+                        let field =
+                            match current.Key with
+                            | "distance" -> ConstraintDistance
+                            | "diameter" -> ConstraintDiameter
+                            | "angle" -> ConstraintAngle
+                            | other -> failwithf "Unsupported editable dimension key: %s" other
+                        { clearDrafts state with
+                            Doc = Document.patchParamValue current.SketchId (SketchConstraintField(current.ConstraintIndex, field)) (VFloat value) state.Doc }
                         |> recompileState
                     | None ->
                         state
-                else
-                    { state with SketchToolPoints = nextPoints }
-            | _ ->
-                state
-        | ViewerPlaceConstraint(x, y) ->
-            match (sketchUiState state).PendingConstraintPlacement with
-            | Some pending ->
-                match SketchAuthoring.placePendingConstraint state.Doc pending { X = x; Y = y } with
-                | Some nextDoc ->
-                    { clearTransient state with Doc = nextDoc }
-                    |> recompileState
-                | None ->
+                | ViewerDimensionClickTarget ->
+                    match state.ConstraintPlacementMode, SketchAuthoring.trySelectedSketch state.Doc with
+                    | Some kind, Some selected when state.SketchEditMode ->
+                        { state with
+                            ConstraintPlacementDraft =
+                                SketchAuthoring.updatePlacementDraft
+                                    selected.Action.Id
+                                    (constraintPlacementName kind)
+                                    state.HoveredTarget
+                                    state.ConstraintPlacementDraft }
+                        |> normalizeState
+                    | _ ->
+                        state
+                | ReplaceSketch(actionId, sketch) ->
+                    match state.Doc.Actions |> List.tryFind (fun action -> action.Id = actionId) with
+                    | Some { Kind = Sketch(_, _, _) } ->
+                        { state with
+                            Doc = SketchAuthoring.withUpdatedSketch state.Doc actionId sketch }
+                        |> clearTransient
+                        |> recompileState
+                    | _ ->
+                        state
+                | BeginSketchDrag _
+                | UpdateSketchDragTarget _
+                | ApplySketchSolveResult _
+                | FinishSketchDrag
+                | CancelSketchDrag ->
                     state
-            | None ->
-                state
-        | ToggleSketchEdit ->
-            { state with SketchEditMode = not state.SketchEditMode }
-            |> normalizeState
-        | SetSketchTool tool ->
-            { clearToolState state with
-                SketchEditMode = true
-                SketchTool = sketchToolName tool }
-            |> normalizeState
-        | ToggleConstraintPlacement kind ->
-            let nextMode =
-                match state.ConstraintPlacementMode with
-                | Some active when active = kind -> None
-                | _ -> Some kind
-            { clearToolState state with
-                SketchEditMode = true
-                SketchTool = "none"
-                ConstraintPlacementMode = nextMode }
-            |> normalizeState
-        | AddConstraintFromSelection kind ->
-            match SketchAuthoring.addConstraintFromSelection state.Doc state.SelectedTargets (geometricConstraintName kind) with
-            | Some nextDoc ->
-                { state with Doc = nextDoc }
-                |> clearTransient
-                |> recompileState
-            | None ->
-                state
-        | DeleteSketchConstraint index ->
-            match SketchAuthoring.trySelectedSketch state.Doc with
-            | Some ctx ->
-                let nextDoc =
-                    SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.removeConstraintAt index ctx.Sketch)
-                { state with Doc = nextDoc }
-                |> clearTransient
-                |> recompileState
-            | None ->
-                state
-        | SetConstraintPlacementCursor cursor ->
-            { state with ConstraintPlacementCursor = cursor } |> normalizeState
-        | PaletteOpen ->
-            { state with PaletteSession = Palette.openSession () }
-        | PaletteSetQuery query ->
-            { state with PaletteSession = Palette.setQuery query state.PaletteSession }
-        | PalettePick id ->
-            let nextPalette =
-                match state.PaletteSession.PickedKind with
-                | None -> Palette.pickCommand id state.PaletteSession
-                | Some _ -> Palette.pickItem id state.PaletteSession
-            { state with PaletteSession = nextPalette }
-        | PaletteSetScalarField(key, value) ->
-            { state with PaletteSession = Palette.setScalarField key value state.PaletteSession }
-        | PaletteCommitScalars ->
-            { state with PaletteSession = Palette.commitScalars state.PaletteSession }
-        | PaletteFinish idSuffix ->
-            { state with PaletteSession = Palette.skipToEnd state.PaletteSession }
-            |> paletteMaybeBuild idSuffix
-        | PaletteBack ->
-            { state with PaletteSession = Palette.back state.PaletteSession }
-        | PaletteClose ->
-            { state with PaletteSession = Palette.empty }
-        | ReplaceDocument doc ->
-            { state with Doc = doc } |> recompileState
-        | LoadModel model ->
-            let selectedId =
-                model.Actions
-                |> List.tryFind (fun a -> a.Id = "origin")
-                |> Option.orElseWith (fun () -> model.Actions |> List.tryHead)
-                |> Option.map (fun a -> a.Id)
-            loadDoc { Name = model.Name; Actions = model.Actions; SelectedId = selectedId } state
-        | ClearModel ->
-            loadDoc (Document.emptyDocument ()) state
+                | ViewerToolClick(x, y) ->
+                    match SketchAuthoring.trySelectedSketch state.Doc with
+                    | Some selected when state.SketchEditMode && state.SketchTool <> "none" ->
+                        let nextPoints = state.SketchToolPoints @ [ { X = x; Y = y } ]
+                        if nextPoints.Length >= SketchAuthoring.requiredToolPoints state.SketchTool then
+                            match SketchAuthoring.applyToolClick state.SketchTool nextPoints selected.Sketch with
+                            | Some nextSketch ->
+                                { clearTransient state with
+                                    Doc = SketchAuthoring.withUpdatedSketch state.Doc selected.Action.Id nextSketch
+                                    ConstraintPlacementMode = state.ConstraintPlacementMode }
+                                |> recompileState
+                            | None ->
+                                state
+                        else
+                            { state with SketchToolPoints = nextPoints }
+                    | _ ->
+                        state
+                | ViewerPlaceConstraint(x, y) ->
+                    match (sketchUiState state).PendingConstraintPlacement with
+                    | Some pending ->
+                        match SketchAuthoring.placePendingConstraint state.Doc pending { X = x; Y = y } with
+                        | Some nextDoc ->
+                            { clearTransient state with Doc = nextDoc }
+                            |> recompileState
+                        | None ->
+                            state
+                    | None ->
+                        state
+                | ToggleSketchEdit ->
+                    { state with SketchEditMode = not state.SketchEditMode }
+                    |> normalizeState
+                | SetSketchTool tool ->
+                    { clearToolState state with
+                        SketchEditMode = true
+                        SketchTool = sketchToolName tool }
+                    |> normalizeState
+                | ToggleConstraintPlacement kind ->
+                    let nextMode =
+                        match state.ConstraintPlacementMode with
+                        | Some active when active = kind -> None
+                        | _ -> Some kind
+                    { clearToolState state with
+                        SketchEditMode = true
+                        SketchTool = "none"
+                        ConstraintPlacementMode = nextMode }
+                    |> normalizeState
+                | AddConstraintFromSelection kind ->
+                    match SketchAuthoring.addConstraintFromSelection state.Doc state.SelectedTargets (geometricConstraintName kind) with
+                    | Some nextDoc ->
+                        { state with Doc = nextDoc }
+                        |> clearTransient
+                        |> recompileState
+                    | None ->
+                        state
+                | DeleteSketchConstraint index ->
+                    match SketchAuthoring.trySelectedSketch state.Doc with
+                    | Some ctx ->
+                        let nextDoc =
+                            SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.removeConstraintAt index ctx.Sketch)
+                        { state with Doc = nextDoc }
+                        |> clearTransient
+                        |> recompileState
+                    | None ->
+                        state
+                | SetConstraintPlacementCursor cursor ->
+                    { state with ConstraintPlacementCursor = cursor } |> normalizeState
+                | PaletteOpen ->
+                    { state with PaletteSession = Palette.openSession () }
+                | PaletteSetQuery query ->
+                    { state with PaletteSession = Palette.setQuery query state.PaletteSession }
+                | PalettePick id ->
+                    let nextPalette =
+                        match state.PaletteSession.PickedKind with
+                        | None -> Palette.pickCommand id state.PaletteSession
+                        | Some _ -> Palette.pickItem id state.PaletteSession
+                    { state with PaletteSession = nextPalette }
+                | PaletteSetScalarField(key, value) ->
+                    { state with PaletteSession = Palette.setScalarField key value state.PaletteSession }
+                | PaletteCommitScalars ->
+                    { state with PaletteSession = Palette.commitScalars state.PaletteSession }
+                | PaletteFinish idSuffix ->
+                    { state with PaletteSession = Palette.skipToEnd state.PaletteSession }
+                    |> paletteMaybeBuild idSuffix
+                | PaletteBack ->
+                    { state with PaletteSession = Palette.back state.PaletteSession }
+                | PaletteClose ->
+                    { state with PaletteSession = Palette.empty }
+                | ReplaceDocument doc ->
+                    { state with Doc = doc } |> recompileState
+                | LoadModel model ->
+                    let selectedId =
+                        model.Actions
+                        |> List.tryFind (fun a -> a.Id = "origin")
+                        |> Option.orElseWith (fun () -> model.Actions |> List.tryHead)
+                        |> Option.map (fun a -> a.Id)
+                    loadDoc { Name = model.Name; Actions = model.Actions; SelectedId = selectedId } state
+                | ClearModel ->
+                    loadDoc (Document.emptyDocument ()) state
+            next, noEffects

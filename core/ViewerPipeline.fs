@@ -184,6 +184,15 @@ module ViewerPipeline =
           Pickables = state.Compiled.Pickables }
 
     let viewerState (state: EditorState) : ViewerState =
+        let effectiveParams =
+            ((state.Compiled.Slots.Values, state.Doc.Actions)
+             ||> List.fold (fun current action ->
+                 match action.Kind, Map.tryFind action.Id state.SolvedSketchParams with
+                 | Sketch(_, _, sketch), Some solvedLocal ->
+                     SketchSolve.overlaySolvedSketch current state.Compiled.Slots action.Id sketch solvedLocal
+                 | _ ->
+                     current))
+
         let isDraggable =
             function
             | TargetPoint _
@@ -257,7 +266,7 @@ module ViewerPipeline =
                     |> List.choose id
                 | _ -> [])
 
-        { Params = state.Compiled.Slots.Values
+        { Params = effectiveParams
           SelectedId = state.Doc.SelectedId
           HoveredTarget = state.HoveredTarget
           HighlightedTarget = state.HoveredTarget |> Option.filter highlightedTargetAllowed

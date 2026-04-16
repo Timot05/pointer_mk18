@@ -1,23 +1,32 @@
 module PointerMk18.Ui.Store
 
 /// Tiny mutable pub/sub store. Holds the current state, a reduce function,
-/// and a list of subscriber callbacks. Every dispatch runs the reducer and
-/// notifies all subscribers.
+/// an effect runner, and a list of subscriber callbacks. Every dispatch runs
+/// the reducer, executes emitted effects, and notifies all subscribers.
 ///
 /// This mirrors app/src/store.ts but lives in F# so the UI layer can
 /// consume F# values directly — no Fable-union normalization step.
 type Store<'state, 'message> =
     { mutable State: 'state
-      Reduce: 'message -> 'state -> 'state
+      Reduce: 'message -> 'state -> 'state * Server.Effect list
+      RunEffect: Store<'state, 'message> -> Server.Effect -> unit
       mutable Subscribers: (unit -> unit) list }
 
-let create (reduce: 'message -> 'state -> 'state) (init: 'state) : Store<'state, 'message> =
+let create
+    (reduce: 'message -> 'state -> 'state * Server.Effect list)
+    (runEffect: Store<'state, 'message> -> Server.Effect -> unit)
+    (init: 'state)
+    : Store<'state, 'message> =
     { State = init
       Reduce = reduce
+      RunEffect = runEffect
       Subscribers = [] }
 
 let dispatch (store: Store<_, _>) (message: 'message) =
-    store.State <- store.Reduce message store.State
+    let nextState, effects = store.Reduce message store.State
+    store.State <- nextState
+    for effect in effects do
+        store.RunEffect store effect
     for sub in store.Subscribers do
         sub ()
 

@@ -1,9 +1,6 @@
 import { type ActionSketch, type JsonRigidTransform, type Pickable, type RenderEntity, type SelectionTarget, type SketchLoop, type ViewerModel, type ViewerSketch, type ViewerState } from "./api";
 import { ACCENT, ACCENT_SOFT, AXIS, DIM_COLOR, DIM_HOVER, FIXED_COLOR, GRID_MAJOR, GRID_MINOR, LOOP_FILL, PAGE_BG, SKETCH_LINE, SKETCH_POINT } from "./colors";
 import { HALF_FOV, orbit, pan, viewBasis, zoomTowardsPointer, type CameraState } from "./camera";
-import type { Graph } from "./graph";
-import { solveGraphWithGpu, type SolverPin } from "./gpu-lm-solver";
-import { createGpuSolver, type GpuSolver } from "./gpu-solver";
 import { loadFontMetrics, loadMsdfAtlas, type FontMetrics } from "./msdf-atlas";
 import { add2, add3, cross3, dot2, dot3, len2, norm2, norm3, perp, scale2, scale3, sub2, sub3, type Vec2, type Vec3 } from "./math";
 import { createIsosurfacePipeline } from "./pipeline-isosurface";
@@ -11,7 +8,6 @@ import { createFieldSlicePipeline } from "./pipeline-field-slice";
 import { createMsdfLabelPipeline, writeLabelUniform } from "./pipeline-msdf-label";
 import {
   dispatchEditor,
-  paramValueFromJs,
   selectViewerModel,
   selectViewerState,
   selectionCandidatesFromJs,
@@ -19,11 +15,15 @@ import {
   subscribeViewerState,
 } from "../src/viewer-bridge";
 import {
+  beginConstraintLabelDrag,
+  beginPointDrag,
+  cancelSketchDrag,
   cancelEditingDimension,
   commitEditingDimension,
-  patchActionParamValue,
+  finishSketchDrag,
   setConstraintPlacementCursor,
   startEditingDimension,
+  updateSketchDrag,
   viewerDimensionClickTarget,
   viewerHover,
   viewerPick,
@@ -111,14 +111,6 @@ interface ConstraintLabel {
   anchor: Vec2;
   pickId: number | null;
   hovered: boolean;
-}
-
-interface SketchSolverBinding {
-  graph: Graph;
-  solver: GpuSolver;
-  localByPath: Map<string, number>;
-  localToGlobal: number[];
-  varIndexByLocal: Map<number, number>;
 }
 
 interface ResolvedLoopGeometry {
@@ -697,12 +689,8 @@ export class ViewerApp {
   private gpu: GpuContext | null = null;
   private model: ViewerModel | null = null;
   private state: ViewerState | null = null;
-  private sketchStateVersion = 0;
-  private solvedSketchStateVersion = -1;
   private fontMetrics: FontMetrics | null = null;
   private slotLookup = new Map<string, number>();
-  private solverBindings = new Map<string, SketchSolverBinding>();
-  private solvedSketchParams = new Map<string, Float32Array>();
   private renderSketches: RenderSketch[] = [];
   private dimensionEditInput: HTMLInputElement | null = null;
   private dimensionEditKey: string | null = null;
@@ -711,8 +699,6 @@ export class ViewerApp {
   private fieldSlicePipeline: FieldSlicePipelineState | null = null;
   private renderQueued = false;
   private isPicking = false;
-  private solveInFlight: Promise<void> | null = null;
-  private solveQueued = false;
   private resetCameraPending = false;
   private pointer = { x: 0, y: 0 };
   private drag: DragState | null = null;
@@ -761,14 +747,10 @@ export class ViewerApp {
 
   private async reloadModel(resetCamera: boolean): Promise<void> {
     if (this.drag) return;
-    this.destroySolverBindings();
     this.model = selectViewerModel() as ViewerModel;
-    this.sketchStateVersion += 1;
-    this.solvedSketchStateVersion = -1;
     this.rebuildFieldPipeline();
     this.rebuildFieldSlicePipeline();
     this.slotLookup = new Map(this.model.slotIndex.map((entry) => [`${entry.actionId}:${entry.path}`, entry.slot]));
-    await this.buildSolverBindings();
     this.rebuildRenderData();
     if (resetCamera) this.resetCameraPending = true;
     this.queueRender();
@@ -782,7 +764,6 @@ export class ViewerApp {
       nextState = selectViewerState() as ViewerState;
     }
     this.applyViewerState(nextState);
-    await this.solveSketches();
     this.rebuildRenderData();
     this.updateFieldBuffers();
     this.updateFieldSliceBuffers();
@@ -794,18 +775,7 @@ export class ViewerApp {
   }
 
   private applyViewerState(nextState: ViewerState): void {
-    if (!this.state || ViewerApp.haveSketchParamsChanged(this.state, nextState)) {
-      this.sketchStateVersion += 1;
-    }
     this.state = nextState;
-  }
-
-  private static haveSketchParamsChanged(prev: ViewerState, next: ViewerState): boolean {
-    if (prev.params.length !== next.params.length) return true;
-    for (let i = 0; i < prev.params.length; i++) {
-      if (prev.params[i] !== next.params[i]) return true;
-    }
-    return false;
   }
 
   private bindEvents(): void {
@@ -946,7 +916,12 @@ export class ViewerApp {
       yPath: target.yPath,
       target: local,
     };
-    await this.solveSketches();
+    if (target.kind === "point" && target.pointId) {
+      dispatchEditor(beginPointDrag(target.sketchId, target.pointId, local[0], local[1]));
+    } else if (target.kind === "label" && typeof target.constraintIndex === "number") {
+      dispatchEditor(beginConstraintLabelDrag(target.sketchId, target.constraintIndex, local[0], local[1]));
+    }
+    this.applyViewerState(selectViewerState() as ViewerState);
     this.rebuildRenderData();
     this.queueRender();
   }
@@ -976,7 +951,6 @@ export class ViewerApp {
     }
     dispatchEditor(commitEditingDimension(value));
     this.applyViewerState(selectViewerState() as ViewerState);
-    await this.solveSketches();
     this.rebuildRenderData();
     this.queueRender();
   }
@@ -1007,17 +981,15 @@ export class ViewerApp {
     if (!authored || !pending || pending.sketchId !== authored.model.id) return null;
     const cursor = pointerToSketchLocal(this.pointer, this.canvas, this.camera, authored.frame);
     if (!cursor) return null;
-    const effectiveParams = this.currentEffectiveParams();
+    const effectiveParams = new Float32Array(this.state?.params ?? []);
 
     const entityMap = new Map(authored.model.sketch.entities.map((entity) => [entity.id, entity]));
     const pointMap = new Map<string, Vec2>();
     const framePointMap = new Map<string, Vec2>(
       this.state!.frames.map((frame) => [frame.id, projectWorldToSketchLocal(toSketchFrame(frame.transform).position, authored.frame)] as const),
     );
-    const binding = this.solverBindings.get(authored.model.id);
-    const solved = this.solvedSketchParams.get(authored.model.id);
     const resolveValue = (path: string, fallback: number) =>
-      resolvedSketchValue(binding, solved, false, effectiveParams, this.slotLookup, authored.model.id, path, fallback);
+      slotValue(effectiveParams, this.slotLookup, authored.model.id, path, fallback);
 
     for (const entity of authored.model.sketch.entities) {
       if (entity.case === "REPoint") {
@@ -1120,41 +1092,22 @@ export class ViewerApp {
     const drag = this.drag;
     if (!drag) return;
     this.updateDragTarget();
-    await this.solveSketches();
     this.drag = null;
-    if (drag.kind === "label") {
-      dispatchEditor(patchActionParamValue(drag.sketchId, drag.xPath, paramValueFromJs(drag.target[0])));
-      dispatchEditor(patchActionParamValue(drag.sketchId, drag.yPath, paramValueFromJs(drag.target[1])));
-      await this.reloadState();
-      return;
-    }
-    const solved = this.solvedSketchParams.get(drag.sketchId);
-    const binding = this.solverBindings.get(drag.sketchId);
-    if (!solved || !binding) {
-      await this.reloadState();
-      return;
-    }
-    const params = [...binding.localByPath.entries()]
-      .sort((a, b) => a[1] - b[1])
-      .map(([key, localSlot]) => ({ key, value: solved[localSlot] }));
-    if (params.length === 0) {
-      await this.reloadState();
-      return;
-    }
-    // NOTE: sketch-drag patch path temporarily disabled. PatchSketchParams
-    // was removed in favour of typed ActionParamField; the solver's raw
-    // string keys need mapping through SlotIndex before dispatch can work
-    // again. TODO: reimplement on top of patchActionParamValue.
-    console.warn("sketch drag not wired to dispatch yet (params:", params, ")");
+    dispatchEditor(finishSketchDrag);
     this.applyViewerState(selectViewerState() as ViewerState);
-    await this.solveSketches();
+    await this.reloadState();
     this.rebuildRenderData();
     this.queueRender();
   }
 
   private async updateDragFrame(): Promise<void> {
     this.updateDragTarget();
-    await this.solveSketches();
+    if (this.drag) {
+      dispatchEditor(updateSketchDrag(this.drag.target[0], this.drag.target[1]));
+    } else {
+      dispatchEditor(cancelSketchDrag);
+    }
+    this.applyViewerState(selectViewerState() as ViewerState);
     this.rebuildRenderData();
     this.queueRender();
   }
@@ -1232,7 +1185,7 @@ export class ViewerApp {
 
   private rebuildRenderData(): void {
     if (!this.model || !this.state) return;
-    const effectiveParams = this.currentEffectiveParams();
+    const effectiveParams = new Float32Array(this.state?.params ?? []);
     this.renderSketches = this.model.sketches
       .filter((sketch) => this.isVisible(sketch.id))
       .map((sketch) => {
@@ -1246,8 +1199,6 @@ export class ViewerApp {
           this.state!.highlightedTarget,
           this.state.highlightedTargets,
           this.fontMetrics,
-          this.solverBindings.get(sketch.id),
-          this.solvedSketchStateVersion === this.sketchStateVersion ? this.solvedSketchParams.get(sketch.id) : undefined,
           this.drag,
           frame,
           (constraintIndex) => this.constraintLabelPosition(sketch.id, constraintIndex),
@@ -1268,80 +1219,12 @@ export class ViewerApp {
     return this.state?.visible[actionId] ?? true;
   }
 
-  private currentEffectiveParams(): Float32Array {
-    const base = new Float32Array(this.state?.params ?? []);
-    if (this.solvedSketchStateVersion !== this.sketchStateVersion) return base;
-    for (const [sketchId, solvedLocal] of this.solvedSketchParams.entries()) {
-      const binding = this.solverBindings.get(sketchId);
-      if (!binding) continue;
-      const count = Math.min(binding.localToGlobal.length, solvedLocal.length);
-      for (let i = 0; i < count; i++) {
-        const globalSlot = binding.localToGlobal[i];
-        if (globalSlot < base.length) base[globalSlot] = solvedLocal[i];
-      }
-    }
-    return base;
-  }
-
   private constraintLabelPosition(sketchId: string, constraintIndex: number): Vec2 | null {
     const hit = this.state?.constraintLabelPositions.find((candidate) =>
       candidate.sketchId === sketchId && candidate.constraintIndex === constraintIndex);
     return hit ? [hit.position.x, hit.position.y] : null;
   }
 
-  private async buildSolverBindings(): Promise<void> {
-    if (!this.model) return;
-    const bindings = await Promise.all(this.model.sketches.map(async (sketch) => {
-      const binding = await createSketchSolverBinding(sketch, this.slotLookup);
-      return [sketch.id, binding] as const;
-    }));
-    this.solverBindings = new Map(bindings);
-    this.solvedSketchParams.clear();
-  }
-
-  private async solveSketches(): Promise<void> {
-    if (this.solveInFlight) {
-      this.solveQueued = true;
-      await this.solveInFlight;
-      return;
-    }
-    this.solveInFlight = this.runSolveSketches();
-    try {
-      await this.solveInFlight;
-    } finally {
-      this.solveInFlight = null;
-      if (this.solveQueued) {
-        this.solveQueued = false;
-        await this.solveSketches();
-      }
-    }
-  }
-
-  private async runSolveSketches(): Promise<void> {
-    if (!this.model || !this.state) return;
-    const solved = new Map<string, Float32Array>();
-    await Promise.all(this.model.sketches.map(async (sketch) => {
-      const binding = this.solverBindings.get(sketch.id);
-      if (!binding || binding.localToGlobal.length === 0) return;
-      const localParams = new Float32Array(this.solvedSketchParams.get(sketch.id) ?? binding.graph.params);
-      for (let i = 0; i < binding.localToGlobal.length; i++) {
-        const globalSlot = binding.localToGlobal[i];
-        localParams[i] = this.state!.params[globalSlot] ?? localParams[i];
-      }
-      const pins = this.drag?.sketchId === sketch.id ? buildDragPins(this.drag, binding) : [];
-      const result = await solveGraphWithGpu(binding.graph, binding.solver, localParams, pins);
-      solved.set(sketch.id, result);
-    }));
-    this.solvedSketchParams = solved;
-    this.solvedSketchStateVersion = this.sketchStateVersion;
-  }
-
-  private destroySolverBindings(): void {
-    for (const binding of this.solverBindings.values()) binding.solver.destroy();
-    this.solverBindings.clear();
-    this.solvedSketchParams.clear();
-    this.solvedSketchStateVersion = -1;
-  }
 
   private resizeCanvas(): void {
     const dpr = Math.max(window.devicePixelRatio || 1, 1);
@@ -1996,7 +1879,7 @@ export class ViewerApp {
   private updateFieldBuffers(): void {
     if (!this.gpu || !this.model || !this.state || !this.fieldPipeline) return;
     const { device } = this.gpu;
-    const effectiveParams = this.currentEffectiveParams();
+    const effectiveParams = new Float32Array(this.state?.params ?? []);
     if (effectiveParams.length > this.fieldPipeline.slotCapacity) {
       this.rebuildFieldPipeline();
       return;
@@ -2300,8 +2183,6 @@ function buildSketchBuffers(
   hoveredTarget: SelectionTarget | null,
   selectedTargets: SelectionTarget[],
   fontMetrics: FontMetrics | null,
-  solverBinding?: SketchSolverBinding,
-  solvedLocal?: Float32Array,
   drag?: DragState | null,
   sketchFrame?: SketchFrame,
   stateLabelPosition?: (constraintIndex: number) => Vec2 | null,
@@ -2333,10 +2214,7 @@ function buildSketchBuffers(
     selectionMatches(hoveredTarget, viewerSketch.id, kind, id);
   const isSelected = (kind: PickKind, id: string | number): boolean =>
     selectionMatchesAny(selectedTargets, viewerSketch.id, kind, id);
-  const preferSolvedLocal =
-    drag?.kind === "point" && drag.sketchId === viewerSketch.id;
-  const resolveValue = (path: string, fallback: number) =>
-    resolvedSketchValue(solverBinding, solvedLocal, preferSolvedLocal, params, slotLookup, viewerSketch.id, path, fallback);
+  const resolveValue = (path: string, fallback: number) => slotValue(params, slotLookup, viewerSketch.id, path, fallback);
   const resolveLabelAnchor = (index: number, fallback: Vec2): Vec2 => {
     if (drag?.kind === "label" && drag.sketchId === viewerSketch.id && drag.constraintIndex === index) return drag.target;
     const live = stateLabelPosition?.(index);
@@ -2346,10 +2224,15 @@ function buildSketchBuffers(
 
   for (const entity of viewerSketch.sketch.entities) {
     if (entity.case === "REPoint") {
-      pointMap.set(entity.id, [
+      const resolved: Vec2 = [
         resolveValue(`sketch.entity.${entity.id}.x`, entity.x),
         resolveValue(`sketch.entity.${entity.id}.y`, entity.y),
-      ]);
+      ];
+      if (drag?.kind === "point" && drag.sketchId === viewerSketch.id && drag.pointId === entity.id) {
+        pointMap.set(entity.id, drag.target);
+      } else {
+        pointMap.set(entity.id, resolved);
+      }
     }
   }
 
@@ -3483,106 +3366,6 @@ function pushFrameAxis(target: number[], origin: Vec3, axis: Vec3, axisPx: numbe
 function slotValue(params: number[], slotLookup: Map<string, number>, actionId: string, path: string, fallback: number): number {
   const slot = slotLookup.get(`${actionId}:${path}`);
   return slot == null ? fallback : (params[slot] ?? fallback);
-}
-
-function resolvedSketchValue(
-  solverBinding: SketchSolverBinding | undefined,
-  solvedLocal: Float32Array | undefined,
-  preferSolvedLocal: boolean,
-  params: number[],
-  slotLookup: Map<string, number>,
-  actionId: string,
-  path: string,
-  fallback: number,
-): number {
-  const localSlot = solverBinding?.localByPath.get(path);
-  if (preferSolvedLocal && localSlot != null && solvedLocal && localSlot < solvedLocal.length) return solvedLocal[localSlot];
-  return slotValue(params, slotLookup, actionId, path, fallback);
-}
-
-async function createSketchSolverBinding(
-  sketch: ViewerSketch,
-  slotLookup: Map<string, number>,
-): Promise<SketchSolverBinding> {
-  const localByPath = new Map<string, number>();
-  let localSlot = 0;
-  for (const entity of sketch.sketch.entities) {
-    switch (entity.case) {
-      case "REPoint":
-        localByPath.set(`sketch.entity.${entity.id}.x`, localSlot++);
-        localByPath.set(`sketch.entity.${entity.id}.y`, localSlot++);
-        break;
-      case "RECircle":
-        localByPath.set(`sketch.entity.${entity.id}.radius`, localSlot++);
-        break;
-      case "REArc":
-        if (entity.data.case === "ArcThreePoint") {
-          localByPath.set(`sketch.entity.${entity.id}.throughX`, localSlot++);
-          localByPath.set(`sketch.entity.${entity.id}.throughY`, localSlot++);
-        }
-        break;
-      default:
-        break;
-    }
-  }
-  sketch.sketch.constraints.forEach((constraint, index) => {
-    switch (constraint.case) {
-      case "Distance":
-      case "FrameDistance":
-      case "LineDistance":
-      case "FrameLineDistance":
-      case "PointLineDistance":
-      case "PointCircleDistance":
-      case "LineCircleDistance":
-      case "CircleCircleDistance":
-        localByPath.set(`sketch.constraint.${index}.distance`, localSlot++);
-        break;
-      case "CircleDiameter":
-        localByPath.set(`sketch.constraint.${index}.diameter`, localSlot++);
-        break;
-      case "Angle":
-        localByPath.set(`sketch.constraint.${index}.angle`, localSlot++);
-        break;
-      default:
-        break;
-    }
-  });
-
-  const localToGlobal = new Array<number>(localByPath.size);
-  for (const [path, local] of localByPath) {
-    const globalSlot = slotLookup.get(`${sketch.id}:${path}`);
-    if (globalSlot == null) {
-      throw new Error(`Missing slot for ${sketch.id}:${path}`);
-    }
-    localToGlobal[local] = globalSlot;
-  }
-
-  const solver = await createGpuSolver(sketch.graph, 1);
-  const varIndexByLocal = new Map<number, number>();
-  for (let i = 0; i < sketch.graph.varSlots.length; i++) {
-    varIndexByLocal.set(sketch.graph.varSlots[i], i);
-  }
-  return {
-    graph: sketch.graph,
-    solver,
-    localByPath,
-    localToGlobal,
-    varIndexByLocal,
-  };
-}
-
-function buildDragPins(drag: DragState, binding: SketchSolverBinding): SolverPin[] {
-  const xLocal = binding.localByPath.get(drag.xPath);
-  const yLocal = binding.localByPath.get(drag.yPath);
-  if (xLocal == null || yLocal == null) return [];
-  const xVar = binding.varIndexByLocal.get(xLocal);
-  const yVar = binding.varIndexByLocal.get(yLocal);
-  if (xVar == null || yVar == null) return [];
-  const weight = 20;
-  return [
-    { localSlot: xLocal, varIndex: xVar, target: drag.target[0], weight },
-    { localSlot: yLocal, varIndex: yVar, target: drag.target[1], weight },
-  ];
 }
 
 function toSketchFrame(t: JsonRigidTransform): SketchFrame {

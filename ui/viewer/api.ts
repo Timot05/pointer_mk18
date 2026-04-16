@@ -85,7 +85,7 @@ export interface ViewerState {
   sketchUi: SketchUiState;
   frames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchEditFrames: Array<{ id: string; transform: JsonRigidTransform }>;
-  sketchFrames: Array<{ id: string; transform: JsonRigidTransform }>;
+  sketchOriginFrames: Array<{ id: string; transform: JsonRigidTransform }>;
   fieldSlices: Array<{
     surfaceIndex: number;
     planeOrigin: JsonVec3;

@@ -98,22 +98,44 @@ let private renderInto (root: Browser.Types.HTMLElement) =
     root.innerHTML <- ""
     root.appendChild shell |> ignore
 
-// During a sketch drag, the shell reads nothing that changes — Doc is
-// frozen until commit, Compiled stays put, hover/selection are locked.
-// Only ActiveSketchDrag.Target and SolvedSketchParams mutate, and those
-// are viewer-only. Skipping the shell rebuild here is what keeps drag
-// feeling responsive; the viewer still re-renders via its own bridge
-// subscription on every dispatch.
-let mutable private lastDragActive = false
+let private uiSignature (state: EditorState) =
+    sprintf
+        "%A|%A|%A|%A|%A|%A|%A|%A|%A"
+        state.Doc.SelectedId
+        state.SketchEditMode
+        state.SketchTool
+        state.SelectedTargets
+        state.HoveredTarget
+        state.EditingDimension
+        state.ConstraintPlacementMode
+        state.ConstraintPlacementDraft
+        state.ConstraintPlacementCursor
+
+let mutable private lastCompiled = store.State.Compiled
+let mutable private lastSlotValues = store.State.SlotValues
+let mutable private lastUiSignature = uiSignature store.State
 
 let private onStateChange (root: Browser.Types.HTMLElement) () =
-    let dragActive = store.State.ActiveSketchDrag.IsSome
-    if not dragActive || dragActive <> lastDragActive then
+    let state = store.State
+    let compiledChanged = not (obj.ReferenceEquals(lastCompiled, state.Compiled))
+    let slotValuesChanged = not (obj.ReferenceEquals(lastSlotValues, state.SlotValues))
+    let nextUiSignature = uiSignature state
+    let uiChanged = nextUiSignature <> lastUiSignature
+
+    if compiledChanged || uiChanged then
         renderInto root
-        // Palette mounts directly to <body>, not inside the shell, so we
-        // resync it ourselves on every real re-render.
-        CommandPalette.sync dispatch getPaletteState getDocActionCount
-    lastDragActive <- dragActive
+    elif slotValuesChanged then
+        let doc = DocumentPipeline.documentView state
+        ParamsPanel.syncSlotValues root state
+        ActionList.syncSubtitles root doc
+
+    // The palette is mounted outside the shell, so it must track its own
+    // state transitions independently of whether the shell rerendered.
+    CommandPalette.sync dispatch getPaletteState getDocActionCount
+
+    lastCompiled <- state.Compiled
+    lastSlotValues <- state.SlotValues
+    lastUiSignature <- nextUiSignature
 
 // --------------------------------------------------------------------------
 // Bootstrap.

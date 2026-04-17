@@ -32,11 +32,15 @@ let private controlDrag
     let row = Dom.el "div" "control-row"
     row.appendChild (Dom.elText "span" "control-name" label :> Node) |> ignore
     let valSpan = Dom.elText "span" "control-value" (sprintf "%.1f" value)
+    valSpan.dataset?slotActionId <- actionId
+    valSpan.dataset?slotPath <- Server.Document.pathOfParamField field
+    let dispatchValue nextValue =
+        dispatch (Editor.setActionParamValue actionId field (vFloat nextValue))
     Dom.setupDraggable
         valSpan
         value
-        (fun _ -> ())
-        (fun v -> dispatch (PatchActionParamValue(actionId, field, vFloat v)))
+        dispatchValue
+        dispatchValue
     row.appendChild (valSpan :> Node) |> ignore
     row
 
@@ -66,7 +70,7 @@ let private controlRef
     select.addEventListener (
         "change",
         fun _ ->
-            dispatch (PatchActionParamValue(actionId, field, vString select.value))
+            dispatch (Editor.setActionParamValue actionId field (vString select.value))
     )
     row.appendChild (select :> Node) |> ignore
     row
@@ -88,7 +92,7 @@ let private controlSelect
     select.addEventListener (
         "change",
         fun _ ->
-            dispatch (PatchActionParamValue(actionId, field, vString select.value))
+            dispatch (Editor.setActionParamValue actionId field (vString select.value))
     )
     row.appendChild (select :> Node) |> ignore
     row
@@ -107,7 +111,7 @@ let private controlCheck
     input.addEventListener (
         "change",
         fun _ ->
-            dispatch (PatchActionParamValue(actionId, field, vBool input.``checked``))
+            dispatch (Editor.setActionParamValue actionId field (vBool input.``checked``))
     )
     row.appendChild (input :> Node) |> ignore
     row.appendChild (Dom.elText "label" "" label :> Node) |> ignore
@@ -165,7 +169,7 @@ let private controlFromSketchLoop
                     | Some id when id <> "" -> VString id
                     | _ -> VNull
                 VRecord (Map.ofList [ "case", VString "SelectionLoop"; "loopId", loopField ])
-            dispatch (PatchActionParamValue(actionId, ActionParamField.FromSketchSelection, record))
+            dispatch (Editor.setActionParamValue actionId ActionParamField.FromSketchSelection record)
     )
     row.appendChild (select :> Node) |> ignore
     row
@@ -336,7 +340,7 @@ let private renderDisplaySection
                 swatch.addEventListener (
                     "click",
                     fun _ ->
-                        dispatch (PatchDisplayValue(selected.Id, DisplayColor, vColor rgb))
+                        dispatch (Editor.setDisplayValue selected.Id DisplayColor (vColor rgb))
                 )
                 swatches.appendChild (swatch :> Node) |> ignore
             colorRow.appendChild (swatches :> Node) |> ignore
@@ -346,11 +350,16 @@ let private renderDisplaySection
             let offsetRow = Dom.el "div" "control-row"
             offsetRow.appendChild (Dom.elText "span" "control-name" "offset" :> Node) |> ignore
             let offsetVal = Dom.elText "span" "control-value" (sprintf "%.1f" d.IsoValue)
+            let isoPath = Server.Document.pathOfDisplayField DisplayIsoValue |> List.head
+            offsetVal.dataset?slotActionId <- selected.Id
+            offsetVal.dataset?slotPath <- isoPath
+            let dispatchIsoValue nextValue =
+                dispatch (Editor.setDisplayValue selected.Id DisplayIsoValue (vFloat nextValue))
             Dom.setupDraggable
                 offsetVal
                 d.IsoValue
-                (fun _ -> ())
-                (fun v -> dispatch (PatchDisplayValue(selected.Id, DisplayIsoValue, vFloat v)))
+                dispatchIsoValue
+                dispatchIsoValue
             offsetRow.appendChild (offsetVal :> Node) |> ignore
             controls.appendChild (offsetRow :> Node) |> ignore
 
@@ -379,7 +388,7 @@ let private renderDisplaySection
                     planeSelect.appendChild (option value label (fs.Plane = value) :> Node) |> ignore
                 planeSelect.addEventListener (
                     "change",
-                    fun _ -> dispatch (PatchFieldSliceValue(selected.Id, SlicePlane, vString planeSelect.value))
+                    fun _ -> dispatch (Editor.setFieldSliceValue selected.Id SlicePlane (vString planeSelect.value))
                 )
                 planeRow.appendChild (planeSelect :> Node) |> ignore
                 controls.appendChild (planeRow :> Node) |> ignore
@@ -388,11 +397,16 @@ let private renderDisplaySection
                 let sOffsetRow = Dom.el "div" "control-row"
                 sOffsetRow.appendChild (Dom.elText "span" "control-name" "offset" :> Node) |> ignore
                 let sOffsetVal = Dom.elText "span" "control-value" (sprintf "%.1f" fs.Offset)
+                let offsetPath = Server.Document.pathOfFieldSliceField SliceOffset |> List.head
+                sOffsetVal.dataset?slotActionId <- selected.Id
+                sOffsetVal.dataset?slotPath <- offsetPath
+                let dispatchSliceOffset nextValue =
+                    dispatch (Editor.setFieldSliceValue selected.Id SliceOffset (vFloat nextValue))
                 Dom.setupDraggable
                     sOffsetVal
                     fs.Offset
-                    (fun _ -> ())
-                    (fun v -> dispatch (PatchFieldSliceValue(selected.Id, SliceOffset, vFloat v)))
+                    dispatchSliceOffset
+                    dispatchSliceOffset
                 sOffsetRow.appendChild (sOffsetVal :> Node) |> ignore
                 controls.appendChild (sOffsetRow :> Node) |> ignore
 
@@ -472,3 +486,21 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
         | None -> ()
 
     container
+
+let syncSlotValues (root: HTMLElement) (state: EditorState) : unit =
+    let spans = root.querySelectorAll "[data-slot-action-id][data-slot-path]"
+
+    for i in 0 .. spans.length - 1 do
+        match spans.item(i) with
+        | :? HTMLElement as elem ->
+            let actionId = elem.dataset?slotActionId |> string
+            let path = elem.dataset?slotPath |> string
+            let slotRef = { ActionId = actionId; Path = path }
+
+            match Map.tryFind slotRef state.Compiled.Slots.Index with
+            | Some slot ->
+                elem.textContent <- sprintf "%.1f" state.SlotValues.[slot]
+            | None ->
+                ()
+        | _ ->
+            ()

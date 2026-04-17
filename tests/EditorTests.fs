@@ -7,6 +7,9 @@ open Server.Editor
 let updateMany messages state =
     messages |> List.fold (fun current message -> Editor.update message current |> fst) state
 
+let slotFor actionId path (state: EditorState) =
+    state.Compiled.Slots.Index.[{ ActionId = actionId; Path = path }]
+
 [<Fact>]
 let ``Editor init state starts with compiled default document`` () =
     let state = Editor.initState ()
@@ -233,3 +236,59 @@ let ``Applying a matching solved drag result during finish commits sketch params
 
     Assert.True(applied.ActiveSketchDrag.IsNone)
     Assert.False(applied.PendingSketchDragCommit)
+
+[<Fact>]
+let ``Slot-backed param edit updates live slot values without recompiling`` () =
+    let before = Editor.initState ()
+    let radiusSlot = slotFor "cyl1" "radius" before
+
+    let after =
+        Editor.update (Editor.setActionParamValue "cyl1" CylinderRadius (VFloat 12.5)) before
+        |> fst
+
+    Assert.True(obj.ReferenceEquals(before.Compiled, after.Compiled))
+    Assert.Equal(12.5, after.SlotValues.[radiusSlot], 6)
+
+    let viewerState = ViewerPipeline.viewerState after
+    Assert.Equal(12.5, viewerState.Params.[radiusSlot], 6)
+
+    match after.Doc.Actions |> List.find (fun action -> action.Id = "cyl1") with
+    | { Kind = Cylinder(radius, _) } -> Assert.Equal(12.5, radius, 6)
+    | _ -> failwith "expected cyl1 to remain a cylinder"
+
+[<Fact>]
+let ``Structural param edit recompiles topology and refreshes slot values`` () =
+    let before = Editor.initState ()
+
+    let after =
+        Editor.update (Editor.setActionParamValue "frame1" TranslateChild (VString "cyl1")) before
+        |> fst
+
+    Assert.False(obj.ReferenceEquals(before.Compiled, after.Compiled))
+    Assert.True(after.Compiled.Slots.Values = after.SlotValues)
+
+    match after.Doc.Actions |> List.find (fun action -> action.Id = "frame1") with
+    | { Kind = Translate(Some child, _, _, _) } -> Assert.Equal("cyl1", child)
+    | _ -> failwith "expected frame1 to remain a translate action"
+
+[<Fact>]
+let ``Palette commit on final scalar step builds the action`` () =
+    let before = Editor.initState ()
+
+    let after =
+        before
+        |> updateMany
+            [ PaletteOpen
+              PalettePick "Sphere"
+              PaletteSetScalarField("radius", 12.0)
+              PaletteCommitScalars ]
+
+    let spheres =
+        after.Doc.Actions
+        |> List.filter (fun action ->
+            match action.Kind with
+            | Sphere 12.0 -> true
+            | _ -> false)
+
+    Assert.Single(spheres) |> ignore
+    Assert.False((DocumentPipeline.paletteView after).IsOpen)

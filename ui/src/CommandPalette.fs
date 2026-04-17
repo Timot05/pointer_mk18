@@ -25,6 +25,9 @@ let mutable private backdrop : HTMLElement option = None
 let mutable private activeIndex = 0
 let mutable private currentItems : PaletteItem list = []
 let mutable private cleanupKeydown : (unit -> unit) option = None
+let mutable private lastStructureSignature : string option = None
+let mutable private lastItemsSignature : string option = None
+let mutable private lastScalarSignature : string option = None
 
 [<Emit("Math.random().toString(36).slice(2, 8)")>]
 let private randomSuffix () : string = jsNative
@@ -42,6 +45,15 @@ let private unmount () =
         bd.remove ()
         backdrop <- None
     | None -> ()
+    lastStructureSignature <- None
+    lastItemsSignature <- None
+    lastScalarSignature <- None
+
+let private structureSignature (state: PaletteState) =
+    sprintf "%b|%s|%A|%A|%s|%A" state.IsOpen state.Mode state.PickedKind state.Chips state.Prompt state.HintBar
+
+let private itemsSignature (items: PaletteItem list) = sprintf "%A" items
+let private scalarSignature (fields: PaletteScalarField list) = sprintf "%A" fields
 
 // ── Results list ───────────────────────────────────────────────────────
 
@@ -95,6 +107,19 @@ let private patchResults (dispatch: Message -> unit)
             currentItems <- items
             let fresh = buildResultsList dispatch getDocActionCount items sync
             old.parentNode.replaceChild (fresh, old) |> ignore
+            lastItemsSignature <- Some(itemsSignature items)
+
+let private patchScalarValues (fields: PaletteScalarField list) =
+    match backdrop with
+    | None -> ()
+    | Some bd ->
+        for field in fields do
+            match bd.querySelector($".control-value[data-field-key=\"{field.Key}\"]") with
+            | :? HTMLElement as elem ->
+                elem.textContent <- sprintf "%.1f" field.Value
+            | _ ->
+                ()
+        lastScalarSignature <- Some(scalarSignature fields)
 
 // ── Mount ──────────────────────────────────────────────────────────────
 
@@ -103,7 +128,6 @@ let private mount (dispatch: Message -> unit)
                   (getDocActionCount: unit -> int)
                   (sync: bool -> unit)
                   (state: PaletteState) =
-    unmount ()
     if not state.IsOpen then () else
 
     let bd = Dom.el "div" "palette-backdrop"
@@ -150,6 +174,7 @@ let private mount (dispatch: Message -> unit)
             let cell = Dom.el "div" "value-cell"
             cell.appendChild (Dom.elText "span" "value-axis" field.Label :> Node) |> ignore
             let valSpan = Dom.elText "span" "control-value" (sprintf "%.1f" field.Value)
+            valSpan.dataset?fieldKey <- field.Key
             Dom.setupDraggable
                 valSpan
                 field.Value
@@ -173,6 +198,9 @@ let private mount (dispatch: Message -> unit)
     bd.appendChild (palette :> Node) |> ignore
     document.body.appendChild (bd :> Node) |> ignore
     backdrop <- Some bd
+    lastStructureSignature <- Some(structureSignature state)
+    lastItemsSignature <- Some(itemsSignature state.Items)
+    lastScalarSignature <- Some(scalarSignature state.ScalarFields)
 
     // Input event handlers
     match inputOpt with
@@ -209,9 +237,11 @@ let private mount (dispatch: Message -> unit)
                     dispatch PaletteClose
                 | "Backspace" when input.value = "" && state.Mode <> "command" ->
                     e.preventDefault ()
+                    e.stopPropagation ()
                     dispatch PaletteBack
                 | "ArrowDown" ->
                     e.preventDefault ()
+                    e.stopPropagation ()
                     if not state.Items.IsEmpty then
                         activeIndex <- (activeIndex + 1) % state.Items.Length
                     for j in 0 .. inPalette.length - 1 do
@@ -220,6 +250,7 @@ let private mount (dispatch: Message -> unit)
                         else n.classList.remove "is-active"
                 | "ArrowUp" ->
                     e.preventDefault ()
+                    e.stopPropagation ()
                     if not state.Items.IsEmpty then
                         activeIndex <- (activeIndex - 1 + state.Items.Length) % state.Items.Length
                     for j in 0 .. inPalette.length - 1 do
@@ -228,6 +259,7 @@ let private mount (dispatch: Message -> unit)
                         else n.classList.remove "is-active"
                 | "Enter" ->
                     e.preventDefault ()
+                    e.stopPropagation ()
                     if ke.metaKey || ke.ctrlKey then
                         dispatch (PaletteFinish(randomSuffix ()))
                     else
@@ -284,6 +316,39 @@ let sync (dispatch: Message -> unit)
         if not state.IsOpen then
             unmount ()
         else
-            activeIndex <- 0
-            mount dispatch getPaletteState getDocActionCount syncImpl state
+            let nextStructure = structureSignature state
+            match backdrop, lastStructureSignature with
+            | None, _
+            | _, None ->
+                activeIndex <- 0
+                mount dispatch getPaletteState getDocActionCount syncImpl state
+            | Some bd, Some previousStructure when previousStructure <> nextStructure ->
+                let preservedValue =
+                    match bd.querySelector ".palette-input" with
+                    | :? HTMLInputElement as input -> Some input.value
+                    | _ -> None
+                let preservedSelection =
+                    match bd.querySelector ".palette-input" with
+                    | :? HTMLInputElement as input -> Some(input.selectionStart, input.selectionEnd)
+                    | _ -> None
+                activeIndex <- 0
+                unmount ()
+                mount dispatch getPaletteState getDocActionCount syncImpl state
+                match preservedValue, backdrop with
+                | Some value, Some nextBd ->
+                    match nextBd.querySelector ".palette-input" with
+                    | :? HTMLInputElement as nextInput ->
+                        nextInput.value <- value
+                        match preservedSelection with
+                        | Some(startPos, endPos) -> nextInput.setSelectionRange(startPos, endPos)
+                        | _ -> ()
+                    | _ -> ()
+                | _ -> ()
+            | Some bd, Some _ ->
+                if state.Mode = "command" || state.Mode = "ref" then
+                    if lastItemsSignature <> Some(itemsSignature state.Items) then
+                        patchResults dispatch getDocActionCount state.Items syncImpl
+                elif state.Mode = "scalars" then
+                    if lastScalarSignature <> Some(scalarSignature state.ScalarFields) then
+                        patchScalarValues state.ScalarFields
     syncImpl false

@@ -195,6 +195,17 @@ type Document =
 
 module Document =
 
+    let pathOfDisplayField =
+        function
+        | DisplayColor -> [ "display.color.0"; "display.color.1"; "display.color.2" ]
+        | DisplayOpacity -> [ "display.opacity" ]
+        | DisplayIsoValue -> [ "display.isoValue" ]
+
+    let pathOfFieldSliceField =
+        function
+        | SlicePlane -> []
+        | SliceOffset -> [ "fieldSlice.offset" ]
+
     let pathOfParamField =
         function
         | CylinderRadius -> "radius"

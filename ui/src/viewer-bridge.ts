@@ -355,8 +355,8 @@ export function selectViewerState() {
 
 // ── Viewer listeners (model vs state split for efficiency) ────────────
 //
-// Model listeners fire when Doc or Compiled changes — the viewer rebuilds
-// its GPU buffers. State listeners fire on other changes (hover, drag
+// Model listeners fire when Compiled topology changes — the viewer rebuilds
+// its GPU buffers. State listeners fire on other changes (hover, drag,
 // target, etc.) — the viewer only needs to update derived rendering.
 // We diff the state ourselves inside the single F# store subscription so
 // F# dispatches and TS dispatches both route through the same path.
@@ -364,14 +364,11 @@ export function selectViewerState() {
 const viewerModelListeners = new Set<() => void>();
 const viewerStateListeners = new Set<() => void>();
 
-let lastDoc = state.State.Doc;
 let lastCompiled = state.State.Compiled;
 
 storeSubscribe(editorStore, () => {
-  const newDoc = state.State.Doc;
   const newCompiled = state.State.Compiled;
-  const modelChanged = newDoc !== lastDoc || newCompiled !== lastCompiled;
-  lastDoc = newDoc;
+  const modelChanged = newCompiled !== lastCompiled;
   lastCompiled = newCompiled;
   if (modelChanged) {
     for (const l of viewerModelListeners) l();

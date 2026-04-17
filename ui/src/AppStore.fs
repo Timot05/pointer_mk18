@@ -89,15 +89,16 @@ let rec private startSketchSolve (store: Store.Store<EditorState, Message>) (dra
                     | Some solved -> Array.copy solved
                     | None -> sketch.Graph.Params |> Array.map float32
 
-                let count = min binding.LocalToGlobal.Length initialLocal.Length
+                if usePins || not (Map.containsKey drag.SketchId state.SolvedSketchParams) then
+                    let count = min binding.LocalToGlobal.Length initialLocal.Length
 
-                for i in 0 .. count - 1 do
-                    let globalSlot = binding.LocalToGlobal.[i]
-                    initialLocal.[i] <- float32 state.Compiled.Slots.Values.[globalSlot]
+                    for i in 0 .. count - 1 do
+                        let globalSlot = binding.LocalToGlobal.[i]
+                        initialLocal.[i] <- float32 state.SlotValues.[globalSlot]
 
                 let pins =
                     if usePins then
-                        SketchSolve.buildPins 4.0 drag.XField drag.YField drag.Target binding
+                        SketchSolve.buildPins 0.1 drag.XField drag.YField drag.Target binding
                     else
                         []
                 let! solved = GpuLmSolver.solveGraphWithGpu sketch.Graph solver initialLocal pins GpuLmSolver.defaultSolverConfig

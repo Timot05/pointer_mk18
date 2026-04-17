@@ -60,6 +60,7 @@ type SketchDrag =
 type EditorState =
     { Doc: Document
       Compiled: PipelineResult
+      SlotValues: float array
       SolvedSketchParams: Map<string, float32[]>
       PaletteSession: PaletteSession
       HoveredTarget: SelectionTarget option
@@ -106,10 +107,11 @@ type Message =
     | ReorderActions of string list
     | ToggleActionVisible of string
     | ToggleDisplay of string
-    | PatchDisplayValue of string * DisplayField * ParamValue
+    | SetDisplayValue of string * DisplayField * ParamValue
     | ToggleFieldSlice of string
-    | PatchFieldSliceValue of string * FieldSliceField * ParamValue
-    | PatchActionParamValue of string * ActionParamField * ParamValue
+    | SetFieldSliceValue of string * FieldSliceField * ParamValue
+    | SetActionSlotValue of string * ActionParamField * ParamValue
+    | SetActionStructureValue of string * ActionParamField * ParamValue
     | DeleteIntent
     | ViewerHover of PickCandidateInput list
     | ViewerPick of string * PickCandidateInput list
@@ -200,8 +202,10 @@ module Editor =
 
     let initState () =
         let doc = Document.defaultDocument ()
+        let compiled = Pipeline.compile doc.Actions
         { Doc = doc
-          Compiled = Pipeline.compile doc.Actions
+          Compiled = compiled
+          SlotValues = Array.copy compiled.Slots.Values
           SolvedSketchParams = Map.empty
           PaletteSession = Palette.empty
           HoveredTarget = None
@@ -215,6 +219,61 @@ module Editor =
           ConstraintPlacementMode = None
           ConstraintPlacementDraft = None
           ConstraintPlacementCursor = None }
+
+    let isSlotBackedActionParamField =
+        function
+        | CylinderRadius
+        | CylinderHeight
+        | SphereRadius
+        | BoxWidth
+        | BoxHeight
+        | BoxDepth
+        | TranslateX
+        | TranslateY
+        | TranslateZ
+        | RotateAxisX
+        | RotateAxisY
+        | RotateAxisZ
+        | RotateAngle
+        | HalfPlaneOffset
+        | UnionRadius
+        | SubtractRadius
+        | IntersectRadius
+        | SketchEntityField _
+        | SketchConstraintField _
+        | ThickenAmount
+        | ShellThickness
+        | MeshSize
+        | MeshResolution -> true
+        | TranslateChild
+        | RotateChild
+        | HalfPlaneAxis
+        | HalfPlaneFlip
+        | MoveChild
+        | MoveFrame
+        | UnionA
+        | UnionB
+        | SubtractA
+        | SubtractB
+        | IntersectA
+        | IntersectB
+        | SketchOrigin
+        | SketchPlane
+        | FromSketchChild
+        | FromSketchFlip
+        | FromSketchSelection
+        | ThickenChild
+        | ShellChild
+        | MeshChild -> false
+
+    let setActionParamValue id field value =
+        if isSlotBackedActionParamField field then
+            SetActionSlotValue(id, field, value)
+        else
+            SetActionStructureValue(id, field, value)
+
+    let setDisplayValue id field value = SetDisplayValue(id, field, value)
+    let setFieldSliceValue id field value = SetFieldSliceValue(id, field, value)
 
     let sketchPlaneTransform (originFrame: RigidTransform) (plane: SketchPlane) =
         let localRotation =
@@ -373,10 +432,82 @@ module Editor =
         let next =
             { state with
                 Compiled = compiled
+                SlotValues = Array.copy compiled.Slots.Values
                 SolvedSketchParams = Map.empty
                 HoveredTarget = state.HoveredTarget |> Option.filter (isValidSelectionTarget { state with Compiled = compiled })
                 SelectedTargets = state.SelectedTargets |> List.filter (isValidSelectionTarget { state with Compiled = compiled }) }
         normalizeState next
+
+    let private patchSlotValues (slotValues: float array) (compiled: PipelineResult) (updates: (SlotRef * float) list) =
+        let resolved =
+            updates
+            |> List.map (fun (slotRef, value) ->
+                match SlotTable.tryFindSlot compiled.Slots slotRef with
+                | Some slot -> slot, value
+                | None -> failwithf "Missing slot for %s/%s" slotRef.ActionId slotRef.Path)
+
+        SlotTable.patchedValues slotValues resolved
+
+    let private floatValueForSlotField field value =
+        match field with
+        | MeshResolution -> ParamValue.asInt value |> Option.map float
+        | _ -> ParamValue.asFloat value
+
+    let private patchActionSlotValues (state: EditorState) (actionId: string) (field: ActionParamField) (value: ParamValue) =
+        if not (isSlotBackedActionParamField field) then
+            failwithf "Expected slot-backed action field, got %A" field
+
+        match floatValueForSlotField field value with
+        | Some number ->
+            let slotRef =
+                { ActionId = actionId
+                  Path = Document.pathOfParamField field }
+
+            patchSlotValues state.SlotValues state.Compiled [ slotRef, number ]
+        | None ->
+            failwithf "Expected numeric slot value for %A, got %A" field value
+
+    let private patchDisplaySlotValues (state: EditorState) (actionId: string) (field: DisplayField) (value: ParamValue) =
+        let updates =
+            match field with
+            | DisplayColor ->
+                match ParamValue.asFloatArray value with
+                | Some color when color.Length = 3 ->
+                    (Document.pathOfDisplayField field, color |> Array.toList)
+                    ||> List.zip
+                    |> List.map (fun (path, colorValue) ->
+                        { ActionId = actionId; Path = path }, colorValue)
+                | Some color ->
+                    failwithf "Expected RGB display color, got %d components" color.Length
+                | None ->
+                    failwithf "Expected display color array, got %A" value
+            | DisplayOpacity
+            | DisplayIsoValue ->
+                match ParamValue.asFloat value with
+                | Some number ->
+                    Document.pathOfDisplayField field
+                    |> List.map (fun path -> { ActionId = actionId; Path = path }, number)
+                | None ->
+                    failwithf "Expected numeric display value for %A, got %A" field value
+
+        patchSlotValues state.SlotValues state.Compiled updates
+
+    let private patchFieldSliceSlotValues (state: EditorState) (actionId: string) (field: FieldSliceField) (value: ParamValue) =
+        let updates =
+            match field with
+            | SlicePlane -> []
+            | SliceOffset ->
+                match ParamValue.asFloat value with
+                | Some number ->
+                    Document.pathOfFieldSliceField field
+                    |> List.map (fun path -> { ActionId = actionId; Path = path }, number)
+                | None ->
+                    failwithf "Expected numeric field-slice value for %A, got %A" field value
+
+        if updates.IsEmpty then
+            state.SlotValues
+        else
+            patchSlotValues state.SlotValues state.Compiled updates
 
     /// Clear only the "in-progress placement" scratch state — dimension
     /// being edited and the constraint-placement draft/cursor. Used when
@@ -563,16 +694,27 @@ module Editor =
                 | ReorderActions ids ->
                     { state with Doc = Document.reorder ids state.Doc } |> recompileState
                 | ToggleActionVisible id ->
-                    { state with Doc = Document.toggleVisible id state.Doc } |> recompileState
+                    { state with Doc = Document.toggleVisible id state.Doc } |> normalizeState
                 | ToggleDisplay id ->
-                    { state with Doc = Document.toggleDisplay id state.Doc } |> recompileState
-                | PatchDisplayValue(id, key, value) ->
-                    { state with Doc = Document.patchDisplayValue id key value state.Doc } |> recompileState
+                    { state with Doc = Document.toggleDisplay id state.Doc } |> normalizeState
+                | SetDisplayValue(id, key, value) ->
+                    { state with
+                        Doc = Document.patchDisplayValue id key value state.Doc
+                        SlotValues = patchDisplaySlotValues state id key value }
+                    |> normalizeState
                 | ToggleFieldSlice id ->
-                    { state with Doc = Document.toggleFieldSlice id state.Doc } |> recompileState
-                | PatchFieldSliceValue(id, key, value) ->
-                    { state with Doc = Document.patchFieldSliceValue id key value state.Doc } |> recompileState
-                | PatchActionParamValue(id, key, value) ->
+                    { state with Doc = Document.toggleFieldSlice id state.Doc } |> normalizeState
+                | SetFieldSliceValue(id, key, value) ->
+                    { state with
+                        Doc = Document.patchFieldSliceValue id key value state.Doc
+                        SlotValues = patchFieldSliceSlotValues state id key value }
+                    |> normalizeState
+                | SetActionSlotValue(id, key, value) ->
+                    { state with
+                        Doc = Document.patchParamValue id key value state.Doc
+                        SlotValues = patchActionSlotValues state id key value }
+                    |> normalizeState
+                | SetActionStructureValue(id, key, value) ->
                     { state with Doc = Document.patchParamValue id key value state.Doc } |> recompileState
                 | DeleteIntent ->
                     applyDeleteIntent state
@@ -592,7 +734,7 @@ module Editor =
                                 match actionSelectionForTarget state target actionId with
                                 | Some id -> Document.select id state.Doc
                                 | None -> state.Doc }
-                        |> recompileState
+                        |> normalizeState
                     | None ->
                         { state with
                             HoveredTarget = None
@@ -620,8 +762,14 @@ module Editor =
                             | "angle" -> ConstraintAngle
                             | other -> failwithf "Unsupported editable dimension key: %s" other
                         { clearDrafts state with
-                            Doc = Document.patchParamValue current.SketchId (SketchConstraintField(current.ConstraintIndex, field)) (VFloat value) state.Doc }
-                        |> recompileState
+                            Doc = Document.patchParamValue current.SketchId (SketchConstraintField(current.ConstraintIndex, field)) (VFloat value) state.Doc
+                            SlotValues =
+                                patchActionSlotValues
+                                    (clearDrafts state)
+                                    current.SketchId
+                                    (SketchConstraintField(current.ConstraintIndex, field))
+                                    (VFloat value) }
+                        |> normalizeState
                     | None ->
                         state
                 | ViewerDimensionClickTarget ->
@@ -728,10 +876,12 @@ module Editor =
                         | None -> Palette.pickCommand id state.PaletteSession
                         | Some _ -> Palette.pickItem id state.PaletteSession
                     { state with PaletteSession = nextPalette }
+                    |> paletteMaybeBuild id
                 | PaletteSetScalarField(key, value) ->
                     { state with PaletteSession = Palette.setScalarField key value state.PaletteSession }
                 | PaletteCommitScalars ->
                     { state with PaletteSession = Palette.commitScalars state.PaletteSession }
+                    |> paletteMaybeBuild ""
                 | PaletteFinish idSuffix ->
                     { state with PaletteSession = Palette.skipToEnd state.PaletteSession }
                     |> paletteMaybeBuild idSuffix

@@ -86,6 +86,7 @@ let private renderRow
     let hasError = doc.Errors |> List.exists (fun e -> e.ActionId = action.Id)
 
     let row = Dom.el "div" "action-row"
+    row.dataset?actionId <- action.Id
     if selected then row.classList.add "is-selected"
     if isOrigin action.Kind then row.classList.add "is-fixed"
     if hasError then row.classList.add "has-error"
@@ -102,7 +103,9 @@ let private renderRow
     info.appendChild (Dom.elText "span" "action-title" title :> Node) |> ignore
     let sub = kindSubtitle action.Kind
     if sub <> "" then
-        info.appendChild (Dom.elText "span" "action-subtitle" sub :> Node) |> ignore
+        let subtitle = Dom.elText "span" "action-subtitle" sub
+        subtitle.dataset?actionId <- action.Id
+        info.appendChild (subtitle :> Node) |> ignore
     main.appendChild (info :> Node) |> ignore
 
     row.appendChild (main :> Node) |> ignore
@@ -292,3 +295,25 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
 
     left.appendChild (list :> Node) |> ignore
     left
+
+let syncSubtitles (root: HTMLElement) (doc: DocumentView) : unit =
+    for action in doc.Actions do
+        match root.querySelector($".action-row[data-action-id=\"{action.Id}\"]") with
+        | null -> ()
+        | row ->
+            let subtitleText = kindSubtitle action.Kind
+            let existing = row.querySelector ".action-subtitle"
+
+            if subtitleText = "" then
+                if not (isNull existing) then
+                    existing.remove ()
+            else
+                match existing with
+                | null ->
+                    let info = row.querySelector ".action-info"
+                    if not (isNull info) then
+                        let subtitle = Dom.elText "span" "action-subtitle" subtitleText
+                        subtitle.dataset?actionId <- action.Id
+                        info.appendChild (subtitle :> Node) |> ignore
+                | existingSubtitle ->
+                    existingSubtitle.textContent <- subtitleText

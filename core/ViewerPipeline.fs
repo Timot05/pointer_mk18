@@ -79,7 +79,7 @@ module ViewerPipeline =
     /// Walks down a FieldNode accumulating its leading rigid transforms so
     /// the field slice can be rendered in world space.
     let rec private leadingFieldTransform (state: EditorState) (field: FieldNode) (acc: RigidTransform) =
-        let slot (s: Slot) = state.Compiled.Slots.Values.[s]
+        let slot (s: Slot) = state.SlotValues.[s]
 
         match field with
         | FTranslate(x, y, z, child) ->
@@ -185,7 +185,7 @@ module ViewerPipeline =
 
     let viewerState (state: EditorState) : ViewerState =
         let effectiveParams =
-            ((state.Compiled.Slots.Values, state.Doc.Actions)
+            ((state.SlotValues, state.Doc.Actions)
              ||> List.fold (fun current action ->
                  match action.Kind, Map.tryFind action.Id state.SolvedSketchParams with
                  | Sketch(_, _, sketch), Some solvedLocal ->

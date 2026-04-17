@@ -49,6 +49,14 @@ module SlotTable =
         let index = b.Index |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
         { Values = b.Values.ToArray(); Index = index }
 
+    let tryFindSlot (table: SlotTable) (ref: SlotRef) : Slot option =
+        Map.tryFind ref table.Index
+
+    let patchedValues (values: float array) (updates: (Slot * float) list) : float array =
+        let next = Array.copy values
+        updates |> List.iter (fun (slot, value) -> next.[slot] <- value)
+        next
+
     /// In-place update of a slot value. Returns true on hit, false if the
     /// ref isn't allocated. Used by the rapid-drag fast path.
     let update (table: SlotTable) (ref: SlotRef) (value: float) : bool =

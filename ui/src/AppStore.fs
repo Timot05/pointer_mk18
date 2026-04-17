@@ -23,7 +23,13 @@ let private nowMs () : float = jsNative
 let private logSlowSolve (sketchId: string) (usePins: bool) (elapsedMs: float) =
     let phase = if usePins then "live" else "final"
     console.log(
-        $"[drag-solve] sketch={sketchId} phase={phase} elapsed={elapsedMs:F1}ms inFlight={solveInFlight.Count} queued={pendingSolveBySketch.Count}"
+        sprintf
+            "[drag-solve] sketch=%s phase=%s elapsed=%.1fms inFlight=%d queued=%d"
+            sketchId
+            phase
+            elapsedMs
+            solveInFlight.Count
+            pendingSolveBySketch.Count
     )
 
 let private solveSketch

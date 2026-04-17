@@ -640,15 +640,54 @@ module Editor =
 
     let noEffects : Effect list = []
 
+    let private isLabelDrag =
+        function
+        | { Kind = DragConstraintLabel _ } -> true
+        | _ -> false
+
+    let private patchDragTargetSlotValues (state: EditorState) (drag: SketchDrag) (target: LabelPos) =
+        let patched = Array.copy state.SlotValues
+
+        let tryPatch field number =
+            let slotRef =
+                { ActionId = drag.SketchId
+                  Path = Document.pathOfParamField field }
+
+            match SlotTable.tryFindSlot state.Compiled.Slots slotRef with
+            | Some slot when slot < patched.Length -> patched.[slot] <- number
+            | _ -> ()
+
+        tryPatch drag.XField target.X
+        tryPatch drag.YField target.Y
+        patched
+
     let update (message: Message) (state: EditorState) : EditorState * Effect list =
         match message with
         | BeginSketchDrag drag ->
-            { clearDrafts state with ActiveSketchDrag = Some drag; PendingSketchDragCommit = false }, [ RunSketchSolve drag ]
+            if isLabelDrag drag then
+                { clearDrafts state with
+                    ActiveSketchDrag = Some drag
+                    PendingSketchDragCommit = false
+                    Doc = Document.patchParamValue drag.SketchId drag.XField (VFloat drag.Target.X) state.Doc
+                          |> Document.patchParamValue drag.SketchId drag.YField (VFloat drag.Target.Y)
+                    SlotValues = patchDragTargetSlotValues state drag drag.Target },
+                noEffects
+            else
+                { clearDrafts state with ActiveSketchDrag = Some drag; PendingSketchDragCommit = false }, [ RunSketchSolve drag ]
         | UpdateSketchDragTarget target ->
             match state.ActiveSketchDrag with
             | Some drag ->
                 let nextDrag = { drag with Target = target }
-                { state with ActiveSketchDrag = Some nextDrag; PendingSketchDragCommit = false }, [ RunSketchSolve nextDrag ]
+                if isLabelDrag drag then
+                    { state with
+                        ActiveSketchDrag = Some nextDrag
+                        PendingSketchDragCommit = false
+                        Doc = Document.patchParamValue drag.SketchId drag.XField (VFloat target.X) state.Doc
+                              |> Document.patchParamValue drag.SketchId drag.YField (VFloat target.Y)
+                        SlotValues = patchDragTargetSlotValues state drag target },
+                    noEffects
+                else
+                    { state with ActiveSketchDrag = Some nextDrag; PendingSketchDragCommit = false }, [ RunSketchSolve nextDrag ]
             | None ->
                 state, noEffects
         | ApplySketchSolveResult(drag, solvedLocal) ->
@@ -682,7 +721,10 @@ module Editor =
         | FinishSketchDrag ->
             match state.ActiveSketchDrag with
             | Some drag ->
-                { state with PendingSketchDragCommit = true }, [ FinalizeSketchDrag drag ]
+                if isLabelDrag drag then
+                    { state with ActiveSketchDrag = None; PendingSketchDragCommit = false }, noEffects
+                else
+                    { state with PendingSketchDragCommit = true }, [ FinalizeSketchDrag drag ]
             | None ->
                 { state with PendingSketchDragCommit = false; SolvedSketchParams = Map.empty }, noEffects
         | CancelSketchDrag ->

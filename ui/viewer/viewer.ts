@@ -2622,7 +2622,7 @@ function pushPointDistanceGeometry(
   const anchor = resolveLabelAnchor(constraintIndex, fallbackAnchor);
   dimensionAnchors.set(constraintIndex, anchor);
   const offsetAmount = dot2(sub2(anchor, mid), n);
-  const off = scale2(n, Math.abs(offsetAmount) < 0.5 ? 1.8 : offsetAmount);
+  const off = scale2(n, offsetAmount);
   const aa = add2(a, off);
   const bb = add2(b, off);
   const axis = norm2(sub2(bb, aa));

@@ -166,12 +166,6 @@ function normalizeViewerSketch(value: unknown): unknown {
     id: value.Id,
     origin: value.Origin ?? null,
     sketch: normalizeActionSketch(value.Sketch),
-    graph: isRecord(value.Graph) ? {
-      nodes: Array.isArray(value.Graph.Nodes) ? value.Graph.Nodes.map((n) => isRecord(n) ? { op: n.Op, inputs: n.Inputs ?? {} } : n) : [],
-      params: Array.isArray(value.Graph.Params) ? value.Graph.Params : [],
-      outputs: Array.isArray(value.Graph.Outputs) ? value.Graph.Outputs : [],
-      varSlots: Array.isArray(value.Graph.VarSlots) ? value.Graph.VarSlots : [],
-    } : value.Graph,
     loops: Array.isArray(value.Loops) ? value.Loops.map(normalizeSketchLoop) : [],
   };
 }

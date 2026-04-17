@@ -1,5 +1,3 @@
-import type { Graph } from "./graph";
-
 export interface JsonVec3 { x: number; y: number; z: number }
 export interface JsonQuat { w: number; x: number; y: number; z: number }
 export interface JsonRigidTransform { rot: JsonQuat; trans: JsonVec3 }
@@ -27,8 +25,7 @@ export type SketchConstraint =
   | { case: "Distance"; a: string; b: string; distance: number }
   | { case: "CircleDiameter"; circle: string; center: string; diameter: number }
   | { case: "LineDistance"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; distance: number }
-  | { case: "Angle"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; angle: number; aReverse: boolean; bReverse: boolean; ccwFromAToB: boolean }
-  | { case: string; [key: string]: unknown };
+  | { case: "Angle"; aStart: string; aEnd: string; bStart: string; bEnd: string; lineA: string; lineB: string; angle: number; aReverse: boolean; bReverse: boolean; ccwFromAToB: boolean };
 
 export interface ActionSketch {
   entities: RenderEntity[];
@@ -44,7 +41,6 @@ export interface ViewerSketch {
   id: string;
   origin: string | null;
   sketch: ActionSketch;
-  graph: Graph;
   loops: SketchLoop[];
 }
 

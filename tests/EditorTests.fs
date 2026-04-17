@@ -72,6 +72,74 @@ let ``Frame pick during sketch edit keeps the active sketch selected`` () =
     Assert.Contains(TargetFrameOrigin "origin", after.SelectedTargets)
 
 [<Fact>]
+let ``Line tool chains segments through a shared endpoint`` () =
+    let before =
+        Editor.initState ()
+        |> updateMany
+            [ SelectAction "sketch1"
+              ToggleSketchEdit
+              SetSketchTool LineTool ]
+
+    let beforeSketch =
+        before.Doc.Actions
+        |> List.find (fun action -> action.Id = "sketch1")
+        |> fun action ->
+            match action.Kind with
+            | Sketch(_, _, sketch) -> sketch
+            | _ -> failwith "Expected sketch1 to be a sketch"
+
+    let countPoints sketch =
+        sketch.Entities |> List.filter (function REPoint _ -> true | _ -> false) |> List.length
+
+    let countLines sketch =
+        sketch.Entities |> List.filter (function RELine _ -> true | _ -> false) |> List.length
+
+    let after =
+        before
+        |> updateMany
+            [ ViewerToolClick(10.0, 10.0)
+              ViewerToolClick(20.0, 10.0)
+              ViewerToolClick(30.0, 10.0)
+              ViewerToolClick(40.0, 10.0) ]
+
+    let afterSketch =
+        after.Doc.Actions
+        |> List.find (fun action -> action.Id = "sketch1")
+        |> fun action ->
+            match action.Kind with
+            | Sketch(_, _, sketch) -> sketch
+            | _ -> failwith "Expected sketch1 to be a sketch"
+
+    Assert.Equal(countLines beforeSketch + 3, countLines afterSketch)
+    Assert.Equal(countPoints beforeSketch + 4, countPoints afterSketch)
+    Assert.Equal("line", after.SketchTool)
+    Assert.Single(after.SketchToolPoints) |> ignore
+    Assert.True(after.LineChainStartPointId.IsSome)
+
+[<Fact>]
+let ``First snapped line tool point stores the reused point coordinates`` () =
+    let before =
+        Editor.initState ()
+        |> updateMany
+            [ SelectAction "sketch1"
+              ToggleSketchEdit
+              SetSketchTool LineTool
+              SetHoveredTarget (Some(TargetPoint("sketch1", "p_bl"))) ]
+
+    let after = Editor.update (ViewerToolClick(3.2, 4.7)) before |> fst
+
+    Assert.Single(after.SketchToolPoints) |> ignore
+    Assert.Single(after.SketchToolPointRefs) |> ignore
+    Assert.Equal(Some "p_bl", List.head after.SketchToolPointRefs)
+
+    match after.SketchToolPoints with
+    | [ point ] ->
+        Assert.Equal(0.0, point.X, 6)
+        Assert.Equal(0.0, point.Y, 6)
+    | other ->
+        failwithf "Expected one staged tool point, got %A" other
+
+[<Fact>]
 let ``Clear model resets editor transient state and leaves only origin`` () =
     let dirty =
         Editor.initState ()

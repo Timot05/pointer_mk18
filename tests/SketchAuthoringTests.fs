@@ -384,8 +384,9 @@ let ``Curve tangent can be built from one circle and one arc`` () =
 let ``Rectangle tool adds orthogonal constraints`` () =
     let sketch = ActionSketch.empty
     let next =
-        SketchAuthoring.applyToolClick "rectangle" [ { X = 0.0; Y = 0.0 }; { X = 10.0; Y = 5.0 } ] sketch
+        SketchAuthoring.applyToolClick "rectangle" [ { X = 0.0; Y = 0.0 }; { X = 10.0; Y = 5.0 } ] [] sketch None
         |> Option.defaultWith (fun () -> failwith "Expected rectangle to be created")
+        |> fun result -> result.Sketch
 
     let lineCount =
         next.Entities
@@ -410,11 +411,45 @@ let ``Rectangle tool adds orthogonal constraints`` () =
     Assert.Equal(4, perpendicularCount)
 
 [<Fact>]
+let ``Line tool continuation uses snapped point coordinates when reusing an existing endpoint`` () =
+    let sketch =
+        { ActionSketch.empty with
+            Entities = [ REPoint("p_existing", 25.0, 15.0) ] }
+
+    let result =
+        SketchAuthoring.applyToolClick
+            "line"
+            [ { X = 0.0; Y = 0.0 }; { X = 24.2; Y = 14.8 } ]
+            [ None; Some "p_existing" ]
+            sketch
+            None
+        |> Option.defaultWith (fun () -> failwith "Expected line to be created")
+
+    let createdLine =
+        result.Sketch.Entities
+        |> List.rev
+        |> List.tryPick (function
+            | RELine(_, startId, endId) -> Some(startId, endId)
+            | _ -> None)
+        |> Option.defaultWith (fun () -> failwith "Expected a line entity")
+
+    Assert.Equal("p_existing", snd createdLine)
+
+    match result.ContinueFrom with
+    | Some(pointId, point) ->
+        Assert.Equal("p_existing", pointId)
+        Assert.Equal(25.0, point.X, 6)
+        Assert.Equal(15.0, point.Y, 6)
+    | None ->
+        failwith "Expected line continuation point"
+
+[<Fact>]
 let ``Rounded rectangle tool creates arcs and tangent constraints`` () =
     let sketch = ActionSketch.empty
     let next =
-        SketchAuthoring.applyToolClick "roundedRectangle" [ { X = 0.0; Y = 0.0 }; { X = 10.0; Y = 5.0 } ] sketch
+        SketchAuthoring.applyToolClick "roundedRectangle" [ { X = 0.0; Y = 0.0 }; { X = 10.0; Y = 5.0 } ] [] sketch None
         |> Option.defaultWith (fun () -> failwith "Expected rounded rectangle to be created")
+        |> fun result -> result.Sketch
 
     let arcCount =
         next.Entities

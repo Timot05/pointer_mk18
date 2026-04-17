@@ -38,6 +38,10 @@ and ConstraintPlacementDraft =
 
 module SketchAuthoring =
 
+    type ToolApplyResult =
+        { Sketch: ActionSketch
+          ContinueFrom: (string * LabelPos) option }
+
     // ── Session state ────────────────────────────────────────────────────
 
     let emptyUiState =
@@ -856,6 +860,18 @@ module SketchAuthoring =
         let pointId = nextEntityId sketch "p"
         { sketch with Entities = sketch.Entities @ [ REPoint(pointId, x, y) ] }, pointId
 
+    let private reuseOrAddPoint (sketch: ActionSketch) (existingPointId: string option) (x, y) =
+        match existingPointId with
+        | Some pointId ->
+            match tryPoint sketch pointId with
+            | Some(px, py) -> sketch, pointId, (px, py)
+            | None ->
+                let next, pointId = addPoint sketch (x, y)
+                next, pointId, (x, y)
+        | None ->
+            let next, pointId = addPoint sketch (x, y)
+            next, pointId, (x, y)
+
     let private addLineEntity (sketch: ActionSketch) startId endId =
         let lineId = nextEntityId sketch "l"
         { sketch with Entities = sketch.Entities @ [ RELine(lineId, startId, endId) ] }, lineId
@@ -998,29 +1014,54 @@ module SketchAuthoring =
         if length < 1e-6 then (cx + radius, cy)
         else (cx + (dx / length) * radius, cy + (dy / length) * radius)
 
-    let applyToolClick tool points sketch =
+    let applyToolClick tool points pointRefs sketch carriedLineStartId =
         let coords = points |> List.map (fun p -> (p.X, p.Y))
-        match tool, coords with
-        | "line", [ startPoint; endPoint ] ->
-            let next, startId = addPoint sketch startPoint
-            let next, endId = addPoint next endPoint
-            let next, _ = addLineEntity next startId endId
-            Some next
-        | "rectangle", [ (x0, y0); (x1, y1) ] ->
+        let refs = pointRefs @ List.replicate (max 0 (coords.Length - pointRefs.Length)) None
+        match tool, coords, refs with
+        | "line", [ startPoint; endPoint ], startRef :: endRef :: _ ->
+            let next, startId =
+                match carriedLineStartId with
+                | Some pointId -> sketch, pointId
+                | None ->
+                    let next, startId, _ = reuseOrAddPoint sketch startRef startPoint
+                    next, startId
+            let next, endId, resolvedEndPoint = reuseOrAddPoint next endRef endPoint
+            if startId = endId then
+                None
+            else
+                let next, _ = addLineEntity next startId endId
+                Some
+                    { Sketch = next
+                      ContinueFrom =
+                        Some(
+                            endId,
+                            { X = fst resolvedEndPoint
+                              Y = snd resolvedEndPoint }
+                        ) }
+        | "rectangle", [ (x0, y0); (x1, y1) ], _ ->
             addRectangleToSketch sketch (x0, y0) (x1, y1)
-        | "roundedRectangle", [ (x0, y0); (x1, y1) ] ->
+            |> Option.map (fun next -> { Sketch = next; ContinueFrom = None })
+        | "roundedRectangle", [ (x0, y0); (x1, y1) ], _ ->
             addRoundedRectangleToSketch sketch (x0, y0) (x1, y1)
-        | "circle", [ centerPoint; radiusPoint ] ->
-            let next, centerId = addPoint sketch centerPoint
+            |> Option.map (fun next -> { Sketch = next; ContinueFrom = None })
+        | "circle", [ centerPoint; radiusPoint ], centerRef :: _ ->
+            let next, centerId, resolvedCenterPoint = reuseOrAddPoint sketch centerRef centerPoint
             let circleId = nextEntityId next "c"
-            let radius = max 1e-6 (dist centerPoint radiusPoint)
-            Some { next with Entities = next.Entities @ [ RECircle(circleId, centerId, radius) ] }
-        | "arc", [ centerPoint; startPoint; endPoint ] ->
-            let next, centerId = addPoint sketch centerPoint
-            let next, startId = addPoint next startPoint
-            let projectedEnd = projectPointToCircle centerPoint startPoint endPoint
-            let next, endId = addPoint next projectedEnd
-            let arcId = nextEntityId next "a"
-            let clockwise = cross (sub startPoint centerPoint) (sub endPoint centerPoint) < 0.0
-            Some { next with Entities = next.Entities @ [ REArc(arcId, startId, endId, ArcCenter(centerId, clockwise)) ] }
+            let radius = max 1e-6 (dist resolvedCenterPoint radiusPoint)
+            Some
+                { Sketch = { next with Entities = next.Entities @ [ RECircle(circleId, centerId, radius) ] }
+                  ContinueFrom = None }
+        | "arc", [ centerPoint; startPoint; endPoint ], centerRef :: startRef :: endRef :: _ ->
+            let next, centerId, resolvedCenterPoint = reuseOrAddPoint sketch centerRef centerPoint
+            let next, startId, resolvedStartPoint = reuseOrAddPoint next startRef startPoint
+            let projectedEnd = projectPointToCircle resolvedCenterPoint resolvedStartPoint endPoint
+            let next, endId, _ = reuseOrAddPoint next endRef projectedEnd
+            if centerId = startId || centerId = endId || startId = endId then
+                None
+            else
+                let arcId = nextEntityId next "a"
+                let clockwise = cross (sub resolvedStartPoint resolvedCenterPoint) (sub endPoint resolvedCenterPoint) < 0.0
+                Some
+                    { Sketch = { next with Entities = next.Entities @ [ REArc(arcId, startId, endId, ArcCenter(centerId, clockwise)) ] }
+                      ContinueFrom = None }
         | _ -> None

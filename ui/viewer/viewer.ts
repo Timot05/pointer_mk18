@@ -33,7 +33,6 @@ import {
 import { ofArray as listOfArray } from "../src-gen/fable_modules/fable-library-js.4.24.0/List.js";
 
 type PickKind = "point" | "line" | "circle" | "arc" | "loop" | "dimension";
-const DRAG_LOG_THRESHOLD_MS = 4;
 
 interface LineVertex {
   x: number;
@@ -769,7 +768,6 @@ export class ViewerApp {
   }
 
   private async reloadState(): Promise<void> {
-    const t0 = performance.now();
     let nextState = selectViewerState() as ViewerState;
     if (this.model && nextState.params.length !== this.model.numSlots) {
       await this.reloadModel(false);
@@ -784,10 +782,6 @@ export class ViewerApp {
       this.resetCameraPending = false;
     }
     this.queueRender();
-    const elapsed = performance.now() - t0;
-    if (this.drag && elapsed >= DRAG_LOG_THRESHOLD_MS) {
-      console.log(`[viewer] reloadState ${elapsed.toFixed(1)}ms`);
-    }
   }
 
   private applyViewerState(nextState: ViewerState): void {
@@ -1090,6 +1084,9 @@ export class ViewerApp {
     if (tool === "none") {
       return false;
     }
+    const candidates = [...await this.pickAcrossSketches(), ...await this.pickFrameTargetsGpu()];
+    dispatchEditor(viewerHover(selectionCandidatesFromJs(toPickRequest(candidates))));
+    this.applyViewerState(selectViewerState() as ViewerState);
     dispatchEditor(viewerToolClick(local[0], local[1]));
     this.applyViewerState(selectViewerState() as ViewerState);
     await this.reloadModel(false);
@@ -1118,7 +1115,6 @@ export class ViewerApp {
   }
 
   private async updateDragFrame(): Promise<void> {
-    const t0 = performance.now();
     this.updateDragTarget();
     if (this.drag) {
       dispatchEditor(updateSketchDrag(this.drag.target[0], this.drag.target[1]));
@@ -1126,16 +1122,8 @@ export class ViewerApp {
       dispatchEditor(cancelSketchDrag);
     }
     this.applyViewerState(selectViewerState() as ViewerState);
-    const t1 = performance.now();
     this.rebuildRenderData();
-    const t2 = performance.now();
     this.queueRender();
-    const total = performance.now() - t0;
-    if (total >= DRAG_LOG_THRESHOLD_MS) {
-      console.log(
-        `[viewer] drag frame total=${total.toFixed(1)}ms dispatch+state=${(t1 - t0).toFixed(1)}ms rebuild=${(t2 - t1).toFixed(1)}ms`
-      );
-    }
   }
 
   private resolveDragTarget(target: SelectionTarget): { kind: "point" | "label"; sketchId: string; pointId?: string; constraintIndex?: number; xPath: string; yPath: string; frame: SketchFrame } | null {
@@ -1222,7 +1210,6 @@ export class ViewerApp {
 
   private rebuildRenderData(): void {
     if (!this.model || !this.state) return;
-    const t0 = this.drag ? performance.now() : 0;
     const effectiveParams = new Float32Array(this.state?.params ?? []);
     this.renderSketches = this.model.sketches
       .filter((sketch) => this.isVisible(sketch.id))
@@ -1253,12 +1240,6 @@ export class ViewerApp {
         };
       })
       .filter((sketch): sketch is RenderSketch => sketch !== null);
-    if (this.drag) {
-      const elapsed = performance.now() - t0;
-      if (elapsed >= DRAG_LOG_THRESHOLD_MS) {
-        console.log(`[viewer] rebuildRenderData ${elapsed.toFixed(1)}ms`);
-      }
-    }
   }
 
   private isVisible(actionId: string): boolean {

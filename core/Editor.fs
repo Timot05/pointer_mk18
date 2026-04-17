@@ -68,6 +68,8 @@ type EditorState =
       SketchEditMode: bool
       SketchTool: string
       SketchToolPoints: LabelPos list
+      SketchToolPointRefs: string option list
+      LineChainStartPointId: string option
       EditingDimension: EditingDimension option
       ActiveSketchDrag: SketchDrag option
       PendingSketchDragCommit: bool
@@ -149,6 +151,12 @@ type Message =
 
 module Editor =
 
+    let private trySketchPointPosition (sketch: ActionSketch) (pointId: string) =
+        sketch.Entities
+        |> List.tryPick (function
+            | REPoint(id, x, y) when id = pointId -> Some { X = x; Y = y }
+            | _ -> None)
+
     let actionTemplateKind =
         function
         | SphereTemplate -> Sphere 8.0
@@ -215,6 +223,8 @@ module Editor =
           SketchEditMode = false
           SketchTool = "none"
           SketchToolPoints = []
+          SketchToolPointRefs = []
+          LineChainStartPointId = None
           EditingDimension = None
           ActiveSketchDrag = None
           PendingSketchDragCommit = false
@@ -427,6 +437,8 @@ module Editor =
             SketchEditMode = next.EditMode
             SketchTool = next.Tool
             SketchToolPoints = if next.Tool = "none" then [] else state.SketchToolPoints
+            SketchToolPointRefs = if next.Tool = "none" then [] else state.SketchToolPointRefs
+            LineChainStartPointId = if next.Tool = "line" then state.LineChainStartPointId else None
             EditingDimension = editingDimension
             ActiveSketchDrag = activeSketchDrag
             PendingSketchDragCommit = if activeSketchDrag.IsSome then state.PendingSketchDragCommit else false
@@ -535,6 +547,8 @@ module Editor =
     let clearToolState (state: EditorState) =
         { state with
             SketchToolPoints = []
+            SketchToolPointRefs = []
+            LineChainStartPointId = None
             EditingDimension = None
             ActiveSketchDrag = None
             PendingSketchDragCommit = false
@@ -551,6 +565,8 @@ module Editor =
             HoveredTarget = None
             SelectedTargets = []
             SketchToolPoints = []
+            SketchToolPointRefs = []
+            LineChainStartPointId = None
             EditingDimension = None
             ActiveSketchDrag = None
             PendingSketchDragCommit = false
@@ -570,6 +586,8 @@ module Editor =
             SketchEditMode = false
             SketchTool = "none"
             SketchToolPoints = []
+            SketchToolPointRefs = []
+            LineChainStartPointId = None
             EditingDimension = None
             ActiveSketchDrag = None
             PendingSketchDragCommit = false
@@ -866,18 +884,47 @@ module Editor =
                 | ViewerToolClick(x, y) ->
                     match SketchAuthoring.trySelectedSketch state.Doc with
                     | Some selected when state.SketchEditMode && state.SketchTool <> "none" ->
-                        let nextPoints = state.SketchToolPoints @ [ { X = x; Y = y } ]
+                        let clickedPointRef =
+                            match state.HoveredTarget with
+                            | Some(TargetPoint(sketchId, pointId)) when sketchId = selected.Action.Id -> Some pointId
+                            | _ -> None
+                        let clickedPoint =
+                            match clickedPointRef with
+                            | Some pointId -> trySketchPointPosition selected.Sketch pointId |> Option.defaultValue { X = x; Y = y }
+                            | None -> { X = x; Y = y }
+                        let nextPoints = state.SketchToolPoints @ [ clickedPoint ]
+                        let nextPointRefs = state.SketchToolPointRefs @ [ clickedPointRef ]
                         if nextPoints.Length >= SketchAuthoring.requiredToolPoints state.SketchTool then
-                            match SketchAuthoring.applyToolClick state.SketchTool nextPoints selected.Sketch with
-                            | Some nextSketch ->
-                                { clearTransient state with
-                                    Doc = SketchAuthoring.withUpdatedSketch state.Doc selected.Action.Id nextSketch
-                                    ConstraintPlacementMode = state.ConstraintPlacementMode }
-                                |> recompileState
+                            match
+                                SketchAuthoring.applyToolClick
+                                    state.SketchTool
+                                    nextPoints
+                                    nextPointRefs
+                                    selected.Sketch
+                                    state.LineChainStartPointId
+                            with
+                            | Some result ->
+                                let nextState =
+                                    { clearTransient state with
+                                        Doc = SketchAuthoring.withUpdatedSketch state.Doc selected.Action.Id result.Sketch
+                                        ConstraintPlacementMode = state.ConstraintPlacementMode }
+                                    |> recompileState
+
+                                match state.SketchTool, result.ContinueFrom with
+                                | "line", Some(nextPointId, nextPoint) ->
+                                    { nextState with
+                                        SketchTool = "line"
+                                        SketchToolPoints = [ nextPoint ]
+                                        SketchToolPointRefs = [ Some nextPointId ]
+                                        LineChainStartPointId = Some nextPointId }
+                                | _ ->
+                                    nextState
                             | None ->
                                 state
                         else
-                            { state with SketchToolPoints = nextPoints }
+                            { state with
+                                SketchToolPoints = nextPoints
+                                SketchToolPointRefs = nextPointRefs }
                     | _ ->
                         state
                 | ViewerPlaceConstraint(x, y) ->

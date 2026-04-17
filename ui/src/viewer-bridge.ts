@@ -165,7 +165,6 @@ function normalizeViewerSketch(value: unknown): unknown {
   return {
     id: value.Id,
     origin: value.Origin ?? null,
-    transform: normalizeTransform(value.Transform),
     sketch: normalizeActionSketch(value.Sketch),
     graph: isRecord(value.Graph) ? {
       nodes: Array.isArray(value.Graph.Nodes) ? value.Graph.Nodes.map((n) => isRecord(n) ? { op: n.Op, inputs: n.Inputs ?? {} } : n) : [],
@@ -322,7 +321,7 @@ function normalizeViewerState(value: unknown): unknown {
     sketchUi: normalizeSketchUi(value.SketchUi),
     frames: Array.isArray(value.Frames) ? value.Frames.map(normalizeFrameView) : [],
     sketchEditFrames: Array.isArray(value.SketchEditFrames) ? value.SketchEditFrames.map(normalizeFrameView) : [],
-    sketchFrames: Array.isArray(value.SketchOriginFrames) ? value.SketchOriginFrames.map(normalizeFrameView) : [],
+    sketchTransforms: Array.isArray(value.SketchTransforms) ? value.SketchTransforms.map(normalizeFrameView) : [],
     fieldSlices: Array.isArray(value.FieldSlices) ? value.FieldSlices.map(normalizeFieldSliceView) : [],
     visible: toMapObject(value.Visible, (entryValue) => Boolean(entryValue)),
     constraintLabelPositions: Array.isArray(value.ConstraintLabelPositions) ? value.ConstraintLabelPositions.map(normalizeConstraintLabelPosition) : [],

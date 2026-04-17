@@ -2,14 +2,26 @@ namespace Server
 
 module Frames =
 
-    let stepTransform (step: FrameStep) : RigidTransform =
+    let private slotValue (slots: SlotTable) (values: float array) (slotRef: SlotRef) (defaultValue: float) =
+        match SlotTable.tryFindSlot slots slotRef with
+        | Some slot -> values.[slot]
+        | None -> defaultValue
+
+    let stepTransform (slots: SlotTable) (values: float array) (step: FrameStep) : RigidTransform =
         match step with
-        | FrameTranslate(_, x, y, z) ->
-            RigidTransform.translate { X = x; Y = y; Z = z }
-        | FrameRotate(_, ax, ay, az, angle) ->
-            RigidTransform.fromAxisAngle { X = ax; Y = ay; Z = az } angle
+        | FrameTranslate(_, x, y, z, xDefault, yDefault, zDefault) ->
+            RigidTransform.translate
+                { X = slotValue slots values x xDefault
+                  Y = slotValue slots values y yDefault
+                  Z = slotValue slots values z zDefault }
+        | FrameRotate(_, ax, ay, az, angle, axDefault, ayDefault, azDefault, angleDefault) ->
+            RigidTransform.fromAxisAngle
+                { X = slotValue slots values ax axDefault
+                  Y = slotValue slots values ay ayDefault
+                  Z = slotValue slots values az azDefault }
+                (slotValue slots values angle angleDefault)
 
     /// Fold a child/local-first frame chain into a concrete world transform.
-    let foldChain (chain: FrameChain) : RigidTransform =
+    let foldChain (slots: SlotTable) (values: float array) (chain: FrameChain) : RigidTransform =
         chain
-        |> List.fold (fun acc step -> acc * stepTransform step) RigidTransform.Identity
+        |> List.fold (fun acc step -> acc * stepTransform slots values step) RigidTransform.Identity

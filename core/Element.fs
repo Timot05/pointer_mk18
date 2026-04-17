@@ -13,8 +13,8 @@ namespace Server
 /// A single link in a frame chain — Frame-typed actions are represented as
 /// a list of these, rooted at Origin (the empty chain is identity).
 type FrameStep =
-    | FrameTranslate of actionId: ActionId * x: float * y: float * z: float
-    | FrameRotate of actionId: ActionId * ax: float * ay: float * az: float * angle: float
+    | FrameTranslate of actionId: ActionId * x: SlotRef * y: SlotRef * z: SlotRef * xDefault: float * yDefault: float * zDefault: float
+    | FrameRotate of actionId: ActionId * ax: SlotRef * ay: SlotRef * az: SlotRef * angle: SlotRef * axDefault: float * ayDefault: float * azDefault: float * angleDefault: float
 
 type FrameChain = FrameStep list   // child/local step first, outer result built by left-fold
 
@@ -54,10 +54,10 @@ module Element =
     let rec applyFrame (chain: FrameChain) (child: Element) : Element =
         match chain with
         | [] -> child
-        | FrameTranslate(id, x, y, z) :: rest ->
-            ETranslate(id, x, y, z, applyFrame rest child)
-        | FrameRotate(id, ax, ay, az, angle) :: rest ->
-            ERotate(id, ax, ay, az, angle, applyFrame rest child)
+        | FrameTranslate(id, _, _, _, xDefault, yDefault, zDefault) :: rest ->
+            ETranslate(id, xDefault, yDefault, zDefault, applyFrame rest child)
+        | FrameRotate(id, _, _, _, _, axDefault, ayDefault, azDefault, angleDefault) :: rest ->
+            ERotate(id, axDefault, ayDefault, azDefault, angleDefault, applyFrame rest child)
 
     /// Build element trees and frame chains from a type-checked action graph.
     /// Only Field-typed actions get Element entries; Frame-typed actions get
@@ -83,17 +83,24 @@ module Element =
                         match action.Kind with
                         | Origin -> [], cache
                         | Translate(child, x, y, z) ->
+                            let xRef = { ActionId = action.Id; Path = "x" }
+                            let yRef = { ActionId = action.Id; Path = "y" }
+                            let zRef = { ActionId = action.Id; Path = "z" }
                             let base', cache =
                                 match child with
                                 | Some cid -> frameChain cid cache
                                 | None -> [], cache
-                            base' @ [ FrameTranslate(action.Id, x, y, z) ], cache
+                            base' @ [ FrameTranslate(action.Id, xRef, yRef, zRef, x, y, z) ], cache
                         | Rotate(child, ax, ay, az, angle) ->
+                            let axRef = { ActionId = action.Id; Path = "ax" }
+                            let ayRef = { ActionId = action.Id; Path = "ay" }
+                            let azRef = { ActionId = action.Id; Path = "az" }
+                            let angleRef = { ActionId = action.Id; Path = "angle" }
                             let base', cache =
                                 match child with
                                 | Some cid -> frameChain cid cache
                                 | None -> [], cache
-                            base' @ [ FrameRotate(action.Id, ax, ay, az, angle) ], cache
+                            base' @ [ FrameRotate(action.Id, axRef, ayRef, azRef, angleRef, ax, ay, az, angle) ], cache
                         | _ -> [], cache
                     chain, Map.add id chain cache
 

@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="Store.fs" />
     <Compile Include="AppStore.fs" />
+    <Compile Include="Benchmarks.fs" />
     <Compile Include="ViewerMessages.fs" />
     <Compile Include="Dom.fs" />
     <Compile Include="Icons.fs" />

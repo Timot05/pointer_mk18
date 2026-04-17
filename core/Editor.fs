@@ -297,8 +297,13 @@ module Editor =
         let originFrame =
             origin
             |> Option.bind (fun id -> Map.tryFind id state.Compiled.Frames)
+            |> Option.map (Frames.foldChain state.Compiled.Slots state.SlotValues)
             |> Option.defaultValue RigidTransform.Identity
         sketchPlaneTransform originFrame plane
+
+    let resolvedFrames (state: EditorState) =
+        state.Compiled.Frames
+        |> Map.map (fun _ chain -> Frames.foldChain state.Compiled.Slots state.SlotValues chain)
 
     /// ID of the sketch currently being edited, if any.
     let activeSketchEditId (state: EditorState) =
@@ -395,7 +400,7 @@ module Editor =
         { baseState with
             ToolPoints = if baseState.Tool = "none" then [] else state.SketchToolPoints
             EditingDimension = state.EditingDimension }
-        |> SketchAuthoring.withResolvedPendingConstraintValue (trySketchContext state) state.Compiled.Frames
+        |> SketchAuthoring.withResolvedPendingConstraintValue (trySketchContext state) (resolvedFrames state)
 
     let normalizeState (state: EditorState) =
         let next = sketchUiState state

@@ -146,6 +146,8 @@ let private mount () =
     if isNull root then
         failwith "Missing #app element"
 
+    Benchmarks.installGlobals ()
+
     Store.subscribe store (onStateChange root)
 
     Shortcuts.register

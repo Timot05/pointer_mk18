@@ -968,7 +968,8 @@ export class ViewerApp {
     if (!sketchId) return null;
     const model = this.model.sketches.find((candidate) => candidate.id === sketchId);
     if (!model) return null;
-    return { model, frame: toSketchFrame(model.transform) };
+    const frame = this.sketchFrame(model.id);
+    return frame ? { model, frame } : null;
   }
 
   private currentToolPreview(): { frame: SketchFrame; lineData: Float32Array; pointData: Float32Array } | null {
@@ -1173,7 +1174,8 @@ export class ViewerApp {
     }
     for (const sketch of this.model.sketches) {
       if (!this.isVisible(sketch.id)) continue;
-      const frame = toSketchFrame(sketch.transform);
+      const frame = this.sketchFrame(sketch.id);
+      if (!frame) continue;
       const points = sketch.sketch.entities.filter((entity): entity is Extract<RenderEntity, { case: "REPoint" }> => entity.case === "REPoint");
       for (const p of points) {
         const local: Vec2 = [p.x, p.y];
@@ -1198,6 +1200,16 @@ export class ViewerApp {
     return this.state.sketchUi.editMode ? this.state.sketchEditFrames : this.state.frames;
   }
 
+  private sketchTransform(sketchId: string): JsonRigidTransform | null {
+    if (!this.state) return null;
+    return this.state.sketchTransforms.find((frame) => frame.id === sketchId)?.transform ?? null;
+  }
+
+  private sketchFrame(sketchId: string): SketchFrame | null {
+    const transform = this.sketchTransform(sketchId);
+    return transform ? toSketchFrame(transform) : null;
+  }
+
   private rebuildRenderData(): void {
     if (!this.model || !this.state) return;
     const t0 = this.drag ? performance.now() : 0;
@@ -1205,7 +1217,8 @@ export class ViewerApp {
     this.renderSketches = this.model.sketches
       .filter((sketch) => this.isVisible(sketch.id))
       .map((sketch) => {
-        const frame = toSketchFrame(sketch.transform);
+        const frame = this.sketchFrame(sketch.id);
+        if (!frame) return null;
         const built = buildSketchBuffers(
           sketch,
           this.model!.pickables,
@@ -1228,7 +1241,8 @@ export class ViewerApp {
           loops: built.loops,
           dimensionAnchors: built.dimensionAnchors,
         };
-      });
+      })
+      .filter((sketch): sketch is RenderSketch => sketch !== null);
     if (this.drag) {
       const elapsed = performance.now() - t0;
       if (elapsed >= DRAG_LOG_THRESHOLD_MS) {

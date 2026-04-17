@@ -17,14 +17,25 @@ open Browser.Dom
 let mutable private solveInFlight : Set<string> = Set.empty
 let mutable private pendingSolveBySketch : Map<string, SketchDrag * bool> = Map.empty
 
+type private SolveBackend =
+    | Cpu
+    | Gpu
+
+let private solveBackend = Cpu
+
 [<Emit("performance.now()")>]
 let private nowMs () : float = jsNative
 
-let private logSlowSolve (sketchId: string) (usePins: bool) (elapsedMs: float) =
+let private logSlowSolve (backend: SolveBackend) (sketchId: string) (usePins: bool) (elapsedMs: float) =
     let phase = if usePins then "live" else "final"
+    let backendName =
+        match backend with
+        | Cpu -> "cpu"
+        | Gpu -> "gpu"
     console.log(
         sprintf
-            "[drag-solve] sketch=%s phase=%s elapsed=%.1fms inFlight=%d queued=%d"
+            "[drag-solve] backend=%s sketch=%s phase=%s elapsed=%.1fms inFlight=%d queued=%d"
+            backendName
             sketchId
             phase
             elapsedMs
@@ -41,32 +52,38 @@ let private solveSketch
     =
     promise {
         let binding = SketchSolve.binding state.Compiled.Slots sketch.Id sketch.Sketch sketch.Graph.VarSlots
-        let! solver = GpuSolver.createGpuSolver sketch.Graph 1
 
-        try
-            let initialLocal =
-                match Map.tryFind sketchId state.SolvedSketchParams with
-                | Some solved -> Array.copy solved
-                | None -> sketch.Graph.Params |> Array.map float32
+        let initialLocal =
+            match Map.tryFind sketchId state.SolvedSketchParams with
+            | Some solved -> Array.copy solved
+            | None -> sketch.Graph.Params |> Array.map float32
 
-            if usePins || not (Map.containsKey sketchId state.SolvedSketchParams) then
-                let count = min binding.LocalToGlobal.Length initialLocal.Length
+        if usePins || not (Map.containsKey sketchId state.SolvedSketchParams) then
+            let count = min binding.LocalToGlobal.Length initialLocal.Length
 
-                for i in 0 .. count - 1 do
-                    let globalSlot = binding.LocalToGlobal.[i]
-                    initialLocal.[i] <- float32 state.SlotValues.[globalSlot]
+            for i in 0 .. count - 1 do
+                let globalSlot = binding.LocalToGlobal.[i]
+                initialLocal.[i] <- float32 state.SlotValues.[globalSlot]
 
-            let pins =
-                match usePins, dragOpt with
-                | true, Some drag ->
-                    SketchSolve.buildPins 0.1 drag.XField drag.YField drag.Target binding
-                | _ ->
-                    []
+        let pins =
+            match usePins, dragOpt with
+            | true, Some drag ->
+                SketchSolve.buildPins 0.1 drag.XField drag.YField drag.Target binding
+            | _ ->
+                []
 
-            let! solved = GpuLmSolver.solveGraphWithGpu sketch.Graph solver initialLocal pins GpuLmSolver.defaultSolverConfig
+        match solveBackend with
+        | Cpu ->
+            let! solved = CpuLmSolver.solveGraphWithCpu sketch.Graph initialLocal pins GpuLmSolver.defaultSolverConfig
             return Some solved
-        finally
-            solver.Destroy()
+        | Gpu ->
+            let! solver = GpuSolver.createGpuSolver sketch.Graph 1
+
+            try
+                let! solved = GpuLmSolver.solveGraphWithGpu sketch.Graph solver initialLocal pins GpuLmSolver.defaultSolverConfig
+                return Some solved
+            finally
+                solver.Destroy()
     }
 
 // pins would typically be the cursor position
@@ -91,7 +108,7 @@ let rec private startSketchSolve (store: Store.Store<EditorState, Message>) (dra
             console.error("RunSketchSolve failed", error)
 
         let elapsed = nowMs () - t0
-        logSlowSolve drag.SketchId usePins elapsed
+        logSlowSolve solveBackend drag.SketchId usePins elapsed
         completeSketchSolve store drag.SketchId
     }
     |> ignore

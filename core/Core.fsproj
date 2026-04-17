@@ -14,8 +14,10 @@
     <Compile Include="TypeCheck.fs" />
     <Compile Include="GraphIR.fs" />
     <Compile Include="GpuGraph.fs" />
+    <Compile Include="CpuGraph.fs" />
     <Compile Include="GpuSolver.fs" />
     <Compile Include="GpuLmSolver.fs" />
+    <Compile Include="CpuLmSolver.fs" />
     <Compile Include="SketchCompile.fs" />
     <Compile Include="SlotTable.fs" />
     <Compile Include="Element.fs" />

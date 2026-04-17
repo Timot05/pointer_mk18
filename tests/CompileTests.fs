@@ -30,6 +30,30 @@ let slotVal (table: SlotTable) actionId path =
     SlotTable.valueAt table { ActionId = actionId; Path = path }
     |> Option.defaultWith (fun () -> failwithf "No slot for %s.%s" actionId path)
 
+let frameTranslateStep actionId x y z =
+    FrameTranslate(
+        actionId,
+        { ActionId = actionId; Path = "x" },
+        { ActionId = actionId; Path = "y" },
+        { ActionId = actionId; Path = "z" },
+        x,
+        y,
+        z
+    )
+
+let frameRotateStep actionId ax ay az angle =
+    FrameRotate(
+        actionId,
+        { ActionId = actionId; Path = "ax" },
+        { ActionId = actionId; Path = "ay" },
+        { ActionId = actionId; Path = "az" },
+        { ActionId = actionId; Path = "angle" },
+        ax,
+        ay,
+        az,
+        angle
+    )
+
 // ── Element tree tests ───────────────────────────────────────────────────
 
 [<Fact>]
@@ -58,14 +82,14 @@ let ``Translate of Origin is a frame chain (no Field element)`` () =
     // Frame-typed actions don't appear as Field elements
     Assert.False(Map.containsKey "t" bres.Elements)
     // But they DO produce a frame chain
-    Assert.Equal<FrameChain>([ FrameTranslate("t", 5.0, 0.0, 0.0) ], Map.find "t" bres.Frames)
+    Assert.Equal<FrameChain>([ frameTranslateStep "t" 5.0 0.0 0.0 ], Map.find "t" bres.Frames)
 
 [<Fact>]
 let ``Rotate of Origin is a frame chain (no Field element)`` () =
     let actions = [ action "o" Origin; action "r" (Rotate(Some "o", 0.0, 0.0, 1.0, quarterTurn)) ]
     let bres = buildElements actions
     Assert.False(Map.containsKey "r" bres.Elements)
-    Assert.Equal<FrameChain>([ FrameRotate("r", 0.0, 0.0, 1.0, quarterTurn) ], Map.find "r" bres.Frames)
+    Assert.Equal<FrameChain>([ frameRotateStep "r" 0.0 0.0 1.0 quarterTurn ], Map.find "r" bres.Frames)
 
 [<Fact>]
 let ``Translate then rotate frame chain preserves translated origin`` () =
@@ -75,23 +99,34 @@ let ``Translate then rotate frame chain preserves translated origin`` () =
           action "r" (Rotate(Some "t", 0.0, 0.0, 1.0, quarterTurn)) ]
     let bres = buildElements actions
     Assert.Equal<FrameChain>(
-        [ FrameTranslate("t", 5.0, 0.0, 0.0)
-          FrameRotate("r", 0.0, 0.0, 1.0, quarterTurn) ],
+        [ frameTranslateStep "t" 5.0 0.0 0.0
+          frameRotateStep "r" 0.0 0.0 1.0 quarterTurn ],
         Map.find "r" bres.Frames)
 
     let pipelineResult = pipeline actions
-    let frame = Map.find "r" pipelineResult.Frames
+    let frame = Frames.foldChain pipelineResult.Slots pipelineResult.Slots.Values (Map.find "r" pipelineResult.Frames)
     Assert.Equal(5.0, frame.Trans.X, 6)
     Assert.Equal(0.0, frame.Trans.Y, 6)
     Assert.Equal(0.0, frame.Trans.Z, 6)
 
 [<Fact>]
 let ``Frames foldChain composes frame steps into a rigid transform`` () =
+    let slots =
+        { Values = [| 5.0; 0.0; 0.0; 0.0; 0.0; 1.0; quarterTurn |]
+          Index =
+            [ ({ ActionId = "t"; Path = "x" }, 0)
+              ({ ActionId = "t"; Path = "y" }, 1)
+              ({ ActionId = "t"; Path = "z" }, 2)
+              ({ ActionId = "r"; Path = "ax" }, 3)
+              ({ ActionId = "r"; Path = "ay" }, 4)
+              ({ ActionId = "r"; Path = "az" }, 5)
+              ({ ActionId = "r"; Path = "angle" }, 6) ]
+            |> Map.ofList }
     let chain =
-        [ FrameTranslate("t", 5.0, 0.0, 0.0)
-          FrameRotate("r", 0.0, 0.0, 1.0, quarterTurn) ]
+        [ frameTranslateStep "t" 5.0 0.0 0.0
+          frameRotateStep "r" 0.0 0.0 1.0 quarterTurn ]
 
-    let frame = Frames.foldChain chain
+    let frame = Frames.foldChain slots slots.Values chain
     Assert.Equal(5.0, frame.Trans.X, 6)
     Assert.Equal(0.0, frame.Trans.Y, 6)
     Assert.Equal(0.0, frame.Trans.Z, 6)

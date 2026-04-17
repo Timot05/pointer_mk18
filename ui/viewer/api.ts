@@ -43,7 +43,6 @@ export interface SketchLoop {
 export interface ViewerSketch {
   id: string;
   origin: string | null;
-  transform: JsonRigidTransform;
   sketch: ActionSketch;
   graph: Graph;
   loops: SketchLoop[];
@@ -85,7 +84,7 @@ export interface ViewerState {
   sketchUi: SketchUiState;
   frames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchEditFrames: Array<{ id: string; transform: JsonRigidTransform }>;
-  sketchOriginFrames: Array<{ id: string; transform: JsonRigidTransform }>;
+  sketchTransforms: Array<{ id: string; transform: JsonRigidTransform }>;
   fieldSlices: Array<{
     surfaceIndex: number;
     planeOrigin: JsonVec3;

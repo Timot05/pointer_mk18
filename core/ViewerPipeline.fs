@@ -28,7 +28,6 @@ type FieldSliceView =
 type ViewerSketchView =
     { Id: string
       Origin: string option
-      Transform: RigidTransform
       Sketch: ActionSketch
       Graph: Graph
       Loops: SketchLoopView list }
@@ -60,7 +59,7 @@ type ViewerState =
       SketchUi: SketchUiState
       Frames: FrameView list
       SketchEditFrames: FrameView list
-      SketchOriginFrames: FrameView list
+      SketchTransforms: FrameView list
       FieldSlices: FieldSliceView list
       Visible: Map<string, bool>
       ConstraintLabelPositions: ConstraintLabelPositionView list
@@ -137,6 +136,7 @@ module ViewerPipeline =
         |> Set.toList
         |> List.choose (fun id ->
             Map.tryFind id state.Compiled.Frames
+            |> Option.map (Frames.foldChain state.Compiled.Slots state.SlotValues)
             |> Option.map (fun t -> { Id = id; Transform = t }))
 
     let viewerModel (state: EditorState) : ViewerModel =
@@ -157,7 +157,7 @@ module ViewerPipeline =
 
                     let ctx: SketchCompileContext =
                         { SketchOrigin = sketchOrigin
-                          Frames = state.Compiled.Frames }
+                          Frames = Editor.resolvedFrames state }
 
                     let graph = SketchCompile.compile sk ctx
 
@@ -168,7 +168,6 @@ module ViewerPipeline =
                     Some
                         { Id = a.Id
                           Origin = origin
-                          Transform = sketchOrigin
                           Sketch = sk
                           Graph = graph
                           Loops = loops }
@@ -235,10 +234,11 @@ module ViewerPipeline =
                 match Map.tryFind a.Id state.Compiled.TypeMap with
                 | Some FieldType.Frame ->
                     Map.tryFind a.Id state.Compiled.Frames
+                    |> Option.map (Frames.foldChain state.Compiled.Slots state.SlotValues)
                     |> Option.map (fun t -> { Id = a.Id; Transform = t })
                 | _ -> None)
 
-        let sketchOriginFrames =
+        let sketchTransforms =
             state.Doc.Actions
             |> List.choose (fun a ->
                 match a.Kind with
@@ -277,7 +277,7 @@ module ViewerPipeline =
           SketchUi = Editor.sketchUiState state
           Frames = frames
           SketchEditFrames = sketchEditFrames state
-          SketchOriginFrames = sketchOriginFrames
+          SketchTransforms = sketchTransforms
           FieldSlices = activeFieldSlices state
           Visible = visibleByAction
           ConstraintLabelPositions = constraintLabelPositions

@@ -12,6 +12,8 @@
     <Compile Include="CompileTests.fs" />
     <Compile Include="GpuGraphTests.fs" />
     <Compile Include="GpuLmSolverTests.fs" />
+    <Compile Include="CpuGraphTests.fs" />
+    <Compile Include="CpuLmSolverTests.fs" />
     <Compile Include="EditorTests.fs" />
     <Compile Include="SketchAuthoringTests.fs" />
     <Compile Include="Program.fs" />

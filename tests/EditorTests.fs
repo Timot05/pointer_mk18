@@ -107,7 +107,7 @@ let ``Editor selectors expose coherent document and viewer state`` () =
     Assert.Equal(Some "sketch1", document.SelectedId)
     Assert.True(document.SketchUi.EditMode)
     Assert.Contains(viewerModel.Sketches, fun sketch -> sketch.Id = "sketch1")
-    Assert.Contains(viewerState.SketchOriginFrames, fun frame -> frame.Id = "sketch1")
+    Assert.Contains(viewerState.SketchTransforms, fun frame -> frame.Id = "sketch1")
     Assert.Equal(Some "sketch1", viewerState.SelectedId)
     Assert.True(viewerState.SketchUi.EditMode)
 
@@ -270,6 +270,31 @@ let ``Structural param edit recompiles topology and refreshes slot values`` () =
     match after.Doc.Actions |> List.find (fun action -> action.Id = "frame1") with
     | { Kind = Translate(Some child, _, _, _) } -> Assert.Equal("cyl1", child)
     | _ -> failwith "expected frame1 to remain a translate action"
+
+[<Fact>]
+let ``Frame numeric params allocate slots in the compiled slot table`` () =
+    let state = Editor.initState ()
+
+    Assert.True(state.Compiled.Slots.Index.ContainsKey { ActionId = "frame1"; Path = "x" })
+    Assert.True(state.Compiled.Slots.Index.ContainsKey { ActionId = "frame1"; Path = "y" })
+    Assert.True(state.Compiled.Slots.Index.ContainsKey { ActionId = "frame1"; Path = "z" })
+
+[<Fact>]
+let ``Frame numeric param edit updates viewer frames without recompiling`` () =
+    let before = Editor.initState ()
+    let beforeViewer = ViewerPipeline.viewerState before
+    let beforeFrame = beforeViewer.Frames |> List.find (fun frame -> frame.Id = "frame1")
+
+    let after =
+        Editor.update (Editor.setActionParamValue "frame1" TranslateX (VFloat 25.0)) before
+        |> fst
+
+    let afterViewer = ViewerPipeline.viewerState after
+    let afterFrame = afterViewer.Frames |> List.find (fun frame -> frame.Id = "frame1")
+
+    Assert.True(obj.ReferenceEquals(before.Compiled, after.Compiled))
+    Assert.Equal(18.0, beforeFrame.Transform.Trans.X, 6)
+    Assert.Equal(25.0, afterFrame.Transform.Trans.X, 6)
 
 [<Fact>]
 let ``Palette commit on final scalar step builds the action`` () =

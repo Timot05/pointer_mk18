@@ -12,7 +12,7 @@ type PipelineResult =
       Errors: TypeError list
       Slots: SlotTable
       Pickables: Pickable list
-      Frames: Map<ActionId, RigidTransform> }
+      Frames: Map<ActionId, FrameChain> }
 
 module Pipeline =
 
@@ -33,6 +33,20 @@ module Pipeline =
     let private allocFieldSliceSlots (b: SlotTable.Builder) (action: DocAction) =
         let fs = action.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
         SlotTable.alloc b { ActionId = action.Id; Path = "fieldSlice.offset" } fs.Offset |> ignore
+
+    let private allocFrameSlots (b: SlotTable.Builder) (action: DocAction) =
+        match action.Kind with
+        | Translate(_, x, y, z) ->
+            SlotTable.alloc b { ActionId = action.Id; Path = "x" } x |> ignore
+            SlotTable.alloc b { ActionId = action.Id; Path = "y" } y |> ignore
+            SlotTable.alloc b { ActionId = action.Id; Path = "z" } z |> ignore
+        | Rotate(_, ax, ay, az, angle) ->
+            SlotTable.alloc b { ActionId = action.Id; Path = "ax" } ax |> ignore
+            SlotTable.alloc b { ActionId = action.Id; Path = "ay" } ay |> ignore
+            SlotTable.alloc b { ActionId = action.Id; Path = "az" } az |> ignore
+            SlotTable.alloc b { ActionId = action.Id; Path = "angle" } angle |> ignore
+        | _ ->
+            ()
 
     // ── Slot allocation for sketch entities & constraints ────────────────
 
@@ -193,6 +207,9 @@ module Pipeline =
             allocDisplaySlots b action
             allocFieldSliceSlots b action
             b
+        | Some FieldType.Frame, _ ->
+            allocFrameSlots b action
+            b
         | Some FieldType.Sketch, Sketch(_, _, sketch) ->
             allocSketchSlots b action.Id sketch
             b
@@ -218,11 +235,9 @@ module Pipeline =
 
         let pickables = buildPickables b actions typeMap
 
-        let frames = buildResult.Frames |> Map.map (fun _ chain -> Frames.foldChain chain)
-
         { Surfaces = surfaces
           TypeMap = typeMap
           Errors = tc.Errors
           Slots = SlotTable.toTable b
           Pickables = pickables
-          Frames = frames }
+          Frames = buildResult.Frames }

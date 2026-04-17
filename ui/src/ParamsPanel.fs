@@ -35,7 +35,7 @@ let private controlDrag
     Dom.setupDraggable
         valSpan
         value
-        (fun v -> dispatch (PatchActionParamValue(actionId, field, vFloat v)))
+        (fun _ -> ())
         (fun v -> dispatch (PatchActionParamValue(actionId, field, vFloat v)))
     row.appendChild (valSpan :> Node) |> ignore
     row

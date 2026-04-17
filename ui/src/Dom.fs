@@ -12,7 +12,10 @@ open Browser.Types
 /// Create an element with a class. For elements without a class, pass "".
 let el (tag: string) (className: string) : HTMLElement =
     let e = document.createElement tag
-    if className <> "" then e.className <- className
+
+    if className <> "" then
+        e.className <- className
+
     e
 
 /// Create an element with a class and initial text content.
@@ -22,8 +25,7 @@ let elText (tag: string) (className: string) (text: string) : HTMLElement =
     e
 
 /// <kbd class="kbd-hint">keys</kbd> — the small key-hint badges in the UI.
-let kbdHint (keys: string) : HTMLElement =
-    elText "kbd" "kbd-hint" keys
+let kbdHint (keys: string) : HTMLElement = elText "kbd" "kbd-hint" keys
 
 /// Same as kbdHint but with a hover tooltip.
 let kbdHintTitled (keys: string) (tooltip: string) : HTMLElement =
@@ -43,12 +45,7 @@ let kbdHintTitled (keys: string) (tooltip: string) : HTMLElement =
 //   - dblclick     replaces the element with an <input type="number">;
 //                  onCommit fires on blur or Enter, Escape restores
 // ---------------------------------------------------------------------------
-let setupDraggable
-        (elem: HTMLElement)
-        (initial: float)
-        (onRapid: float -> unit)
-        (onCommit: float -> unit)
-        : unit =
+let setupDraggable (elem: HTMLElement) (initial: float) (onRapid: float -> unit) (onCommit: float -> unit) : unit =
 
     let mutable startX = 0.0
     let mutable startVal = initial
@@ -105,14 +102,19 @@ let setupDraggable
                     match System.Double.TryParse input.value with
                     | true, x -> x
                     | _ -> initial
+
                 onCommit v
 
             input.addEventListener ("blur", fun _ -> commit ())
+
             input.addEventListener (
                 "keydown",
                 fun e ->
                     let ke = e :?> KeyboardEvent
-                    if ke.key = "Enter" then input.blur ()
+
+                    if ke.key = "Enter" then
+                        input.blur ()
+
                     if ke.key = "Escape" then
                         input.value <- sprintf "%.1f" initial
                         input.blur ()

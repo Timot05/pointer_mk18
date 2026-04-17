@@ -1,5 +1,7 @@
 module PointerMk18.Ui.AppStore
 
+open Fable.Core
+open Fable.Core.JsInterop
 open Server
 open PointerMk18.Ui
 open Browser.Dom
@@ -15,6 +17,15 @@ open Browser.Dom
 let mutable private solverCache : Map<string, string * IGpuSolver> = Map.empty
 let mutable private solveInFlight : Set<string> = Set.empty
 let mutable private pendingSolveBySketch : Map<string, SketchDrag * bool> = Map.empty
+
+[<Emit("performance.now()")>]
+let private nowMs () : float = jsNative
+
+let private logSlowSolve (sketchId: string) (usePins: bool) (elapsedMs: float) =
+    let phase = if usePins then "live" else "final"
+    console.log(
+        $"[drag-solve] sketch={sketchId} phase={phase} elapsed={elapsedMs:F1}ms inFlight={solveInFlight.Count} queued={pendingSolveBySketch.Count}"
+    )
 
 let private activeSketchGraphKeys (state: EditorState) =
     ViewerPipeline.viewerModel state
@@ -61,6 +72,7 @@ let rec private startSketchSolve (store: Store.Store<EditorState, Message>) (dra
     solveInFlight <- solveInFlight |> Set.add drag.SketchId
 
     promise {
+        let t0 = nowMs ()
         try
             let state = store.State
             pruneSolverCache state
@@ -95,6 +107,8 @@ let rec private startSketchSolve (store: Store.Store<EditorState, Message>) (dra
         with error ->
             console.error("RunSketchSolve failed", error)
 
+        let elapsed = nowMs () - t0
+        logSlowSolve drag.SketchId usePins elapsed
         completeSketchSolve store drag.SketchId
     }
     |> ignore

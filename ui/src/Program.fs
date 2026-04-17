@@ -98,11 +98,22 @@ let private renderInto (root: Browser.Types.HTMLElement) =
     root.innerHTML <- ""
     root.appendChild shell |> ignore
 
+// During a sketch drag, the shell reads nothing that changes — Doc is
+// frozen until commit, Compiled stays put, hover/selection are locked.
+// Only ActiveSketchDrag.Target and SolvedSketchParams mutate, and those
+// are viewer-only. Skipping the shell rebuild here is what keeps drag
+// feeling responsive; the viewer still re-renders via its own bridge
+// subscription on every dispatch.
+let mutable private lastDragActive = false
+
 let private onStateChange (root: Browser.Types.HTMLElement) () =
-    renderInto root
-    // The palette mounts directly to <body>, not inside the shell, so we
-    // resync it ourselves after every dispatch.
-    CommandPalette.sync dispatch getPaletteState getDocActionCount
+    let dragActive = store.State.ActiveSketchDrag.IsSome
+    if not dragActive || dragActive <> lastDragActive then
+        renderInto root
+        // Palette mounts directly to <body>, not inside the shell, so we
+        // resync it ourselves on every real re-render.
+        CommandPalette.sync dispatch getPaletteState getDocActionCount
+    lastDragActive <- dragActive
 
 // --------------------------------------------------------------------------
 // Bootstrap.

@@ -7,5 +7,6 @@ ui/src-gen/
 *.user
 
 archive/
+experiments/
 
 .claude/

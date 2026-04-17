@@ -514,6 +514,10 @@ fn label_minmax(rect0: vec4<f32>, rect1: vec4<f32>, wpp: f32) -> mat2x2<f32> {
   return mat2x2<f32>(min(p0, p1), max(p0, p1));
 }
 
+fn pick_better(priority: u32, score: f32, bestPriority: u32, bestScore: f32) -> bool {
+  return priority < bestPriority || (priority == bestPriority && score < bestScore);
+}
+
 @compute @workgroup_size(${PICK_SAMPLES})
 fn cs_main(@builtin(local_invocation_index) index: u32) {
   let gx = i32(index % PICK_GRID) - 2;
@@ -523,6 +527,7 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
 
   var bestId: u32 = NO_HIT;
   var bestKind: u32 = 0u;
+  var bestPriority: u32 = 999u;
   var bestScore: f32 = 1e9;
 
   let hit = frame_hit(dir);
@@ -535,7 +540,8 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
     for (var i: u32 = 0u; i < pointCount; i = i + 1u) {
       let raw = points[i];
       let score = length(p - raw.xy) / max(wpp, 1e-6);
-      if (score <= raw.z && score < bestScore) {
+      if (score <= raw.z && pick_better(0u, score, bestPriority, bestScore)) {
+        bestPriority = 0u;
         bestScore = score;
         bestId = u32(raw.w + 0.5);
         bestKind = 1u;
@@ -547,7 +553,8 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
       let geom = lines[i * 2u];
       let info = lines[i * 2u + 1u];
       let score = sdf_segment(p, geom.xy, geom.zw) / max(wpp, 1e-6);
-      if (score <= info.x && score < bestScore) {
+      if (score <= info.x && pick_better(1u, score, bestPriority, bestScore)) {
+        bestPriority = 1u;
         bestScore = score;
         bestId = u32(info.y + 0.5);
         bestKind = u32(info.z + 0.5);
@@ -559,7 +566,8 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
       let geom = circles[i * 2u];
       let info = circles[i * 2u + 1u];
       let score = abs(length(p - geom.xy) - geom.z) / max(wpp, 1e-6);
-      if (score <= geom.w && score < bestScore) {
+      if (score <= geom.w && pick_better(1u, score, bestPriority, bestScore)) {
+        bestPriority = 1u;
         bestScore = score;
         bestId = u32(info.x + 0.5);
         bestKind = 3u;
@@ -573,7 +581,8 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
       if (point_in_triangle(p, tri0.xy, tri0.zw, tri1.xy)) {
         let centroid = (tri0.xy + tri0.zw + tri1.xy) / 3.0;
         let score = 50.0 + length(p - centroid);
-        if (score < bestScore) {
+        if (pick_better(3u, score, bestPriority, bestScore)) {
+          bestPriority = 3u;
           bestScore = score;
           bestId = u32(tri1.z + 0.5);
           bestKind = 5u;
@@ -591,7 +600,8 @@ fn cs_main(@builtin(local_invocation_index) index: u32) {
       if (all(p >= minp) && all(p <= maxp)) {
         let center = (minp + maxp) * 0.5;
         let score = 20.0 + length(p - center) / max(wpp, 1e-6);
-        if (score < bestScore) {
+        if (pick_better(2u, score, bestPriority, bestScore)) {
+          bestPriority = 2u;
           bestScore = score;
           bestId = u32(rect1.z + 0.5);
           bestKind = 6u;

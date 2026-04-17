@@ -968,6 +968,8 @@ module Editor =
                 | SetDisplayValue _
                 | SetFieldSliceValue _
                 | SetActionSlotValue _
-                | CommitEditingDimension _ -> [ ResolveAllSketches ]
+                | CommitEditingDimension _
+                | ViewerPlaceConstraint _
+                | AddConstraintFromSelection _ -> [ ResolveAllSketches ]
                 | _ -> noEffects
             next, effects

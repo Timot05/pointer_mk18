@@ -14,7 +14,6 @@ open Browser.Dom
 // once (on first import) and every subsequent import sees the same value.
 // ---------------------------------------------------------------------------
 
-let mutable private solverCache : Map<string, string * IGpuSolver> = Map.empty
 let mutable private solveInFlight : Set<string> = Set.empty
 let mutable private pendingSolveBySketch : Map<string, SketchDrag * bool> = Map.empty
 
@@ -27,62 +26,22 @@ let private logSlowSolve (sketchId: string) (usePins: bool) (elapsedMs: float) =
         $"[drag-solve] sketch={sketchId} phase={phase} elapsed={elapsedMs:F1}ms inFlight={solveInFlight.Count} queued={pendingSolveBySketch.Count}"
     )
 
-let private activeSketchGraphKeys (state: EditorState) =
-    ViewerPipeline.viewerModel state
-    |> fun model ->
-        model.Sketches
-        |> List.map (fun sketch -> sketch.Id, GpuGraph.graphKey sketch.Graph)
-        |> Map.ofList
-
-let private pruneSolverCache (state: EditorState) =
-    let active = activeSketchGraphKeys state
-
-    solverCache
-    |> Map.iter (fun sketchId (cachedKey, solver) ->
-        match (Set.contains sketchId solveInFlight, Map.tryFind sketchId active) with
-        | true, _ -> ()
-        | false, Some activeKey when activeKey = cachedKey -> ()
-        | _ -> solver.Destroy())
-
-    solverCache <-
-        solverCache
-        |> Map.filter (fun sketchId (cachedKey, _) ->
-            match (Set.contains sketchId solveInFlight, Map.tryFind sketchId active) with
-            | true, _ -> true
-            | false, Some activeKey when activeKey = cachedKey -> true
-            | _ -> false)
-
-let private ensureSolver (sketchId: string) (graphKey: string) (graph: Graph) =
-    promise {
-        match Map.tryFind sketchId solverCache with
-        | Some(existingKey, solver) when existingKey = graphKey ->
-            return solver
-        | Some(_, solver) ->
-            solver.Destroy()
-            let! next = GpuSolver.createGpuSolver graph 1
-            solverCache <- solverCache |> Map.add sketchId (graphKey, next)
-            return next
-        | None ->
-            let! next = GpuSolver.createGpuSolver graph 1
-            solverCache <- solverCache |> Map.add sketchId (graphKey, next)
-            return next
-    }
-
+// pins would typically be the cursor position
 let rec private startSketchSolve (store: Store.Store<EditorState, Message>) (drag: SketchDrag) (usePins: bool) : unit =
     solveInFlight <- solveInFlight |> Set.add drag.SketchId
 
     promise {
         let t0 = nowMs ()
+        let mutable solverOpt : IGpuSolver option = None
         try
             let state = store.State
-            pruneSolverCache state
             let model = ViewerPipeline.viewerModel state
 
             match model.Sketches |> List.tryFind (fun sketch -> sketch.Id = drag.SketchId) with
             | Some sketch ->
-                let graphKey = GpuGraph.graphKey sketch.Graph
                 let binding = SketchSolve.binding state.Compiled.Slots sketch.Id sketch.Sketch sketch.Graph.VarSlots
-                let! solver = ensureSolver sketch.Id graphKey sketch.Graph
+                let! solver = GpuSolver.createGpuSolver sketch.Graph 1
+                solverOpt <- Some solver
 
                 let initialLocal =
                     match Map.tryFind drag.SketchId state.SolvedSketchParams with
@@ -107,6 +66,9 @@ let rec private startSketchSolve (store: Store.Store<EditorState, Message>) (dra
                 ()
         with error ->
             console.error("RunSketchSolve failed", error)
+        match solverOpt with
+        | Some solver -> solver.Destroy()
+        | None -> ()
 
         let elapsed = nowMs () - t0
         logSlowSolve drag.SketchId usePins elapsed
@@ -122,7 +84,7 @@ and private completeSketchSolve (store: Store.Store<EditorState, Message>) (sket
         pendingSolveBySketch <- pendingSolveBySketch |> Map.remove sketchId
         startSketchSolve store next usePins
     | None ->
-        pruneSolverCache store.State
+        ()
 
 let private runEffect (store: Store.Store<EditorState, Message>) (effect: Effect) : unit =
     match effect with
@@ -138,5 +100,3 @@ let private runEffect (store: Store.Store<EditorState, Message>) (effect: Effect
             startSketchSolve store drag false
 
 let store = Store.create Editor.update runEffect (Editor.initState ())
-
-Store.subscribe store (fun () -> pruneSolverCache store.State)

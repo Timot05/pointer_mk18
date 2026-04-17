@@ -95,6 +95,7 @@ type PickCandidateInput =
 type Effect =
     | RunSketchSolve of SketchDrag
     | FinalizeSketchDrag of SketchDrag
+    | ResolveAllSketches
 
 type Message =
     | SelectAction of string
@@ -123,6 +124,7 @@ type Message =
     | BeginSketchDrag of SketchDrag
     | UpdateSketchDragTarget of LabelPos
     | ApplySketchSolveResult of SketchDrag * float32[]
+    | ApplyResolvedSketchResult of string * float32[]
     | FinishSketchDrag
     | CancelSketchDrag
     | ViewerToolClick of float * float
@@ -659,6 +661,19 @@ module Editor =
                     { state with SolvedSketchParams = state.SolvedSketchParams |> Map.add drag.SketchId solvedLocal }, noEffects
             | _ ->
                 state, noEffects
+        | ApplyResolvedSketchResult(sketchId, solvedLocal) ->
+            match state.ActiveSketchDrag with
+            | Some active when active.SketchId = sketchId ->
+                state, noEffects
+            | _ ->
+                match state.Doc.Actions |> List.tryFind (fun action -> action.Id = sketchId) with
+                | Some { Kind = Sketch(_, _, sketch) } ->
+                    { state with
+                        SlotValues = SketchSolve.patchSolvedSketchSlots state.SlotValues state.Compiled.Slots sketchId sketch solvedLocal
+                        SolvedSketchParams = state.SolvedSketchParams |> Map.add sketchId solvedLocal },
+                    noEffects
+                | _ ->
+                    state, noEffects
         | FinishSketchDrag ->
             match state.ActiveSketchDrag with
             | Some drag ->
@@ -797,6 +812,7 @@ module Editor =
                 | BeginSketchDrag _
                 | UpdateSketchDragTarget _
                 | ApplySketchSolveResult _
+                | ApplyResolvedSketchResult _
                 | FinishSketchDrag
                 | CancelSketchDrag ->
                     state
@@ -900,4 +916,11 @@ module Editor =
                     loadDoc { Name = model.Name; Actions = model.Actions; SelectedId = selectedId } state
                 | ClearModel ->
                     loadDoc (Document.emptyDocument ()) state
-            next, noEffects
+            let effects =
+                match message with
+                | SetDisplayValue _
+                | SetFieldSliceValue _
+                | SetActionSlotValue _
+                | CommitEditingDimension _ -> [ ResolveAllSketches ]
+                | _ -> noEffects
+            next, effects

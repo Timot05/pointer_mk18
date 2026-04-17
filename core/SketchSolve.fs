@@ -91,6 +91,9 @@ module SketchSolve =
 
         overlaid
 
+    let patchSolvedSketchSlots (baseParams: float array) (slots: SlotTable) (sketchId: string) (sketch: ActionSketch) (solvedLocal: float32[]) : float[] =
+        overlaySolvedSketch baseParams slots sketchId sketch solvedLocal
+
     let commitSolvedSketch (sketchId: string) (solvedLocal: float32[]) (doc: Document) : Document =
         match doc.Actions |> List.tryFind (fun action -> action.Id = sketchId) with
         | Some { Kind = Sketch(_, _, sketch) } ->

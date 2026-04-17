@@ -41,7 +41,6 @@ export interface ViewerSketch {
   id: string;
   origin: string | null;
   sketch: ActionSketch;
-  loops: SketchLoop[];
 }
 
 export interface Pickable {
@@ -81,6 +80,7 @@ export interface ViewerState {
   frames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchEditFrames: Array<{ id: string; transform: JsonRigidTransform }>;
   sketchTransforms: Array<{ id: string; transform: JsonRigidTransform }>;
+  sketchLoops: Array<{ sketchId: string; loops: SketchLoop[] }>;
   fieldSlices: Array<{
     surfaceIndex: number;
     planeOrigin: JsonVec3;

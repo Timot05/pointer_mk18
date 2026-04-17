@@ -29,7 +29,10 @@ type ViewerSketchView =
     { Id: string
       Origin: string option
       Sketch: ActionSketch
-      Graph: Graph
+      Graph: Graph }
+
+type SketchLoopsStateView =
+    { SketchId: string
       Loops: SketchLoopView list }
 
 // The topology of the model, takes longer to compute
@@ -60,6 +63,7 @@ type ViewerState =
       Frames: FrameView list
       SketchEditFrames: FrameView list
       SketchTransforms: FrameView list
+      SketchLoops: SketchLoopsStateView list
       FieldSlices: FieldSliceView list
       Visible: Map<string, bool>
       ConstraintLabelPositions: ConstraintLabelPositionView list
@@ -67,6 +71,38 @@ type ViewerState =
       Errors: ActionErrorView list }
 
 module ViewerPipeline =
+
+    let private slotValue (slots: SlotTable) (values: float array) (actionId: string) (path: string) (defaultValue: float) =
+        match Map.tryFind { ActionId = actionId; Path = path } slots.Index with
+        | Some slot when slot < values.Length -> values.[slot]
+        | _ -> defaultValue
+
+    let private resolveSketchEntities (slots: SlotTable) (values: float array) (sketchId: string) (sketch: ActionSketch) : RenderEntity list =
+        sketch.Entities
+        |> List.map (function
+            | REPoint(id, x, y) ->
+                REPoint(
+                    id,
+                    slotValue slots values sketchId (sprintf "sketch.entity.%s.x" id) x,
+                    slotValue slots values sketchId (sprintf "sketch.entity.%s.y" id) y
+                )
+            | RECircle(id, centerId, radius) ->
+                RECircle(
+                    id,
+                    centerId,
+                    slotValue slots values sketchId (sprintf "sketch.entity.%s.radius" id) radius
+                )
+            | REArc(id, startId, endId, ArcThreePoint through) ->
+                REArc(
+                    id,
+                    startId,
+                    endId,
+                    ArcThreePoint
+                        { X = slotValue slots values sketchId (sprintf "sketch.entity.%s.through.x" id) through.X
+                          Y = slotValue slots values sketchId (sprintf "sketch.entity.%s.through.y" id) through.Y }
+                )
+            | other ->
+                other)
 
     /// The three orthonormal axes for a cut-plane slice, given a plane key.
     let private localSliceBasis plane =
@@ -161,16 +197,11 @@ module ViewerPipeline =
 
                     let graph = SketchCompile.compile sk ctx
 
-                    let loops =
-                        SketchLoops.detectLoops sk.Entities
-                        |> List.map (fun l -> { Id = l.Id; EntityIds = l.EntityIds })
-
                     Some
                         { Id = a.Id
                           Origin = origin
                           Sketch = sk
-                          Graph = graph
-                          Loops = loops }
+                          Graph = graph }
                 | _ -> None)
 
         { Surfaces = state.Compiled.Surfaces
@@ -191,6 +222,20 @@ module ViewerPipeline =
                      SketchSolve.overlaySolvedSketch current state.Compiled.Slots action.Id sketch solvedLocal
                  | _ ->
                      current))
+
+        let sketchLoops =
+            state.Doc.Actions
+            |> List.choose (fun action ->
+                match action.Kind with
+                | Sketch(_, _, sketch) ->
+                    let liveEntities = resolveSketchEntities state.Compiled.Slots effectiveParams action.Id sketch
+                    let loops =
+                        SketchLoops.detectLoops liveEntities
+                        |> List.map (fun l -> { Id = l.Id; EntityIds = l.EntityIds })
+                    Some
+                        { SketchId = action.Id
+                          Loops = loops }
+                | _ -> None)
 
         let isDraggable =
             function
@@ -278,6 +323,7 @@ module ViewerPipeline =
           Frames = frames
           SketchEditFrames = sketchEditFrames state
           SketchTransforms = sketchTransforms
+          SketchLoops = sketchLoops
           FieldSlices = activeFieldSlices state
           Visible = visibleByAction
           ConstraintLabelPositions = constraintLabelPositions

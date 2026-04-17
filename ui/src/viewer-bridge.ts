@@ -166,7 +166,6 @@ function normalizeViewerSketch(value: unknown): unknown {
     id: value.Id,
     origin: value.Origin ?? null,
     sketch: normalizeActionSketch(value.Sketch),
-    loops: Array.isArray(value.Loops) ? value.Loops.map(normalizeSketchLoop) : [],
   };
 }
 
@@ -268,6 +267,14 @@ function normalizeConstraintLabelPosition(value: unknown): unknown {
   };
 }
 
+function normalizeSketchLoopsStateView(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  return {
+    sketchId: value.SketchId,
+    loops: Array.isArray(value.Loops) ? value.Loops.map(normalizeSketchLoop) : [],
+  };
+}
+
 function normalizeDisplay(value: unknown): unknown {
   if (!isRecord(value)) return value;
   return {
@@ -316,6 +323,7 @@ function normalizeViewerState(value: unknown): unknown {
     frames: Array.isArray(value.Frames) ? value.Frames.map(normalizeFrameView) : [],
     sketchEditFrames: Array.isArray(value.SketchEditFrames) ? value.SketchEditFrames.map(normalizeFrameView) : [],
     sketchTransforms: Array.isArray(value.SketchTransforms) ? value.SketchTransforms.map(normalizeFrameView) : [],
+    sketchLoops: Array.isArray(value.SketchLoops) ? value.SketchLoops.map(normalizeSketchLoopsStateView) : [],
     fieldSlices: Array.isArray(value.FieldSlices) ? value.FieldSlices.map(normalizeFieldSliceView) : [],
     visible: toMapObject(value.Visible, (entryValue) => Boolean(entryValue)),
     constraintLabelPositions: Array.isArray(value.ConstraintLabelPositions) ? value.ConstraintLabelPositions.map(normalizeConstraintLabelPosition) : [],

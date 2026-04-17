@@ -180,6 +180,46 @@ let ``Editor selectors expose coherent document and viewer state`` () =
     Assert.True(viewerState.SketchUi.EditMode)
 
 [<Fact>]
+let ``ViewerState sketch loops are computed from live slot values, not unsolved model geometry`` () =
+    let openLoopSketch =
+        { Entities =
+            [ REPoint("p1", 0.0, 0.0)
+              REPoint("p2", 10.0, 0.0)
+              REPoint("p3", 10.0, 0.0)
+              REPoint("p4", 10.0, 10.0)
+              REPoint("p5", 10.0, 10.0)
+              REPoint("p6", 0.0, 10.0)
+              REPoint("p7", 0.0, 10.0)
+              REPoint("p8", 0.0, 1.0)
+              RELine("l1", "p1", "p2")
+              RELine("l2", "p3", "p4")
+              RELine("l3", "p5", "p6")
+              RELine("l4", "p7", "p8") ]
+          Constraints = [] }
+
+    let baseState =
+        Editor.initState ()
+        |> updateMany [ ReplaceSketch("sketch1", openLoopSketch) ]
+
+    let closedSlots = Array.copy baseState.SlotValues
+    closedSlots.[slotFor "sketch1" "sketch.entity.p8.y" baseState] <- 0.0
+
+    let liveState = { baseState with SlotValues = closedSlots }
+
+    let viewerModel = ViewerPipeline.viewerModel liveState
+    let viewerState = ViewerPipeline.viewerState liveState
+
+    let modelSketch = viewerModel.Sketches |> List.find (fun sketch -> sketch.Id = "sketch1")
+    let stateLoops = viewerState.SketchLoops |> List.find (fun sketch -> sketch.SketchId = "sketch1")
+
+    Assert.Equal("sketch1", modelSketch.Id)
+    Assert.Empty(SketchLoops.detectLoops openLoopSketch.Entities)
+    Assert.Single(stateLoops.Loops) |> ignore
+    let expectedIds = [ "l1"; "l2"; "l3"; "l4" ] |> List.sort
+    let actualIds = (List.head stateLoops.Loops).EntityIds |> List.sort
+    Assert.Equal(String.concat "," expectedIds, String.concat "," actualIds)
+
+[<Fact>]
 let ``Sketch drag messages update editor drag state and emit solve effects`` () =
     let drag =
         { SketchId = "sketch1"

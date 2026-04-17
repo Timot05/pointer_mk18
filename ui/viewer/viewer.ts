@@ -1218,6 +1218,7 @@ export class ViewerApp {
         if (!frame) return null;
         const built = buildSketchBuffers(
           sketch,
+          this.sketchLoops(sketch.id),
           this.model!.pickables,
           this.slotLookup,
           effectiveParams,
@@ -1250,6 +1251,10 @@ export class ViewerApp {
     const hit = this.state?.constraintLabelPositions.find((candidate) =>
       candidate.sketchId === sketchId && candidate.constraintIndex === constraintIndex);
     return hit ? [hit.position.x, hit.position.y] : null;
+  }
+
+  private sketchLoops(sketchId: string): SketchLoop[] {
+    return this.state?.sketchLoops.find((candidate) => candidate.sketchId === sketchId)?.loops ?? [];
   }
 
 
@@ -2204,6 +2209,7 @@ export class ViewerApp {
 
 function buildSketchBuffers(
   viewerSketch: ViewerSketch,
+  sketchLoops: SketchLoop[],
   pickables: Pickable[],
   slotLookup: Map<string, number>,
   params: number[],
@@ -2259,7 +2265,7 @@ function buildSketchBuffers(
     }
   }
 
-  const resolvedLoops = viewerSketch.loops
+  const resolvedLoops = sketchLoops
     .map((loop) => resolveLoopGeometry(loop, entityMap, pointMap, resolveValue))
     .filter((loop): loop is ResolvedLoopGeometry => loop !== null);
   for (const loop of resolvedLoops) {

@@ -25,7 +25,12 @@ type LeafTile =
     { Box: IntervalBox
       Class: TileClass
       Depth: int
-      Bound: Interval }
+      Bound: Interval
+      /// The simplified FieldNode for this tile — the pruned tape valid
+      /// over this tile's box. Callers doing per-leaf work (surface-point
+      /// extraction, meshing) should evaluate against this, not the
+      /// original tree.
+      Node: FieldNode }
 
 type TileStats =
     { LeafTiles: LeafTile list
@@ -72,7 +77,7 @@ module TileRecursion =
                   EvalCount = 1
                   MaxDepthReached = depth }
             if cls <> Ambiguous || depth >= maxDepth then
-                { self with LeafTiles = [ { Box = b; Class = cls; Depth = depth; Bound = bound } ] }
+                { self with LeafTiles = [ { Box = b; Class = cls; Depth = depth; Bound = bound; Node = simplified } ] }
             else
                 split b
                 |> Array.fold (fun acc child -> merge acc (go child simplified (depth + 1))) self

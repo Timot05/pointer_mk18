@@ -25,6 +25,8 @@
     <Compile Include="FieldIR.fs" />
     <Compile Include="FieldInterval.fs" />
     <Compile Include="TileRecursion.fs" />
+    <Compile Include="FieldGrad.fs" />
+    <Compile Include="MarchingCubes.fs" />
     <Compile Include="GpuSdf.fs" />
     <Compile Include="GpuIsosurface.fs" />
     <Compile Include="GpuFieldSlice.fs" />

@@ -23,6 +23,8 @@
     <Compile Include="Element.fs" />
     <Compile Include="Frames.fs" />
     <Compile Include="FieldIR.fs" />
+    <Compile Include="FieldInterval.fs" />
+    <Compile Include="TileRecursion.fs" />
     <Compile Include="GpuSdf.fs" />
     <Compile Include="GpuIsosurface.fs" />
     <Compile Include="GpuFieldSlice.fs" />

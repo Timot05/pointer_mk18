@@ -10,6 +10,8 @@
     <Compile Include="Tests.fs" />
     <Compile Include="SketchLoopsTests.fs" />
     <Compile Include="CompileTests.fs" />
+    <Compile Include="FieldIntervalTests.fs" />
+    <Compile Include="TileRecursionTests.fs" />
     <Compile Include="GpuGraphTests.fs" />
     <Compile Include="GpuLmSolverTests.fs" />
     <Compile Include="CpuGraphTests.fs" />

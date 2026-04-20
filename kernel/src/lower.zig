@@ -278,13 +278,21 @@ fn lowerSketch(
 
     if (!closed) return min_d;
 
-    // Closed sketch: flip the sign inside the enclosed region.
+    // Closed sketch. Prefer a natively-smooth signed SDF: for a convex
+    // polygon of line segments, the signed distance equals the max over
+    // edges of the signed distance to each edge's line. That form has
+    // no branches, so interval arithmetic evaluates it tightly and the
+    // coarse refinement levels show the correct silhouette instead of
+    // filling the whole tile on every uncertainty.
     //
-    // We use the classic horizontal-ray crossings test — odd crossings
-    // → inside. The tape has no `if`, so each yes/no crossing is encoded
-    // as a 0/1 "step" value built from `clamp`, and the parity of the
-    // total count becomes a product of `(1 - 2·c)` sign factors:
-    // +1 per non-crossing, -1 per crossing, product ±1 = (-1)^count.
+    // If the sketch isn't a simple convex polygon (arcs, circles, or
+    // non-convex), fall back to the ray-crossing parity trick which
+    // renders correctly at the per-pixel level but lights up coarse
+    // tiles because of the `step()` looseness under IA.
+    if (tryLowerConvexPolygon(builder, coords.x, coords.y, prims, flip)) |d| {
+        return d;
+    }
+
     var sign = builder.constant(1.0);
     for (prims) |prim| {
         const f = crossingSignFactor(builder, coords.x, coords.y, prim);
@@ -294,6 +302,96 @@ fn lowerSketch(
     var signed = builder.mul(sign, min_d);
     if (flip) signed = builder.neg(signed);
     return signed;
+}
+
+// ── Convex-polygon signed SDF (IA-tight) ─────────────────────────────────
+//
+// Returns `null` when the input doesn't fit the shape: any non-line prim,
+// fewer than three sides, a non-closed chain, or a non-convex/self-
+// intersecting polygon. Callers fall through to a less tight encoding.
+
+const MAX_CONVEX_VERTS: usize = 64;
+
+fn tryLowerConvexPolygon(
+    builder: *B,
+    x: NR,
+    y: NR,
+    prims: []const SketchPrimitive2d,
+    flip: bool,
+) ?NR {
+    if (prims.len < 3 or prims.len > MAX_CONVEX_VERTS) return null;
+
+    // All prims must be line segments forming a closed loop
+    // (prim[i].end ≈ prim[(i+1) mod n].start). Vertices are the segment
+    // start points in order.
+    var verts: [MAX_CONVEX_VERTS][2]f32 = undefined;
+    for (prims, 0..) |p, i| {
+        const seg = switch (p) {
+            .line_segment => |s| s,
+            else => return null,
+        };
+        verts[i] = seg.start;
+        const next = prims[(i + 1) % prims.len];
+        const next_start = switch (next) {
+            .line_segment => |s| s.start,
+            else => return null,
+        };
+        if (@abs(seg.end[0] - next_start[0]) > 1e-4 or
+            @abs(seg.end[1] - next_start[1]) > 1e-4) return null;
+    }
+
+    const n = prims.len;
+
+    // Signed area × 2 (shoelace) → orientation. Positive = CCW, negative
+    // = CW. A polygon we can handle has a well-defined non-zero area.
+    var area2: f32 = 0;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const a = verts[i];
+        const b = verts[(i + 1) % n];
+        area2 += a[0] * b[1] - b[0] * a[1];
+    }
+    if (@abs(area2) < 1e-10) return null;
+
+    // Convexity: all consecutive edge cross products share the sign of
+    // the polygon's winding. Any mismatch → concave or self-intersecting.
+    const orient: f32 = if (area2 > 0) 1.0 else -1.0;
+    i = 0;
+    while (i < n) : (i += 1) {
+        const a = verts[i];
+        const b = verts[(i + 1) % n];
+        const c = verts[(i + 2) % n];
+        const cz = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+        if (cz * orient < -1e-6) return null;
+    }
+
+    // Emit max over edges of signed distance to each edge's line. For
+    // CCW (orient = +1) the outward normal of edge (a, b) is
+    // (b.y−a.y, a.x−b.x) / |b−a|; for CW we flip that.
+    var result: ?NR = null;
+    i = 0;
+    while (i < n) : (i += 1) {
+        const a = verts[i];
+        const b = verts[(i + 1) % n];
+        const dx = b[0] - a[0];
+        const dy = b[1] - a[1];
+        const len = @sqrt(dx * dx + dy * dy);
+        if (len < 1e-9) continue; // zero-length edge; skip
+        const nx = (orient * dy) / len;
+        const ny = (-orient * dx) / len;
+        const rel_x = builder.sub(x, builder.constant(a[0]));
+        const rel_y = builder.sub(y, builder.constant(a[1]));
+        const d = builder.add(
+            builder.mul(rel_x, builder.constant(nx)),
+            builder.mul(rel_y, builder.constant(ny)),
+        );
+        result = if (result) |r| builder.maxOp(r, d) else d;
+    }
+
+    if (result) |r| {
+        return if (flip) builder.neg(r) else r;
+    }
+    return null;
 }
 
 fn lowerOpenSketchPrim(builder: *B, x: NR, y: NR, prim: SketchPrimitive2d) NR {
@@ -872,6 +970,36 @@ test "CameraFrame lookAt produces orthonormal right-handed basis" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), frame.basis_z[0], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), frame.basis_z[1], 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), frame.basis_z[2], 1e-6);
+}
+
+test "lower closed L-shape falls back to ray-crossing and still signs correctly" {
+    // L-shape (non-convex): (0,0) (2,0) (2,1) (1,1) (1,2) (0,2) closed.
+    var nodes: [16]field_ir.FieldNode = undefined;
+    var prims: [16]field_ir.SketchPrimitive2d = undefined;
+    var builder_ir = field_ir.FieldBuilder.init(&nodes, &prims);
+    const first = builder_ir.sketchLine(.{ 0.0, 0.0 }, .{ 2.0, 0.0 });
+    _ = builder_ir.sketchLine(.{ 2.0, 0.0 }, .{ 2.0, 1.0 });
+    _ = builder_ir.sketchLine(.{ 2.0, 1.0 }, .{ 1.0, 1.0 });
+    _ = builder_ir.sketchLine(.{ 1.0, 1.0 }, .{ 1.0, 2.0 });
+    _ = builder_ir.sketchLine(.{ 1.0, 2.0 }, .{ 0.0, 2.0 });
+    _ = builder_ir.sketchLine(.{ 0.0, 2.0 }, .{ 0.0, 0.0 });
+    const sketch = builder_ir.sketch(first, 6, true, false);
+    const tree = builder_ir.finalize(sketch);
+
+    var ops: [1024]tape_mod.Instruction = undefined;
+    var consts: [1024]f32 = undefined;
+    var builder = tape_mod.TapeBuilder.init(&ops, &consts);
+
+    const out = try lower(tree, &builder);
+    const tape = builder.finalize(out);
+
+    var slots: [1024]f32 = undefined;
+    // (0.5, 0.5) is inside the L.
+    const inside = eval_mod.evalScalar(&tape, 0.5, 0.5, 0.0, slots[0..]);
+    try std.testing.expect(inside < 0.0);
+    // (1.5, 1.5) is in the L's inner cutout → outside.
+    const cut = eval_mod.evalScalar(&tape, 1.5, 1.5, 0.0, slots[0..]);
+    try std.testing.expect(cut > 0.0);
 }
 
 test "lower closed unit square sketch reports inside/outside" {

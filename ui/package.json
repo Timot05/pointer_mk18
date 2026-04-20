@@ -3,9 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "dotnet fable watch ../App.fsproj --outDir src-gen -e .js --run vite",
+    "build:wasm": "cd ../kernel && zig build -Doptimize=ReleaseFast -p ..",
+    "start": "npm run build:wasm && dotnet fable watch ../App.fsproj --outDir src-gen -e .js --run vite",
     "build:fs": "dotnet fable ../App.fsproj --outDir src-gen -e .js",
-    "build": "dotnet fable ../App.fsproj --outDir src-gen -e .js && vite build",
+    "build": "npm run build:wasm && dotnet fable ../App.fsproj --outDir src-gen -e .js && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

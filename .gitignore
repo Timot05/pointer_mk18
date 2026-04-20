@@ -6,6 +6,11 @@ dist/
 ui/src-gen/
 *.user
 
+# Zig build artifacts
+.zig-cache/
+zig-out/
+ui/public/kernel/
+
 archive/
 
 .claude/

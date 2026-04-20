@@ -92,6 +92,7 @@
          Render (Render draws the background). -->
     <Compile Include="viewer\Kernel\IrCodec.fs" />
     <Compile Include="viewer\Kernel\Wasm.fs" />
+    <Compile Include="viewer\Kernel\Worker.fs" />
     <Compile Include="viewer\Kernel\Background.fs" />
 
     <Compile Include="viewer\DimensionEditor.fs" />

@@ -133,8 +133,30 @@ module FieldGrad =
 
         | FRotate _ ->
             failwith "FieldGrad.eval: FRotate not implemented yet"
-        | FSketch _ ->
-            failwith "FieldGrad.eval: FSketch not implemented yet"
+
+        | FSketch sketch ->
+            // 2D sketch SDF: z-independent. We compute the scalar SDF via
+            // SketchSdf.evalAt and take numerical central differences in x/y.
+            // The sketch arc distance has enough branches that hand-writing
+            // the analytic gradient would bloat the code; numerical diff is
+            // fine for meshing at MC vertex resolution.
+            let (x, y, z) = point
+            let px = x.V
+            let py = y.V
+            let h = 1e-4
+            let v   = SketchSdf.evalAt slots sketch (px,     py)
+            let vxp = SketchSdf.evalAt slots sketch (px + h, py)
+            let vxm = SketchSdf.evalAt slots sketch (px - h, py)
+            let vyp = SketchSdf.evalAt slots sketch (px,     py + h)
+            let vym = SketchSdf.evalAt slots sketch (px,     py - h)
+            let dvdx = (vxp - vxm) / (2.0 * h)
+            let dvdy = (vyp - vym) / (2.0 * h)
+            // Chain rule: propagate the 2D partials through the input Grads'
+            // own gradients (captures any preceding FTranslate / composition).
+            { V = v
+              Dx = dvdx * x.Dx + dvdy * y.Dx
+              Dy = dvdx * x.Dy + dvdy * y.Dy
+              Dz = dvdx * x.Dz + dvdy * y.Dz }
 
     and private evalPrimitive (slots: SlotTable) (point: Grad * Grad * Grad) (prim: Primitive) : Grad =
         let (x, y, z) = point

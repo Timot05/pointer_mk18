@@ -35,11 +35,13 @@ let private getDocActionCount () =
 let private getPaletteOpen () = (getPaletteState ()).IsOpen
 
 // --------------------------------------------------------------------------
-// TS viewer mount — the one interop call into the WebGPU viewer.
+// Viewer mount. The F# viewer is now the only viewer; the legacy TS viewer
+// was removed alongside the raymarcher. See project memory
+// `project_viewer_rewrite.md`.
 // --------------------------------------------------------------------------
 
-[<Import("mountViewer", "../viewer/mount.ts")>]
-let private mountViewer (root: Browser.Types.HTMLElement) : JS.Promise<obj> = jsNative
+let private mountViewer (root: Browser.Types.HTMLElement) : JS.Promise<obj> =
+    Viewer.mount root
 
 let private viewerHost =
     let host = document.createElement "div"

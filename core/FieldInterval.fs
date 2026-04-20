@@ -124,10 +124,17 @@ module FieldInterval =
             // corners through the rotation. Punt for now — sound but loose.
             Interval.unknown
 
-        | FSketch _ ->
-            // Sketch extrusion semantics (2D inside-outside test + min dist)
-            // need an interval extension of the crossings count. Punt.
-            Interval.unknown
+        | FSketch sketch ->
+            // Lipschitz-1 bound: evaluate the scalar 2D SDF at the tile's XY
+            // centre, then widen by the XY diagonal to cover the whole tile.
+            // Z is irrelevant (sketch is z-independent).
+            let cx = (box.XI.Lo + box.XI.Hi) * 0.5
+            let cy = (box.YI.Lo + box.YI.Hi) * 0.5
+            let v = SketchSdf.evalAt slots sketch (cx, cy)
+            let dx = (box.XI.Hi - box.XI.Lo) * 0.5
+            let dy = (box.YI.Hi - box.YI.Lo) * 0.5
+            let halfDiag = System.Math.Sqrt (dx * dx + dy * dy)
+            { Lo = v - halfDiag; Hi = v + halfDiag }
 
     /// Same as `eval`, but also returns a potentially smaller `FieldNode`
     /// with dominated boolean branches replaced by the surviving child.

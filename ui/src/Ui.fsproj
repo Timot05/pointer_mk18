@@ -19,6 +19,15 @@
     <Compile Include="CommandPalette.fs" />
     <Compile Include="Shell.fs" />
     <Compile Include="Shortcuts.fs" />
+    <Compile Include="..\viewer\fs\WebGPU.fs" />
+    <Compile Include="..\viewer\fs\Math.fs" />
+    <Compile Include="..\viewer\fs\Camera.fs" />
+    <Compile Include="..\viewer\fs\Colors.fs" />
+    <Compile Include="..\viewer\fs\MsdfAtlas.fs" />
+    <Compile Include="..\worker\fs\MeshWorker.fs" />
+    <Compile Include="..\viewer\fs\SketchOverlay.fs" />
+    <Compile Include="..\viewer\fs\LabelBuilder.fs" />
+    <Compile Include="..\viewer\fs\Viewer.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

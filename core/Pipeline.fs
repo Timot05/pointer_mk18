@@ -190,7 +190,10 @@ module Pipeline =
             | Some FieldType.Field when action.Visible ->
                 [ PickSurface(nextId(), action.Id) ]
             | Some FieldType.Frame ->
-                [ PickFrameOrigin(nextId(), action.Id) ]
+                [ PickFrameOrigin(nextId(), action.Id)
+                  PickFrameAxis(nextId(), action.Id, "xAxis")
+                  PickFrameAxis(nextId(), action.Id, "yAxis")
+                  PickFrameAxis(nextId(), action.Id, "zAxis") ]
             | Some FieldType.Sketch ->
                 match action.Kind with
                 | Sketch(_, _, sk) -> buildSketchPickables b counter action.Id sk

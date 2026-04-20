@@ -1,5 +1,0 @@
-node_modules/
-dist/
-.zig-cache/
-zig-out/
-web/viewer.wasm

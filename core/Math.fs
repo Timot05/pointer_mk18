@@ -30,7 +30,13 @@ type Vec3 =
     member v.Normalized =
         let len = v.Length
         if len < 1e-12 then Vec3.Zero
-        else (1.0 / len) * v
+        else
+            // Inlined (1/len) * v — Fable miscompiles the scalar*struct
+            // operator when invoked from an instance-member body, emitting
+            // a plain JS multiply of number * object (= NaN). Safe to remove
+            // once Fable fixes the resolution.
+            let inv = 1.0 / len
+            { X = inv * v.X; Y = inv * v.Y; Z = inv * v.Z }
 
     static member Dot (a: Vec3, b: Vec3) =
         a.X * b.X + a.Y * b.Y + a.Z * b.Z

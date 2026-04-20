@@ -27,6 +27,7 @@ type Pickable =
     | PickDimension of pickId: PickId * sketchId: ActionId * constraintIndex: int * anchor: SlotPt2
     // Frame gizmos.
     | PickFrameOrigin of pickId: PickId * frameId: ActionId
+    | PickFrameAxis of pickId: PickId * frameId: ActionId * part: string
     // Coarse SDF surface — the whole surface of a Field-producing action.
     | PickSurface of pickId: PickId * actionId: ActionId
 
@@ -57,6 +58,7 @@ module Pickable =
         | PickLoop(id, _, _, _) -> id
         | PickDimension(id, _, _, _) -> id
         | PickFrameOrigin(id, _) -> id
+        | PickFrameAxis(id, _, _) -> id
         | PickSurface(id, _) -> id
 
     /// Resolve a pickable to the ActionId the server should select when
@@ -70,6 +72,7 @@ module Pickable =
         | PickLoop(_, sketchId, _, _) -> sketchId
         | PickDimension(_, sketchId, _, _) -> sketchId
         | PickFrameOrigin(_, frameId) -> frameId
+        | PickFrameAxis(_, frameId, _) -> frameId
         | PickSurface(_, actionId) -> actionId
 
     let selectionTarget =
@@ -81,6 +84,7 @@ module Pickable =
         | PickLoop(_, sketchId, loopId, _) -> TargetLoop(sketchId, loopId)
         | PickDimension(_, sketchId, constraintIndex, _) -> TargetDimension(sketchId, constraintIndex)
         | PickFrameOrigin(_, frameId) -> TargetFrameOrigin(frameId)
+        | PickFrameAxis(_, frameId, part) -> TargetFrameAxis(frameId, part)
         | PickSurface(_, actionId) -> TargetSurface(actionId)
 
     let sameTarget target pickable =
@@ -93,6 +97,7 @@ module Pickable =
         | PickDimension _ -> 2
         | PickLoop _ -> 3
         | PickFrameOrigin _ -> 4
+        | PickFrameAxis _ -> 4
         | PickSurface _ -> 5
 
     let reduceCandidates (pickables: Pickable list) (candidates: PickCandidate list) : Pickable option =

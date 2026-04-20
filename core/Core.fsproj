@@ -23,6 +23,7 @@
     <Compile Include="Element.fs" />
     <Compile Include="Frames.fs" />
     <Compile Include="FieldIR.fs" />
+    <Compile Include="SketchSdf.fs" />
     <Compile Include="FieldInterval.fs" />
     <Compile Include="TileRecursion.fs" />
     <Compile Include="FieldGrad.fs" />

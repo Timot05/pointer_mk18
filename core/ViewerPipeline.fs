@@ -205,8 +205,10 @@ module ViewerPipeline =
                 | _ -> None)
 
         { Surfaces = state.Compiled.Surfaces
-          FieldWgsl = GpuIsosurface.combinedIsosurfaceWgsl state.Compiled.Surfaces
-          FieldSliceWgsl = GpuFieldSlice.combinedFieldSliceWgsl state.Compiled.Surfaces
+          // Raymarcher is retired. Fields kept on the record to avoid a
+          // breaking schema change; always None now.
+          FieldWgsl = None
+          FieldSliceWgsl = None
           FieldSurfaceActionIds = state.Compiled.Surfaces |> List.map (fun s -> s.ActionId)
           Sketches = sketches
           NumSlots = state.Compiled.Slots.Values.Length

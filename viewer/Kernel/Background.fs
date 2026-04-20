@@ -33,11 +33,10 @@ type private Tile =
       TileW: int
       TileH: int }
 
-/// Progressive render schedule: coarse-to-fine levels, full tile grid at
-/// each level. Reset to the start when the camera moves.
+/// Progressive render schedule: each tick, draws the complete tile grid
+/// at the current level and advances; camera change resets to the start.
 type private Schedule =
     { mutable Level: int
-      mutable TileIdx: int
       mutable Dirty: bool }
 
 type Background =
@@ -104,14 +103,17 @@ let private cameraKey (camera: Camera.CameraState) : float =
 /// Copy camera basis to the kernel's camera buffer + invoke set_camera.
 /// The kernel's "eye" is the centre of an orthographic slab — we want it
 /// on the look-at target so the scene sits inside the slab.
+///
+/// Kernel convention: positive wcz = closer to camera. The viewer's
+/// Forward points FROM eye TOWARD target, so we flip its sign to match.
 let private pushCamera (x: Wasm.Exports) (camera: Camera.CameraState) =
     let b = Camera.basis camera
     let t = camera.Target
     let values : float32[] =
-        [| float32 t.X;         float32 t.Y;         float32 t.Z
-           float32 b.Right.X;   float32 b.Right.Y;   float32 b.Right.Z
-           float32 b.Up.X;      float32 b.Up.Y;      float32 b.Up.Z
-           float32 b.Forward.X; float32 b.Forward.Y; float32 b.Forward.Z |]
+        [| float32 t.X;          float32 t.Y;          float32 t.Z
+           float32 b.Right.X;    float32 b.Right.Y;    float32 b.Right.Z
+           float32 b.Up.X;       float32 b.Up.Y;       float32 b.Up.Z
+           float32 -b.Forward.X; float32 -b.Forward.Y; float32 -b.Forward.Z |]
     Wasm.setCamera x values |> ignore
 
 /// Write the field-camera uniform (used by the shader to reconstruct
@@ -122,13 +124,14 @@ let private writeFieldCamera
         (viewHalfW: float) (viewHalfH: float) =
     let b = Camera.basis camera
     let t = camera.Target
-    // 5 × vec4<f32> = 80 bytes. std140-style padding (trailing `_pad`).
+    // 5 × vec4<f32> = 80 bytes. basis_z is -Forward to match the kernel's
+    // "positive wcz = closer to camera" convention (see pushCamera).
     let data : float32[] =
-        [| float32 t.X;         float32 t.Y;         float32 t.Z;         0.0f
-           float32 b.Right.X;   float32 b.Right.Y;   float32 b.Right.Z;   0.0f
-           float32 b.Up.X;      float32 b.Up.Y;      float32 b.Up.Z;      0.0f
-           float32 b.Forward.X; float32 b.Forward.Y; float32 b.Forward.Z; 0.0f
-           float32 viewHalfW;   float32 viewHalfH;   0.0f;                0.0f |]
+        [| float32 t.X;          float32 t.Y;          float32 t.Z;          0.0f
+           float32 b.Right.X;    float32 b.Right.Y;    float32 b.Right.Z;    0.0f
+           float32 b.Up.X;       float32 b.Up.Y;       float32 b.Up.Z;       0.0f
+           float32 -b.Forward.X; float32 -b.Forward.Y; float32 -b.Forward.Z; 0.0f
+           float32 viewHalfW;    float32 viewHalfH;    0.0f;                 0.0f |]
     WebGPU.writeFloat32 device.queue buffer 0 data
 
 /// View half-extent (vertical) derived from the main viewer's camera.
@@ -182,7 +185,7 @@ let create (scene: Scene.Scene) : JS.Promise<Background> =
               FieldCameraBuffer = fieldBuffer
               Tiles = makeTiles w h
               MaxLevel = maxLevel
-              Schedule = { Level = START_LEVEL; TileIdx = 0; Dirty = true }
+              Schedule = { Level = START_LEVEL; Dirty = true }
               LastCameraKey = nan }
     }
 
@@ -200,7 +203,6 @@ let resize (bg: Background) (w: int) (h: int) =
             bg.TextureView bg.Scene.BackgroundSampler bg.FieldCameraBuffer
     bg.Tiles <- makeTiles w h
     bg.Schedule.Level <- START_LEVEL
-    bg.Schedule.TileIdx <- 0
     bg.Schedule.Dirty <- true
 
 [<Emit("$0.queue.writeTexture($1, $2, $3, $4)")>]
@@ -227,48 +229,40 @@ let update (bg: Background) =
         writeFieldCamera bg.Scene.Device bg.FieldCameraBuffer
             bg.Scene.Camera viewHalfW viewHalfH
         bg.Schedule.Level <- START_LEVEL
-        bg.Schedule.TileIdx <- 0
         bg.Schedule.Dirty <- true
 
     if bg.Schedule.Dirty then bg.Schedule.Dirty <- false
 
     // Stop advancing when we've reached the finest level on every tile.
     if bg.Schedule.Level > bg.MaxLevel then () else
-
     if bg.Tiles.Length = 0 then () else
 
-    let tile = bg.Tiles.[bg.Schedule.TileIdx]
-    let written =
-        bg.Exports.render_voxels
-            (tile.TileW, tile.TileH,
-             bg.Width, bg.Height,
-             tile.TileX, tile.TileY,
-             viewHalfW, viewHalfH,
-             half, bg.Schedule.Level)
-    if written > 0 then
-        // Kernel wrote tile.TileW * tile.TileH rgba32float pixels into
-        // `gbuffer` starting at offset 0. Upload into the matching sub-
-        // rect of the GPU texture.
-        let src = Wasm.gbufferView bg.Exports tile.TileW tile.TileH
-        let destination =
-            {| texture = bg.Texture
-               origin = {| x = tile.TileX; y = tile.TileY; z = 0 |} |}
-        let dataLayout =
-            {| offset = 0
-               bytesPerRow = tile.TileW * 16  // 4 × f32
-               rowsPerImage = tile.TileH |}
-        let size =
-            {| width = tile.TileW
-               height = tile.TileH
-               depthOrArrayLayers = 1 |}
-        writeTexture bg.Scene.Device (box destination) src (box dataLayout) (box size)
+    // Render EVERY tile at the current level in this frame, so each RAF
+    // produces a complete image. Advance one refinement level per frame.
+    for tile in bg.Tiles do
+        let written =
+            bg.Exports.render_voxels
+                (tile.TileW, tile.TileH,
+                 bg.Width, bg.Height,
+                 tile.TileX, tile.TileY,
+                 viewHalfW, viewHalfH,
+                 half, bg.Schedule.Level)
+        if written > 0 then
+            let src = Wasm.gbufferView bg.Exports tile.TileW tile.TileH
+            let destination =
+                {| texture = bg.Texture
+                   origin = {| x = tile.TileX; y = tile.TileY; z = 0 |} |}
+            let dataLayout =
+                {| offset = 0
+                   bytesPerRow = tile.TileW * 16
+                   rowsPerImage = tile.TileH |}
+            let size =
+                {| width = tile.TileW
+                   height = tile.TileH
+                   depthOrArrayLayers = 1 |}
+            writeTexture bg.Scene.Device (box destination) src (box dataLayout) (box size)
 
-    // Advance: tile → next tile; when the level is complete, step to the
-    // next finer level.
-    bg.Schedule.TileIdx <- bg.Schedule.TileIdx + 1
-    if bg.Schedule.TileIdx >= bg.Tiles.Length then
-        bg.Schedule.TileIdx <- 0
-        bg.Schedule.Level <- bg.Schedule.Level + 1
+    bg.Schedule.Level <- bg.Schedule.Level + 1
 
 /// Draw the background into the given color pass. Called at the start of
 /// the color pass so sketch geometry depth-tests against the field.

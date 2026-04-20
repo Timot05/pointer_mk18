@@ -96,13 +96,13 @@ let private onLoad () =
 
 let private renderInto (root: Browser.Types.HTMLElement) =
     let doc = DocumentPipeline.documentView store.State
-    let shell = Shell.render dispatch doc viewerHost onSave onLoad
+    let shell = Shell.render dispatch doc store.State.ViewerMode viewerHost onSave onLoad
     root.innerHTML <- ""
     root.appendChild shell |> ignore
 
 let private uiSignature (state: EditorState) =
     sprintf
-        "%A|%A|%A|%A|%A|%A|%A|%A|%A"
+        "%A|%A|%A|%A|%A|%A|%A|%A|%A|%A"
         state.Doc.SelectedId
         state.SketchEditMode
         state.SketchTool
@@ -112,6 +112,7 @@ let private uiSignature (state: EditorState) =
         state.ConstraintPlacementMode
         state.ConstraintPlacementDraft
         state.ConstraintPlacementCursor
+        state.ViewerMode
 
 let mutable private lastCompiled = store.State.Compiled
 let mutable private lastSlotValues = store.State.SlotValues

@@ -182,9 +182,15 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
 
                 DimensionEditor.install container canvas scene.Camera
 
+                // GPU raymarcher — alternative to the voxel kernel,
+                // toggled at runtime by `state.ViewerMode`. Cheap to
+                // create (empty buffers, no pipeline until first
+                // compile), so we instantiate unconditionally.
+                let raymarch = Raymarch.create scene
+
                 // Render loop.
                 let rec frame (_: float) =
-                    Render.renderFrame scene toolCursor.Value background.Value
+                    Render.renderFrame scene toolCursor.Value background.Value (Some raymarch)
                     WebGPU.requestAnimationFrame frame |> ignore
                 WebGPU.requestAnimationFrame frame |> ignore
 

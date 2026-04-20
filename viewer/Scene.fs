@@ -25,6 +25,7 @@ type Scene =
       // Uniform buffers + bind groups
       CameraBuffer: IGPUBuffer
       CameraBindGroup: IGPUBindGroup
+      CameraBindGroupLayout: IGPUBindGroupLayout
       FrameBuffer: IGPUBuffer
       FrameBindGroup: IGPUBindGroup
       ViewportBuffer: IGPUBuffer
@@ -508,6 +509,7 @@ let create
 
       CameraBuffer = cameraBuffer
       CameraBindGroup = cameraBindGroup
+      CameraBindGroupLayout = cameraBindGroupLayout
       FrameBuffer = frameBuffer
       FrameBindGroup = frameBindGroup
       ViewportBuffer = viewportBuffer

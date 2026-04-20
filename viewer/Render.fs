@@ -36,10 +36,13 @@ let private axesOf (transform: RigidTransform) =
     pos, xAxis, yAxis
 
 /// Render one frame. Call from a requestAnimationFrame loop in Viewer.
+/// The 3D field can be produced by the Zig-WASM voxel kernel (`background`)
+/// or by the GPU raymarcher (`raymarch`); `state.ViewerMode` selects.
 let renderFrame
         (scene: Scene.Scene)
         (toolCursor: (ActionId * float * float) option)
-        (background: Kernel.Background.Background option) =
+        (background: Kernel.Background.Background option)
+        (raymarch: Raymarch.Raymarch option) =
     let w : int = scene.Canvas?width
     let h : int = scene.Canvas?height
 
@@ -69,14 +72,19 @@ let renderFrame
     let colorPass =
         WebGPU.beginRenderPassClearColor encoder colorView 0.996 0.988 0.953 depthView
 
-    // Field background — drawn first so every sketch/overlay paints on top.
-    match background with
-    | Some bg ->
+    let state = AppStore.store.State
+
+    // Field background — drawn first so every sketch/overlay paints on
+    // top. Either the Zig-WASM voxel kernel or the GPU sphere-marcher,
+    // user-selectable via `state.ViewerMode`.
+    match state.ViewerMode, background, raymarch with
+    | IntervalKernel, Some bg, _ ->
         Kernel.Background.update bg
         Kernel.Background.draw bg colorPass
-    | None -> ()
-
-    let state = AppStore.store.State
+    | Raymarch, _, Some rm ->
+        Raymarch.update rm state
+        Raymarch.draw rm colorPass
+    | _ -> ()
     let model = ViewerPipeline.viewerModel state
     let viewState = ViewerPipeline.viewerState state
     let frameById =

@@ -102,6 +102,17 @@ body {
   color: var(--text-primary);
 }
 
+.topbar-button-active {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.topbar-segmented {
+  display: inline-flex;
+  gap: 10px;
+  margin-right: 12px;
+}
+
 .topbar-menu {
   position: relative;
 }

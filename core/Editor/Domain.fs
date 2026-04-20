@@ -188,6 +188,13 @@ module ParamValue =
         | VRecord fields -> Map.tryFind key fields
         | _ -> None
 
+/// Which renderer drives the 3D field background. `IntervalKernel` is the
+/// Zig WASM voxel renderer; `Raymarch` is the older GPU sphere-tracer
+/// kept as an alternative. Flipped from the UI via `SetViewerMode`.
+type ViewerMode =
+    | IntervalKernel
+    | Raymarch
+
 type Document =
     { Name: string
       Actions: DocAction list

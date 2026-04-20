@@ -75,7 +75,8 @@ type EditorState =
       PendingSketchDragCommit: bool
       ConstraintPlacementMode: ConstraintPlacementKind option
       ConstraintPlacementDraft: ConstraintPlacementDraft option
-      ConstraintPlacementCursor: (string * LabelPos) option }
+      ConstraintPlacementCursor: (string * LabelPos) option
+      ViewerMode: ViewerMode }
 
 type SerializedModel =
     { Name: string
@@ -148,6 +149,7 @@ type Message =
     | ReplaceDocument of Document
     | LoadModel of SerializedModel
     | ClearModel
+    | SetViewerMode of ViewerMode
 
 module Editor =
 
@@ -230,7 +232,8 @@ module Editor =
           PendingSketchDragCommit = false
           ConstraintPlacementMode = None
           ConstraintPlacementDraft = None
-          ConstraintPlacementCursor = None }
+          ConstraintPlacementCursor = None
+          ViewerMode = IntervalKernel }
 
     let isSlotBackedActionParamField =
         function
@@ -1010,6 +1013,8 @@ module Editor =
                     loadDoc { Name = model.Name; Actions = model.Actions; SelectedId = selectedId } state
                 | ClearModel ->
                     loadDoc (Document.emptyDocument ()) state
+                | SetViewerMode mode ->
+                    { state with ViewerMode = mode }
             let effects =
                 match message with
                 | SetDisplayValue _

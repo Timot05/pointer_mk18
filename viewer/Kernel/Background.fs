@@ -116,6 +116,11 @@ type Background =
           // Per-level bookkeeping.
           mutable TilesEmitted: int
           mutable TilesRendered: int
+          // Counts tiles whose response included a non-null g-buffer. If
+          // this is still 0 when the level "completes", the IR is in a
+          // bad state (e.g. lower failed); we skip the swap so the last
+          // good display keeps showing instead of an uninitialised one.
+          mutable TilesUploaded: int
           // Bumped on any camera/size change. Stale worker responses
           // carry an old epoch and get discarded.
           mutable Epoch: int
@@ -225,13 +230,16 @@ let private dispatch (bg: Background) (slot: WorkerSlot) =
 let private dispatchAll (bg: Background) =
     for slot in bg.Workers do dispatch bg slot
 
-let private uploadRenderedTile (bg: Background) (data: obj) =
+/// Returns true if the tile carried a g-buffer; false for empty responses
+/// (e.g. kernel has no scene loaded because lowering failed). Callers use
+/// the result to decide whether the level accumulated any real pixels.
+let private uploadRenderedTile (bg: Background) (data: obj) : bool =
     let tileX : int = data?tileX
     let tileY : int = data?tileY
     let tileW : int = data?tileW
     let tileH : int = data?tileH
     let buffer : obj = data?buffer
-    if isNull buffer then () else
+    if isNull buffer then false else
     let view = f32OfBuffer buffer
     let destination =
         {| texture = bg.PendingTexture
@@ -245,6 +253,7 @@ let private uploadRenderedTile (bg: Background) (data: obj) =
            height = tileH
            depthOrArrayLayers = 1 |}
     writeTexture bg.Scene.Device (box destination) view (box dataLayout) (box size)
+    true
 
 /// Swap pending ↔ display. Pending's contents are now complete and
 /// consistent; the old display texture becomes the next pending (its
@@ -279,12 +288,16 @@ let private handleResponse (bg: Background) (slot: WorkerSlot) (data: obj) =
         slot.Busy <- false
         let epoch : int = data?epoch
         if epoch = bg.Epoch then
-            uploadRenderedTile bg data
+            if uploadRenderedTile bg data then
+                bg.TilesUploaded <- bg.TilesUploaded + 1
             bg.TilesRendered <- bg.TilesRendered + 1
             if bg.TilesRendered >= bg.Tiles.Length then
-                // Level complete → promote pending to display in one
-                // atomic swap so the user never sees a partial level.
-                swapDisplay bg
+                // Only swap if at least one tile actually carried data.
+                // Zero uploads means the kernel silently failed (e.g.
+                // unsupported IR) — keep the previous display instead of
+                // revealing an uninitialised pending texture.
+                if bg.TilesUploaded > 0 then
+                    swapDisplay bg
                 // Only climb to the next refinement level when the
                 // camera has been still for a bit. During motion we
                 // stay pinned at START_LEVEL so each frame can complete
@@ -296,6 +309,7 @@ let private handleResponse (bg: Background) (slot: WorkerSlot) (data: obj) =
                     bg.Level <- bg.Level + 1
                     bg.TilesEmitted <- 0
                     bg.TilesRendered <- 0
+                    bg.TilesUploaded <- 0
                 // else: leave tile counters at their max so dispatch is
                 // a no-op until either the camera moves (update() resets
                 // everything) or stability is detected in update() and
@@ -382,6 +396,7 @@ let create (scene: Scene.Scene) : JS.Promise<Background> =
               MaxLevel = maxLevel
               TilesEmitted = 0
               TilesRendered = 0
+              TilesUploaded = 0
               Epoch = 0
               LastCameraKey = cameraKey scene.Camera
               LastCameraChangeMs = performanceNow () }
@@ -412,6 +427,7 @@ let resize (bg: Background) (w: int) (h: int) =
     bg.Level <- START_LEVEL
     bg.TilesEmitted <- 0
     bg.TilesRendered <- 0
+    bg.TilesUploaded <- 0
     bg.Epoch <- bg.Epoch + 1
     // Any in-flight worker renders carry the old epoch and get discarded
     // on arrival; when they finish, `dispatch` picks up the new tiles.
@@ -478,6 +494,7 @@ let updateIr (bg: Background) (bytes: obj) =
     bg.Level <- START_LEVEL
     bg.TilesEmitted <- 0
     bg.TilesRendered <- 0
+    bg.TilesUploaded <- 0
     // Treat an IR change like a camera change: pin at level 3 briefly so
     // a fast coarse frame lands before refinement resumes.
     bg.LastCameraChangeMs <- performanceNow ()
@@ -504,6 +521,7 @@ let clear (bg: Background) =
     bg.Level <- START_LEVEL
     bg.TilesEmitted <- 0
     bg.TilesRendered <- 0
+    bg.TilesUploaded <- 0
     for slot in bg.Workers do
         if slot.Busy then
             terminate slot.Handle

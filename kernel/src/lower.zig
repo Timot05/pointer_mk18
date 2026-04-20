@@ -18,7 +18,6 @@ pub const Error = error{
     InvalidChildRef,
     InvalidSketchRange,
     EmptySketch,
-    UnsupportedClosedSketch,
 };
 
 const Coords = struct {
@@ -266,30 +265,35 @@ fn lowerSketch(
     if (len == 0) return error.EmptySketch;
 
     const prims = tree.sketch_prims[first..@intCast(end)];
-    if (closed) {
-        if (prims.len == 1) {
-            return lowerClosedSketchSingleton(builder, coords.x, coords.y, prims[0], flip);
-        }
-        return error.UnsupportedClosedSketch;
-    }
 
-    var acc = lowerOpenSketchPrim(builder, coords.x, coords.y, prims[0]);
+    // Unsigned distance to the curve set. `lowerOpenSketchPrim` returns
+    // the SDF of each individual curve segment (line segment, circle
+    // outline, arc); `min` over them gives unsigned distance to the
+    // whole boundary.
+    var min_d = lowerOpenSketchPrim(builder, coords.x, coords.y, prims[0]);
     for (prims[1..]) |prim| {
         const d = lowerOpenSketchPrim(builder, coords.x, coords.y, prim);
-        acc = builder.minOp(acc, d);
+        min_d = builder.minOp(min_d, d);
     }
-    return acc;
-}
 
-fn lowerClosedSketchSingleton(builder: *B, x: NR, y: NR, prim: SketchPrimitive2d, flip: bool) Error!NR {
-    return switch (prim) {
-        .circle => |circle| blk: {
-            var d = sdfCircle2d(builder, x, y, circle.center, circle.radius);
-            if (flip) d = builder.neg(d);
-            break :blk d;
-        },
-        else => error.UnsupportedClosedSketch,
-    };
+    if (!closed) return min_d;
+
+    // Closed sketch: flip the sign inside the enclosed region.
+    //
+    // We use the classic horizontal-ray crossings test — odd crossings
+    // → inside. The tape has no `if`, so each yes/no crossing is encoded
+    // as a 0/1 "step" value built from `clamp`, and the parity of the
+    // total count becomes a product of `(1 - 2·c)` sign factors:
+    // +1 per non-crossing, -1 per crossing, product ±1 = (-1)^count.
+    var sign = builder.constant(1.0);
+    for (prims) |prim| {
+        const f = crossingSignFactor(builder, coords.x, coords.y, prim);
+        sign = builder.mul(sign, f);
+    }
+
+    var signed = builder.mul(sign, min_d);
+    if (flip) signed = builder.neg(signed);
+    return signed;
 }
 
 fn lowerOpenSketchPrim(builder: *B, x: NR, y: NR, prim: SketchPrimitive2d) NR {
@@ -298,6 +302,219 @@ fn lowerOpenSketchPrim(builder: *B, x: NR, y: NR, prim: SketchPrimitive2d) NR {
         .circle => |circle| sdfCircleCurve2d(builder, x, y, circle.center, circle.radius),
         .arc_center => |arc| sdfArcCurve2d(builder, x, y, arc.start, arc.end, arc.center, arc.clockwise),
     };
+}
+
+// ── Closed-polygon sign via horizontal-ray crossings ─────────────────────
+//
+// `step(v)` is a branch-free approximation of the Heaviside step. With
+// `K = 1e6`, it resolves to {0, 1} outside a transition band ~1 µu wide —
+// far tighter than any distance we need to resolve. Interval arithmetic
+// collapses it tightly because `min`/`max` with constants are cheap.
+const STEP_SHARPNESS: f32 = 1.0e6;
+
+fn step(builder: *B, v: NR) NR {
+    // clamp01(v * K + 0.5)
+    const ramp = builder.add(
+        builder.mul(builder.constant(STEP_SHARPNESS), v),
+        builder.constant(0.5),
+    );
+    return builder.minOp(
+        builder.constant(1.0),
+        builder.maxOp(builder.constant(0.0), ramp),
+    );
+}
+
+/// `(1 - 2·c)` for a scalar `c ∈ {0, 1}`. Returns +1 when `c = 0` and −1
+/// when `c = 1`. Multiplying all such factors together gives `(-1)^N` for
+/// the total crossing count — exactly the sign-flip parity we need.
+fn crossingFactor(builder: *B, c: NR) NR {
+    return builder.sub(
+        builder.constant(1.0),
+        builder.mul(builder.constant(2.0), c),
+    );
+}
+
+fn crossingSignFactor(builder: *B, x: NR, y: NR, prim: SketchPrimitive2d) NR {
+    return switch (prim) {
+        .line_segment => |seg| lineCrossingFactor(builder, x, y, seg.start, seg.end),
+        .circle => |circle| circleCrossingFactor(builder, x, y, circle.center, circle.radius),
+        .arc_center => |arc| arcCrossingFactor(builder, x, y, arc.start, arc.end, arc.center, arc.clockwise),
+    };
+}
+
+/// Does the horizontal ray from `p` (in +x direction) cross segment a→b?
+/// Condition: the segment straddles `y = p.y` AND the intersection x is
+/// to the right of `p.x`. Derived without division: the intersection
+/// offset `(x_i − p.x)` equals `cross((a−p), (b−p)) / (b.y − a.y)`, so
+/// `x_i > p.x  ⇔  cross · (b.y − a.y) > 0`.
+fn lineCrossingFactor(builder: *B, x: NR, y: NR, a: [2]f32, b: [2]f32) NR {
+    const ax = builder.constant(a[0]);
+    const ay = builder.constant(a[1]);
+    const bx = builder.constant(b[0]);
+    const by = builder.constant(b[1]);
+
+    const s1 = builder.sub(ay, y); // a.y − p.y
+    const s2 = builder.sub(by, y); // b.y − p.y
+
+    // straddles: signs of s1, s2 differ  ⇔  s1·s2 < 0  ⇔  −s1·s2 > 0.
+    const straddles = step(builder, builder.neg(builder.mul(s1, s2)));
+
+    // cross((a−p), (b−p)) = (a.x − p.x)·s2 − (b.x − p.x)·s1
+    const ax_minus_px = builder.sub(ax, x);
+    const bx_minus_px = builder.sub(bx, x);
+    const cross_pab = builder.sub(
+        builder.mul(ax_minus_px, s2),
+        builder.mul(bx_minus_px, s1),
+    );
+    const dy = builder.sub(s2, s1); // b.y − a.y
+    const to_right = step(builder, builder.mul(cross_pab, dy));
+
+    const crossing = builder.mul(straddles, to_right);
+    return crossingFactor(builder, crossing);
+}
+
+/// A horizontal line y = p.y meets a circle in 0 or 2 points (tangent
+/// case is a measure-zero coincidence). Each intersection that lies to
+/// the right of `p.x` contributes one crossing; we emit the two as
+/// independent 0/1 crossings and fold them both into the running product.
+///
+///   disc    = r² − (p.y − cy)²          (negative → no intersection)
+///   h       = √max(disc, 0)
+///   x_left  = cx − h
+///   x_right = cx + h
+///   c_left  = 1 if disc > 0 AND x_left  > p.x
+///   c_right = 1 if disc > 0 AND x_right > p.x
+///
+/// For a point clearly inside the disk, `c_left = 0, c_right = 1`
+/// (product = −1); for a point clearly outside on either side, both are
+/// 0 or both are 1 (product = +1). Matches the main-branch reference.
+fn circleCrossingFactor(builder: *B, x: NR, y: NR, center: [2]f32, radius: f32) NR {
+    const cx = builder.constant(center[0]);
+    const cy = builder.constant(center[1]);
+    const r2 = builder.constant(radius * radius);
+
+    const dy = builder.sub(y, cy);
+    const disc = builder.sub(r2, builder.square(dy));
+    const has = step(builder, disc);
+
+    // √max(disc, 0) — guard sqrt from negative inputs.
+    const disc_safe = builder.maxOp(disc, builder.constant(0.0));
+    const h = builder.sqrtOp(disc_safe);
+
+    const x_left = builder.sub(cx, h);
+    const x_right = builder.add(cx, h);
+    const c_left = builder.mul(has, step(builder, builder.sub(x_left, x)));
+    const c_right = builder.mul(has, step(builder, builder.sub(x_right, x)));
+
+    return builder.mul(
+        crossingFactor(builder, c_left),
+        crossingFactor(builder, c_right),
+    );
+}
+
+/// Arc crossings: like circle, but each candidate intersection is also
+/// gated by "does its angular position fall on the arc?". The angular
+/// membership test reuses the same "signed half-sweep" trick as
+/// `sdfArcCurve2d`: compute each candidate's angular offset from the
+/// arc's centre angle via `atan2`, then compare to the half-sweep.
+fn arcCrossingFactor(
+    builder: *B,
+    x: NR,
+    y: NR,
+    start: [2]f32,
+    end_: [2]f32,
+    center: [2]f32,
+    clockwise: bool,
+) NR {
+    const sx = start[0] - center[0];
+    const sy = start[1] - center[1];
+    const ex = end_[0] - center[0];
+    const ey = end_[1] - center[1];
+    const radius = @sqrt(sx * sx + sy * sy);
+    if (radius < 1e-6) {
+        // Degenerate arc → treat as a line segment.
+        return lineCrossingFactor(builder, x, y, start, end_);
+    }
+
+    const start_angle = std.math.atan2(sy, sx);
+    const end_angle = std.math.atan2(ey, ex);
+    const sweep = if (clockwise)
+        -positiveAngleDeltaConst(end_angle, start_angle)
+    else
+        positiveAngleDeltaConst(start_angle, end_angle);
+    const center_angle = start_angle + sweep * 0.5;
+    const half_angle = @abs(sweep) * 0.5;
+    const cv_x = @cos(center_angle);
+    const cv_y = @sin(center_angle);
+
+    const cx = builder.constant(center[0]);
+    const cy = builder.constant(center[1]);
+    const r2 = builder.constant(radius * radius);
+
+    const dy = builder.sub(y, cy);
+    const disc = builder.sub(r2, builder.square(dy));
+    const has = step(builder, disc);
+
+    const disc_safe = builder.maxOp(disc, builder.constant(0.0));
+    const h = builder.sqrtOp(disc_safe);
+
+    const x_left = builder.sub(cx, h);
+    const x_right = builder.add(cx, h);
+
+    // For each candidate, check both:
+    //   (1) disc > 0 AND x_candidate > p.x   (same as circle)
+    //   (2) the candidate's angle lies within [center_angle ± half_angle]
+    const c_left = combineArcCrossing(
+        builder, x, y, x_left, has, cx, cy, cv_x, cv_y, half_angle,
+    );
+    const c_right = combineArcCrossing(
+        builder, x, y, x_right, has, cx, cy, cv_x, cv_y, half_angle,
+    );
+
+    return builder.mul(
+        crossingFactor(builder, c_left),
+        crossingFactor(builder, c_right),
+    );
+}
+
+/// Shared tail for arc left/right crossings. `candidate_x` is one of the
+/// two horizontal-line intersections with the circle; we combine the
+/// "to-right" step, the "has-intersection" flag, and the angular
+/// membership step into one 0/1 crossing.
+fn combineArcCrossing(
+    builder: *B,
+    x: NR,
+    y: NR,
+    candidate_x: NR,
+    has: NR,
+    cx: NR,
+    cy: NR,
+    cv_x: f32,
+    cv_y: f32,
+    half_angle: f32,
+) NR {
+    const qx = builder.sub(candidate_x, cx);
+    const qy = builder.sub(y, cy);
+    // Signed angle from centre_angle to the candidate's angle — same
+    // cross/dot+atan2 trick as sdfArcCurve2d.
+    const cross_2d = builder.sub(
+        builder.mul(builder.constant(cv_x), qy),
+        builder.mul(builder.constant(cv_y), qx),
+    );
+    const dot_v = builder.add(
+        builder.mul(builder.constant(cv_x), qx),
+        builder.mul(builder.constant(cv_y), qy),
+    );
+    const ang_diff = builder.atan2Op(cross_2d, dot_v);
+    // In-arc: |ang_diff| ≤ half_angle  ⇔  half_angle − |ang_diff| ≥ 0.
+    const in_arc = step(
+        builder,
+        builder.sub(builder.constant(half_angle), builder.absOp(ang_diff)),
+    );
+
+    const to_right = step(builder, builder.sub(candidate_x, x));
+
+    return builder.mul(builder.mul(has, to_right), in_arc);
 }
 
 fn sdfSphere(builder: *B, x: NR, y: NR, z: NR, radius: f32) NR {
@@ -657,18 +874,30 @@ test "CameraFrame lookAt produces orthonormal right-handed basis" {
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), frame.basis_z[2], 1e-6);
 }
 
-test "lower rejects unsupported closed multi-primitive sketch" {
-    var nodes: [4]field_ir.FieldNode = undefined;
-    var prims: [4]field_ir.SketchPrimitive2d = undefined;
+test "lower closed unit square sketch reports inside/outside" {
+    // Unit square: (0,0) → (1,0) → (1,1) → (0,1) → (0,0).
+    var nodes: [8]field_ir.FieldNode = undefined;
+    var prims: [8]field_ir.SketchPrimitive2d = undefined;
     var builder_ir = field_ir.FieldBuilder.init(&nodes, &prims);
     const first = builder_ir.sketchLine(.{ 0.0, 0.0 }, .{ 1.0, 0.0 });
     _ = builder_ir.sketchLine(.{ 1.0, 0.0 }, .{ 1.0, 1.0 });
-    const sketch = builder_ir.sketch(first, 2, true, false);
+    _ = builder_ir.sketchLine(.{ 1.0, 1.0 }, .{ 0.0, 1.0 });
+    _ = builder_ir.sketchLine(.{ 0.0, 1.0 }, .{ 0.0, 0.0 });
+    const sketch = builder_ir.sketch(first, 4, true, false);
     const tree = builder_ir.finalize(sketch);
 
-    var ops: [128]tape_mod.Instruction = undefined;
-    var consts: [128]f32 = undefined;
+    var ops: [1024]tape_mod.Instruction = undefined;
+    var consts: [1024]f32 = undefined;
     var builder = tape_mod.TapeBuilder.init(&ops, &consts);
 
-    try std.testing.expectError(error.UnsupportedClosedSketch, lower(tree, &builder));
+    const out = try lower(tree, &builder);
+    const tape = builder.finalize(out);
+
+    var slots: [1024]f32 = undefined;
+    // Inside the square → SDF should be negative.
+    const inside = eval_mod.evalScalar(&tape, 0.5, 0.5, 0.0, slots[0..]);
+    try std.testing.expect(inside < 0.0);
+    // Outside to the right → SDF should be positive.
+    const outside = eval_mod.evalScalar(&tape, 2.0, 0.5, 0.0, slots[0..]);
+    try std.testing.expect(outside > 0.0);
 }

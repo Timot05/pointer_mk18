@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "dotnet fable watch src --outDir src-gen --run vite",
-    "build:fs": "dotnet fable src --outDir src-gen",
-    "build": "dotnet fable src --outDir src-gen && vite build",
+    "start": "dotnet fable watch App.fsproj --outDir src-gen --run vite",
+    "build:fs": "dotnet fable App.fsproj --outDir src-gen",
+    "build": "dotnet fable App.fsproj --outDir src-gen && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

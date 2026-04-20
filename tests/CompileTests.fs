@@ -487,8 +487,6 @@ let ``Default document produces the expected pickable counts`` () =
     let actions = (Document.defaultDocument()).Actions
     let r = pipeline actions
     let countBy pred = r.Pickables |> List.filter pred |> List.length
-    // 4 visible Field actions → 4 PickSurface
-    Assert.Equal(4, countBy (function PickSurface _ -> true | _ -> false))
     // sketch1: 4 points + 4 lines + 1 loop + 2 dimensions
     Assert.Equal(4, countBy (function PickPoint _ -> true | _ -> false))
     Assert.Equal(4, countBy (function PickLine _ -> true | _ -> false))
@@ -547,7 +545,6 @@ let ``Pickable list is stable across compiles of the same input`` () =
         | PickDimension(id, s, i, _) -> sprintf "dim|%d|%s|%d" id s i
         | PickFrameOrigin(id, f) -> sprintf "frame-origin|%d|%s" id f
         | PickFrameAxis(id, f, part) -> sprintf "frame-axis|%d|%s|%s" id f part
-        | PickSurface(id, a) -> sprintf "surf|%d|%s" id a
     let k1 = r1.Pickables |> List.map key
     let k2 = r2.Pickables |> List.map key
     Assert.Equal<string list>(k1, k2)

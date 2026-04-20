@@ -68,10 +68,43 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 let scene = Scene.create device ctx canvas dpr format atlas fontMetrics
 
                 // Field background renderer. Loads async; when ready, the
-                // render loop calls into it each frame.
+                // render loop calls into it each frame. Once initialized,
+                // push the current compiled IR so the coarse level renders
+                // immediately — otherwise we'd wait for the next store
+                // dispatch to trigger the subscription below.
                 let background : Kernel.Background.Background option ref = ref None
+                let mutable lastCompiled : obj = null
+                let mutable lastSlotValues : obj = null
+                // Doc reference changes on every action edit, including
+                // toggles that don't touch Compiled or SlotValues (e.g.
+                // flipping DisplaySettings.Enabled).
+                let mutable lastDoc : obj = null
+                let pushIr (bg: Kernel.Background.Background) =
+                    let state = AppStore.store.State
+                    // Include only surfaces whose action has the "show
+                    // iso-surface" display toggle on *and* is visible.
+                    // Default `DisplaySettings.Enabled` is `false`, so a
+                    // freshly loaded doc renders nothing until the user
+                    // opts in — matching the toggle state in the UI.
+                    let enabledActionIds =
+                        state.Doc.Actions
+                        |> List.choose (fun a ->
+                            let d = a.Display |> Option.defaultValue DisplaySettings.defaults
+                            if a.Visible && d.Enabled then Some a.Id else None)
+                        |> Set.ofList
+                    let surfaces =
+                        state.Compiled.Surfaces
+                        |> List.filter (fun s -> Set.contains s.ActionId enabledActionIds)
+                    match Kernel.FieldToIr.build surfaces state.SlotValues with
+                    | Some bytes -> Kernel.Background.updateIr bg bytes
+                    | None -> Kernel.Background.clear bg
+                    lastCompiled <- box state.Compiled
+                    lastSlotValues <- box state.SlotValues
+                    lastDoc <- box state.Doc
                 Kernel.Background.create scene
-                |> Promise.iter (fun bg -> background.Value <- Some bg)
+                |> Promise.iter (fun bg ->
+                    background.Value <- Some bg
+                    pushIr bg)
 
                 // Resize: update canvas size + recreate depth/pick textures.
                 let resize () =
@@ -89,21 +122,36 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 observe observer canvas
 
                 // Keep `pickableById` in sync with the compiled doc so input
-                // handlers can resolve pick IDs → Pickable records.
+                // handlers can resolve pick IDs → Pickable records. Same
+                // subscription pushes fresh IR to the background renderer
+                // whenever surface topology *or* slot values change.
                 let mutable pickableById : Map<int, Pickable> = Map.empty
-                let mutable lastCompiled : obj = null
-                let refreshPickables () =
+                let onStoreChange () =
                     let state = AppStore.store.State
                     let compiled = box state.Compiled
-                    if compiled <> lastCompiled then
-                        lastCompiled <- compiled
+                    let slots = box state.SlotValues
+                    let compiledChanged = compiled <> lastCompiled
+                    if compiledChanged then
                         let model = ViewerPipeline.viewerModel state
                         pickableById <-
                             model.Pickables
                             |> List.map (fun p -> Pickable.pickId p, p)
                             |> Map.ofList
-                Store.subscribe AppStore.store refreshPickables
-                refreshPickables ()
+                    // IR depends on topology (Compiled), values
+                    // (SlotValues — replaced on every drag/edit), *and*
+                    // the Doc (display toggles don't touch the first two).
+                    let doc = box state.Doc
+                    if compiledChanged || slots <> lastSlotValues || doc <> lastDoc then
+                        match background.Value with
+                        | Some bg -> pushIr bg
+                        | None ->
+                            // Background not mounted yet; pushIr runs on
+                            // create-resolve below and captures current state.
+                            lastCompiled <- compiled
+                            lastSlotValues <- slots
+                            lastDoc <- doc
+                Store.subscribe AppStore.store onStoreChange
+                onStoreChange ()
 
                 // Async 1×1 pick readback. Shared with input handlers.
                 let mutable pickInFlight = false

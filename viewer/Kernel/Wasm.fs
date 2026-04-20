@@ -16,6 +16,12 @@ let private fetch (url: obj) : JS.Promise<obj> = jsNative
 [<Emit("WebAssembly.instantiateStreaming($0, {})")>]
 let private instantiateStreaming (response: obj) : JS.Promise<obj> = jsNative
 
+[<Emit("WebAssembly.compileStreaming($0)")>]
+let private compileStreaming (response: obj) : JS.Promise<obj> = jsNative
+
+[<Emit("WebAssembly.instantiate($0, {})")>]
+let private instantiateModule (m: obj) : JS.Promise<obj> = jsNative
+
 [<Emit("new Uint8Array($0, $1, $2)")>]
 let private uint8View (buffer: obj) (offset: int) (length: int) : obj = jsNative
 
@@ -51,6 +57,25 @@ let load (url: string) : JS.Promise<Exports> =
         let! result = instantiateStreaming response
         let instance : obj = result?instance
         return unbox instance?exports
+    }
+
+/// Fetch + compile the WASM module once. The resulting `WebAssembly.Module`
+/// is structured-cloneable — post it to workers so they can skip the
+/// fetch + compile round-trip and just instantiate. Makes worker respawn
+/// a few ms instead of ~30 ms.
+let compile (url: string) : JS.Promise<obj> =
+    promise {
+        let! response = fetch (urlRelative url)
+        let! m = compileStreaming response
+        return m
+    }
+
+/// Instantiate a pre-compiled module. Async because instantiation can
+/// still take a few ms on large modules, but no fetch or compile.
+let instantiate (m: obj) : JS.Promise<Exports> =
+    promise {
+        let! inst = instantiateModule m
+        return unbox inst?exports
     }
 
 /// Write an IR blob (produced by `IrCodec.serialize`) into the kernel's

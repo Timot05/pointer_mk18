@@ -6,7 +6,7 @@ module Kernel.Worker
 // manager on the main thread.
 //
 // Protocol (main → worker):
-//   { kind: "init" }                                  → load WASM
+//   { kind: "init", wasmModule: WebAssembly.Module }  → instantiate
 //   { kind: "ir", bytes: Uint8Array }                 → IR.upload
 //   { kind: "camera", values: Float32Array }          → set_camera
 //   { kind: "render", epoch, level, tileX/Y/W/H,
@@ -41,7 +41,9 @@ let private handle (ev: obj) =
     let kind : string = data?kind
     match kind with
     | "init" ->
-        Wasm.load "/kernel/viewer.wasm"
+        // Main thread compiled the module once and shipped it here —
+        // just instantiate, no fetch / compile round-trip.
+        Wasm.instantiate (data?wasmModule)
         |> Promise.iter (fun x ->
             exports <- Some x
             postMessagePlain {| kind = "ready" |})

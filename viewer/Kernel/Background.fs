@@ -11,9 +11,11 @@ module Kernel.Background
 //   1. Tiles array = full tile grid of the current canvas.
 //   2. Each free worker is immediately sent the next tile from the
 //      queue.
-//   3. On a worker response we upload, mark the worker free, and push
-//      the next tile.
-//   4. When all tiles of the current level are uploaded, advance level.
+//   3. On a worker response we upload into the `pending` texture, mark
+//      the worker free, and push the next tile.
+//   4. When all tiles of the current level have landed, swap pending
+//      and display (ping-pong) so the shader reads from a fully
+//      consistent frame. Advance level.
 //   5. Camera change bumps `Epoch` — in-flight stale responses are
 //      discarded before upload.
 
@@ -27,6 +29,9 @@ open WebGPU
 [<Emit("navigator.hardwareConcurrency || 4")>]
 let private hardwareConcurrency : int = jsNative
 
+[<Emit("performance.now()")>]
+let private performanceNow () : float = jsNative
+
 /// Workers to spawn. Leave at least one core free for the main thread.
 let private workerCount () : int =
     max 1 (min 4 (hardwareConcurrency - 1))
@@ -35,6 +40,11 @@ let private workerCount () : int =
 let private MAX_TILE = 1024
 /// Coarsest refinement level we ever start from.
 let private START_LEVEL = 3
+/// How long the camera must stay still before we start climbing above
+/// `START_LEVEL`. Snappy motion stays pinned to the coarsest level so
+/// the display swaps every few ms; refinement only kicks in when the
+/// user has clearly stopped.
+let private MOTION_QUIET_MS = 50.0
 
 // ── Worker bindings ────────────────────────────────────────────────────
 
@@ -49,6 +59,9 @@ let private onError (w: obj) (h: obj -> unit) : unit = jsNative
 
 [<Emit("$0.postMessage($1)")>]
 let private post (w: obj) (msg: obj) : unit = jsNative
+
+[<Emit("$0.terminate()")>]
+let private terminate (w: obj) : unit = jsNative
 
 [<Emit("new Float32Array($0)")>]
 let private f32OfBuffer (buf: obj) : obj = jsNative
@@ -67,19 +80,34 @@ type private Tile =
       TileH: int }
 
 type private WorkerSlot =
-    { Handle: obj
-      mutable Ready: bool    // `ready` received
-      mutable Busy: bool }   // tile in flight
+    { mutable Handle: obj
+      mutable Ready: bool         // `ready` received
+      mutable Busy: bool           // tile in flight
+      mutable CurrentLevel: int }  // level of the in-flight tile
 
 type Background =
     private
         { Scene: Scene.Scene
           Workers: WorkerSlot[]
           FieldCameraBuffer: IGPUBuffer
-          IrBytes: obj        // cached for workers that come online later
-          mutable Texture: IGPUTexture
-          mutable TextureView: IGPUTextureView
-          mutable BindGroup: IGPUBindGroup
+          // Compiled WebAssembly.Module cached on the main thread so
+          // workers (including respawns) instantiate instantly.
+          WasmModule: obj
+          // Cached IR bytes for workers that come online later. Null
+          // until the editor ships us a real field.
+          mutable IrBytes: obj
+          mutable HasIr: bool
+          // Ping-pong textures: shader always samples `Display`; workers
+          // always write into `Pending`. On level complete we swap.
+          mutable DisplayTexture: IGPUTexture
+          mutable DisplayView: IGPUTextureView
+          mutable DisplayBindGroup: IGPUBindGroup
+          mutable PendingTexture: IGPUTexture
+          mutable PendingView: IGPUTextureView
+          mutable PendingBindGroup: IGPUBindGroup
+          // False until the first level completes — no draw is issued
+          // before that so we don't sample uninitialized texels.
+          mutable HasDisplay: bool
           mutable Width: int
           mutable Height: int
           mutable Tiles: Tile[]
@@ -91,7 +119,10 @@ type Background =
           // Bumped on any camera/size change. Stale worker responses
           // carry an old epoch and get discarded.
           mutable Epoch: int
-          mutable LastCameraKey: float }
+          mutable LastCameraKey: float
+          // Timestamp (performance.now) of the last camera change. Used
+          // to decide when to stop re-rendering level 3 and advance.
+          mutable LastCameraChangeMs: float }
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -162,23 +193,18 @@ let private writeFieldCamera
            float32 viewHalfW;    float32 viewHalfH;    0.0f;                 0.0f |]
     WebGPU.writeFloat32 device.queue buffer 0 data
 
-let private buildDemoIr () : obj =
-    let ir = IrCodec.create ()
-    let outer = IrCodec.sphere ir 18.0
-    let cut = IrCodec.translate ir 10.0 0.0 10.0 (IrCodec.sphere ir 11.0)
-    let root = IrCodec.subtract ir outer cut
-    IrCodec.serialize ir root
-
 // ── Dispatch ───────────────────────────────────────────────────────────
 
 /// Send one tile to a free worker; no-op if none are free.
 let private dispatch (bg: Background) (slot: WorkerSlot) =
     if slot.Busy || not slot.Ready then () else
+    if not bg.HasIr then () else
     if bg.Level > bg.MaxLevel then () else
     if bg.TilesEmitted >= bg.Tiles.Length then () else
     let tile = bg.Tiles.[bg.TilesEmitted]
     bg.TilesEmitted <- bg.TilesEmitted + 1
     slot.Busy <- true
+    slot.CurrentLevel <- bg.Level
     let aspect = float bg.Width / max (float bg.Height) 1.0
     let vhh = viewHalfV bg.Scene.Camera
     let vhw = vhh * aspect
@@ -208,7 +234,7 @@ let private uploadRenderedTile (bg: Background) (data: obj) =
     if isNull buffer then () else
     let view = f32OfBuffer buffer
     let destination =
-        {| texture = bg.Texture
+        {| texture = bg.PendingTexture
            origin = {| x = tileX; y = tileY; z = 0 |} |}
     let dataLayout =
         {| offset = 0
@@ -220,15 +246,32 @@ let private uploadRenderedTile (bg: Background) (data: obj) =
            depthOrArrayLayers = 1 |}
     writeTexture bg.Scene.Device (box destination) view (box dataLayout) (box size)
 
+/// Swap pending ↔ display. Pending's contents are now complete and
+/// consistent; the old display texture becomes the next pending (its
+/// stale content will be fully overwritten by the next level's tiles).
+let private swapDisplay (bg: Background) =
+    let t = bg.DisplayTexture
+    let v = bg.DisplayView
+    let g = bg.DisplayBindGroup
+    bg.DisplayTexture <- bg.PendingTexture
+    bg.DisplayView <- bg.PendingView
+    bg.DisplayBindGroup <- bg.PendingBindGroup
+    bg.PendingTexture <- t
+    bg.PendingView <- v
+    bg.PendingBindGroup <- g
+    bg.HasDisplay <- true
+
 let private handleResponse (bg: Background) (slot: WorkerSlot) (data: obj) =
     let kind : string = data?kind
     match kind with
     | "ready" ->
         slot.Ready <- true
-        // IR upload is the next step for this worker.
-        post slot.Handle {| kind = "ir"; bytes = bg.IrBytes |}
-        // Camera too, so it's ready to render.
-        post slot.Handle {| kind = "camera"; values = cameraValues bg.Scene.Camera |}
+        // IR might not be available yet at spawn time; `updateIr` will
+        // push it directly once the editor compiles a field.
+        if bg.HasIr then
+            post slot.Handle {| kind = "ir"; bytes = bg.IrBytes |}
+            post slot.Handle
+                {| kind = "camera"; values = cameraValues bg.Scene.Camera |}
     | "ir-done" ->
         // Worker is now fully initialized. Kick off the first tile.
         dispatch bg slot
@@ -239,13 +282,41 @@ let private handleResponse (bg: Background) (slot: WorkerSlot) (data: obj) =
             uploadRenderedTile bg data
             bg.TilesRendered <- bg.TilesRendered + 1
             if bg.TilesRendered >= bg.Tiles.Length then
-                bg.Level <- bg.Level + 1
-                bg.TilesEmitted <- 0
-                bg.TilesRendered <- 0
+                // Level complete → promote pending to display in one
+                // atomic swap so the user never sees a partial level.
+                swapDisplay bg
+                // Only climb to the next refinement level when the
+                // camera has been still for a bit. During motion we
+                // stay pinned at START_LEVEL so each frame can complete
+                // a fast coarse render; refinement is a quiet-window
+                // luxury.
+                let stable =
+                    performanceNow () - bg.LastCameraChangeMs > MOTION_QUIET_MS
+                if stable && bg.Level < bg.MaxLevel then
+                    bg.Level <- bg.Level + 1
+                    bg.TilesEmitted <- 0
+                    bg.TilesRendered <- 0
+                // else: leave tile counters at their max so dispatch is
+                // a no-op until either the camera moves (update() resets
+                // everything) or stability is detected in update() and
+                // the next level gets kicked off there.
         // Keep the worker busy with the next tile (either the current
         // level's remainder, or the next level's first tile).
         dispatch bg slot
     | _ -> ()
+
+/// Spawn a fresh worker for `slot`, wire up handlers, and kick off init.
+/// The worker replies "ready" → we send IR + camera → "ir-done" → dispatch.
+let private initSlot (bg: Background) (slot: WorkerSlot) =
+    slot.Handle <- createWorker "./Worker.js"
+    slot.Ready <- false
+    slot.Busy <- false
+    slot.CurrentLevel <- 0
+    onMessage slot.Handle (fun ev -> handleResponse bg slot (ev?data))
+    onError slot.Handle (fun ev ->
+        console.error ("kernel worker error", ev)
+        slot.Busy <- false)
+    post slot.Handle {| kind = "init"; wasmModule = bg.WasmModule |}
 
 // ── Public API ─────────────────────────────────────────────────────────
 
@@ -253,29 +324,37 @@ let private handleResponse (bg: Background) (slot: WorkerSlot) (data: obj) =
 /// asynchronously; tiles start flowing as soon as each one is ready.
 let create (scene: Scene.Scene) : JS.Promise<Background> =
     promise {
+        // Compile once on the main thread; structured-clone the module
+        // to every worker (and every respawn) to skip fetch + compile.
+        let! wasmModule = Wasm.compile "/kernel/viewer.wasm"
+
         let w = max 1 (int scene.Canvas.width)
         let h = max 1 (int scene.Canvas.height)
-        let texture = createTexture scene.Device w h
-        let view = texture.createView ()
+        let displayTexture = createTexture scene.Device w h
+        let displayView = displayTexture.createView ()
+        let pendingTexture = createTexture scene.Device w h
+        let pendingView = pendingTexture.createView ()
         let fieldBuffer =
             scene.Device.createBuffer
                 { size = 80
                   usage = GPUBufferUsage.Uniform ||| GPUBufferUsage.CopyDst }
-        let bindGroup =
+        let displayBindGroup =
             buildBindGroup scene.Device scene.BackgroundBindGroupLayout
-                view scene.BackgroundSampler fieldBuffer
+                displayView scene.BackgroundSampler fieldBuffer
+        let pendingBindGroup =
+            buildBindGroup scene.Device scene.BackgroundBindGroupLayout
+                pendingView scene.BackgroundSampler fieldBuffer
 
         // Reasonable placeholder: the kernel's max_render_level is 7
         // (PER_PIXEL_LEVEL). Worker echoes it back once ready, but we
         // don't want to block on that — use the known constant.
         let maxLevel = 7
 
-        let ir = buildDemoIr ()
-
+        // Placeholder slots — `initSlot` below replaces .Handle and
+        // wires up message handlers once `bg` exists.
         let workers : WorkerSlot[] =
             Array.init (workerCount ()) (fun _ ->
-                let handle = createWorker "./Worker.js"
-                { Handle = handle; Ready = false; Busy = false })
+                { Handle = null; Ready = false; Busy = false; CurrentLevel = 0 })
 
         let aspect = float w / max (float h) 1.0
         let vhh = viewHalfV scene.Camera
@@ -286,10 +365,16 @@ let create (scene: Scene.Scene) : JS.Promise<Background> =
             { Scene = scene
               Workers = workers
               FieldCameraBuffer = fieldBuffer
-              IrBytes = ir
-              Texture = texture
-              TextureView = view
-              BindGroup = bindGroup
+              WasmModule = wasmModule
+              IrBytes = null
+              HasIr = false
+              DisplayTexture = displayTexture
+              DisplayView = displayView
+              DisplayBindGroup = displayBindGroup
+              PendingTexture = pendingTexture
+              PendingView = pendingView
+              PendingBindGroup = pendingBindGroup
+              HasDisplay = false
               Width = w
               Height = h
               Tiles = makeTiles w h
@@ -298,30 +383,31 @@ let create (scene: Scene.Scene) : JS.Promise<Background> =
               TilesEmitted = 0
               TilesRendered = 0
               Epoch = 0
-              LastCameraKey = cameraKey scene.Camera }
+              LastCameraKey = cameraKey scene.Camera
+              LastCameraChangeMs = performanceNow () }
 
-        // Wire up message handlers (closes over bg) and kick each worker
-        // into initialization.
-        for slot in workers do
-            onMessage slot.Handle (fun ev -> handleResponse bg slot (ev?data))
-            onError slot.Handle (fun ev ->
-                console.error ("kernel worker error", ev)
-                slot.Busy <- false)
-            post slot.Handle {| kind = "init" |}
+        for slot in workers do initSlot bg slot
 
         return bg
     }
 
 let resize (bg: Background) (w: int) (h: int) =
     if w = bg.Width && h = bg.Height then () else
-    bg.Texture.destroy ()
+    bg.DisplayTexture.destroy ()
+    bg.PendingTexture.destroy ()
     bg.Width <- w
     bg.Height <- h
-    bg.Texture <- createTexture bg.Scene.Device w h
-    bg.TextureView <- bg.Texture.createView ()
-    bg.BindGroup <-
+    bg.DisplayTexture <- createTexture bg.Scene.Device w h
+    bg.DisplayView <- bg.DisplayTexture.createView ()
+    bg.DisplayBindGroup <-
         buildBindGroup bg.Scene.Device bg.Scene.BackgroundBindGroupLayout
-            bg.TextureView bg.Scene.BackgroundSampler bg.FieldCameraBuffer
+            bg.DisplayView bg.Scene.BackgroundSampler bg.FieldCameraBuffer
+    bg.PendingTexture <- createTexture bg.Scene.Device w h
+    bg.PendingView <- bg.PendingTexture.createView ()
+    bg.PendingBindGroup <-
+        buildBindGroup bg.Scene.Device bg.Scene.BackgroundBindGroupLayout
+            bg.PendingView bg.Scene.BackgroundSampler bg.FieldCameraBuffer
+    bg.HasDisplay <- false
     bg.Tiles <- makeTiles w h
     bg.Level <- START_LEVEL
     bg.TilesEmitted <- 0
@@ -341,22 +427,84 @@ let update (bg: Background) =
     let key = cameraKey bg.Scene.Camera
     if key <> bg.LastCameraKey then
         bg.LastCameraKey <- key
+        bg.LastCameraChangeMs <- performanceNow ()
         bg.Epoch <- bg.Epoch + 1
         bg.Level <- START_LEVEL
         bg.TilesEmitted <- 0
         bg.TilesRendered <- 0
         writeFieldCamera bg.Scene.Device bg.FieldCameraBuffer
             bg.Scene.Camera vhw vhh
+        // Kill workers stuck on a slow high-detail tile so the coarse
+        // level can start dispatching now instead of after they finish.
+        // Level-3 tiles are fast (~ms) — we let those complete naturally
+        // to avoid thrashing on continuous camera motion. Respawn is
+        // cheap because the compiled WASM module is shared from main.
         let camVals = cameraValues bg.Scene.Camera
         for slot in bg.Workers do
-            if slot.Ready then
+            if slot.Busy && slot.CurrentLevel > START_LEVEL then
+                terminate slot.Handle
+                initSlot bg slot
+            elif slot.Ready then
                 post slot.Handle {| kind = "camera"; values = camVals |}
+    elif bg.Level < bg.MaxLevel
+         && bg.TilesRendered >= bg.Tiles.Length
+         && performanceNow () - bg.LastCameraChangeMs > MOTION_QUIET_MS then
+        // Quiet transition: camera stopped moving, current level has
+        // finished, and we're not yet at max detail → kick off the next
+        // refinement level. This handles the case where handleResponse
+        // saw motion and declined to advance; nothing else would have
+        // restarted dispatch.
+        bg.Level <- bg.Level + 1
+        bg.TilesEmitted <- 0
+        bg.TilesRendered <- 0
 
     // Keep the pool saturated — cheap when everyone's already busy.
     dispatchAll bg
 
 let draw (bg: Background) (pass: IGPURenderPassEncoder) =
+    if not bg.HasDisplay then () else
     pass.setPipeline bg.Scene.BackgroundPipeline
-    pass.setBindGroup(0, bg.BindGroup)
+    pass.setBindGroup(0, bg.DisplayBindGroup)
     pass.setBindGroup(1, bg.Scene.CameraBindGroup)
     pass.draw 3
+
+/// Editor sends new IR bytes (topology or slot-value change). Cache for
+/// late-joining workers, broadcast to the ready ones, and restart the
+/// refinement pyramid so the next frame shows the updated field.
+let updateIr (bg: Background) (bytes: obj) =
+    bg.IrBytes <- bytes
+    bg.HasIr <- true
+    bg.Epoch <- bg.Epoch + 1
+    bg.Level <- START_LEVEL
+    bg.TilesEmitted <- 0
+    bg.TilesRendered <- 0
+    // Treat an IR change like a camera change: pin at level 3 briefly so
+    // a fast coarse frame lands before refinement resumes.
+    bg.LastCameraChangeMs <- performanceNow ()
+    let camVals = cameraValues bg.Scene.Camera
+    for slot in bg.Workers do
+        if slot.Busy then
+            // In-flight tile would land on the old IR. Respawn — the new
+            // worker picks up the fresh IR through its ready handshake.
+            terminate slot.Handle
+            initSlot bg slot
+        elif slot.Ready then
+            post slot.Handle {| kind = "ir"; bytes = bytes |}
+            post slot.Handle {| kind = "camera"; values = camVals |}
+        // else: still booting; "ready" handler will read bg.IrBytes.
+
+/// Editor reports there's nothing to render (no surfaces, or all empty).
+/// Blank the display and stop workers so we don't keep chewing on the
+/// previous field.
+let clear (bg: Background) =
+    bg.HasIr <- false
+    bg.IrBytes <- null
+    bg.HasDisplay <- false
+    bg.Epoch <- bg.Epoch + 1
+    bg.Level <- START_LEVEL
+    bg.TilesEmitted <- 0
+    bg.TilesRendered <- 0
+    for slot in bg.Workers do
+        if slot.Busy then
+            terminate slot.Handle
+            initSlot bg slot

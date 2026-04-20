@@ -91,6 +91,7 @@
          Must come after Scene (Background reads from it) and before
          Render (Render draws the background). -->
     <Compile Include="viewer\Kernel\IrCodec.fs" />
+    <Compile Include="viewer\Kernel\FieldToIr.fs" />
     <Compile Include="viewer\Kernel\Wasm.fs" />
     <Compile Include="viewer\Kernel\Worker.fs" />
     <Compile Include="viewer\Kernel\Background.fs" />

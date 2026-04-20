@@ -43,6 +43,11 @@ type Scene =
       WorldPointPipeline: IGPURenderPipeline
       WorldPointPickPipeline: IGPURenderPipeline
       LabelPipeline: IGPURenderPipeline
+      BackgroundPipeline: IGPURenderPipeline
+
+      // Background blit (kernel pixel-buffer → full-screen triangle).
+      BackgroundBindGroupLayout: IGPUBindGroupLayout
+      BackgroundSampler: IGPUSampler
 
       // Static geometry
       PointQuadBuffer: IGPUBuffer
@@ -445,6 +450,53 @@ let create
                    depthStencil =
                     {| format = "depth24plus"; depthWriteEnabled = false; depthCompare = "less" |} |})
 
+    // ── Background: field G-buffer → shaded + depth-writing draw ─────
+    // Samples a rgba32float texture (normal.xyz, wcz), reconstructs the
+    // hit's world position, writes frag_depth via the viewer's camera so
+    // sketches z-test against the field surface. Sampler is non-filtering
+    // because rgba32float filtering needs the `float32-filterable` feature.
+    let backgroundShader = device.createShaderModule { code = Shaders.background }
+
+    let backgroundBindGroupLayout =
+        device.createBindGroupLayout
+            { entries =
+                [| box
+                    {| binding = 0
+                       visibility = GPUShaderStage.Fragment
+                       texture =
+                        {| sampleType = "unfilterable-float"; viewDimension = "2d" |} |}
+                   box
+                    {| binding = 1
+                       visibility = GPUShaderStage.Fragment
+                       sampler = {| ``type`` = "non-filtering" |} |}
+                   box
+                    {| binding = 2
+                       visibility = GPUShaderStage.Fragment
+                       buffer = {| ``type`` = "uniform" |} |} |] }
+
+    let backgroundSampler =
+        device.createSampler
+            (box
+                {| magFilter = "nearest"; minFilter = "nearest"
+                   addressModeU = "clamp-to-edge"; addressModeV = "clamp-to-edge" |})
+
+    let backgroundPipelineLayout =
+        device.createPipelineLayout
+            { bindGroupLayouts = [| backgroundBindGroupLayout; cameraBindGroupLayout |] }
+
+    let backgroundPipeline =
+        device.createRenderPipeline
+            (box
+                {| layout = backgroundPipelineLayout
+                   vertex = {| ``module`` = backgroundShader; entryPoint = "vs" |}
+                   fragment =
+                    {| ``module`` = backgroundShader
+                       entryPoint = "fs"
+                       targets = [| {| format = format |} |] |}
+                   primitive = {| topology = "triangle-list" |}
+                   depthStencil =
+                    {| format = "depth24plus"; depthWriteEnabled = true; depthCompare = "less" |} |})
+
     { Device = device
       Ctx = ctx
       Canvas = canvas
@@ -473,6 +525,10 @@ let create
       WorldPointPipeline = worldPointPipeline
       WorldPointPickPipeline = worldPointPickPipeline
       LabelPipeline = labelPipeline
+      BackgroundPipeline = backgroundPipeline
+
+      BackgroundBindGroupLayout = backgroundBindGroupLayout
+      BackgroundSampler = backgroundSampler
 
       PointQuadBuffer = pointQuadBuffer
       LinePickCornerBuffer = linePickCornerBuffer

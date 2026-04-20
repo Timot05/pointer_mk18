@@ -36,7 +36,10 @@ let private axesOf (transform: RigidTransform) =
     pos, xAxis, yAxis
 
 /// Render one frame. Call from a requestAnimationFrame loop in Viewer.
-let renderFrame (scene: Scene.Scene) (toolCursor: (ActionId * float * float) option) =
+let renderFrame
+        (scene: Scene.Scene)
+        (toolCursor: (ActionId * float * float) option)
+        (background: Kernel.Background.Background option) =
     let w : int = scene.Canvas?width
     let h : int = scene.Canvas?height
 
@@ -61,6 +64,13 @@ let renderFrame (scene: Scene.Scene) (toolCursor: (ActionId * float * float) opt
 
     let colorPass =
         WebGPU.beginRenderPassClearColor encoder colorView 0.996 0.988 0.953 depthView
+
+    // Field background — drawn first so every sketch/overlay paints on top.
+    match background with
+    | Some bg ->
+        Kernel.Background.update bg
+        Kernel.Background.draw bg colorPass
+    | None -> ()
 
     let state = AppStore.store.State
     let model = ViewerPipeline.viewerModel state

@@ -86,14 +86,18 @@
     <Compile Include="viewer\Shaders.fs" />
     <Compile Include="viewer\BufferPool.fs" />
     <Compile Include="viewer\Scene.fs" />
+
+    <!-- viewer / Kernel (Zig WASM field renderer, F# bindings).
+         Must come after Scene (Background reads from it) and before
+         Render (Render draws the background). -->
+    <Compile Include="viewer\Kernel\IrCodec.fs" />
+    <Compile Include="viewer\Kernel\Wasm.fs" />
+    <Compile Include="viewer\Kernel\Background.fs" />
+
     <Compile Include="viewer\DimensionEditor.fs" />
     <Compile Include="viewer\Input.fs" />
     <Compile Include="viewer\Render.fs" />
     <Compile Include="viewer\Viewer.fs" />
-
-    <!-- viewer / Kernel (Zig WASM field renderer, F# bindings) -->
-    <Compile Include="viewer\Kernel\IrCodec.fs" />
-    <Compile Include="viewer\Kernel\FieldsViewer.fs" />
 
     <!-- entry point -->
     <Compile Include="ui\Program.fs" />

@@ -3,7 +3,6 @@ const tape_mod = @import("tape.zig");
 const field_ir = @import("field_ir.zig");
 const lower_mod = @import("lower.zig");
 const voxel_mod = @import("voxel.zig");
-const image_mod = @import("image.zig");
 
 // ── Scene storage ────────────────────────────────────────────────────────
 // The host uploads a serialized Field IR tree. Zig decodes it into these
@@ -24,9 +23,15 @@ var scene_loaded: bool = false;
 const IR_UPLOAD_CAPACITY: usize = 64 * 1024;
 var ir_upload_buffer: [IR_UPLOAD_CAPACITY]u8 align(4) = undefined;
 
-// ── Pixel output buffer (shared by voxel render) ─────────────────────────
-const PIXEL_CAP: usize = @as(usize, voxel_mod.MAX_W) * voxel_mod.MAX_H * 4;
-var pixel_buffer: [PIXEL_CAP]u8 = undefined;
+// ── G-buffer output (shared by voxel render) ────────────────────────────
+// One rgba32float per pixel: (normal.x, normal.y, normal.z, wcz). Miss
+// pixels write wcz = -inf so the host fragment shader can discard them.
+const GBUFFER_FLOATS: usize = @as(usize, voxel_mod.MAX_W) * voxel_mod.MAX_H * 4;
+var gbuffer: [GBUFFER_FLOATS]f32 = undefined;
+
+// ── Camera upload buffer (JS writes 12 f32s, then calls set_camera) ──────
+// Layout: eye(3), basis_x(3), basis_y(3), basis_z(3).
+var camera_buffer: [12]f32 align(4) = undefined;
 
 // ── IR binary format ─────────────────────────────────────────────────────
 //
@@ -162,24 +167,22 @@ export fn ir_upload(byte_len: usize) u32 {
     return 0;
 }
 
-// Directly mutates the camera frame in the lowered tape — no re-lowering.
-// Caller passes the world-space eye and the three camera-local basis vectors
-// expressed in world space; the tape evaluates SDF at
+// Caller writes 12 f32s into `camera_buffer` (via `camera_buffer_ptr`),
+// then calls `set_camera()`. The tape evaluates SDF at
 // `world = eye + bx*wcx + by*wcy + bz*wcz` for each ray sample.
 // Returns 0 on success, 1 if no scene is loaded yet.
-export fn set_camera(
-    ex: f32, ey: f32, ez: f32,
-    bxx: f32, bxy: f32, bxz: f32,
-    byx: f32, byy: f32, byz: f32,
-    bzx: f32, bzy: f32, bzz: f32,
-) u32 {
+export fn camera_buffer_ptr() [*]f32 {
+    return @ptrCast(&camera_buffer);
+}
+
+export fn set_camera() u32 {
     if (!scene_loaded) return 1;
     const cam = scene_camera orelse return 1;
     cam.setFrame(&scene_tape, .{
-        .eye = .{ ex, ey, ez },
-        .basis_x = .{ bxx, bxy, bxz },
-        .basis_y = .{ byx, byy, byz },
-        .basis_z = .{ bzx, bzy, bzz },
+        .eye = .{ camera_buffer[0], camera_buffer[1], camera_buffer[2] },
+        .basis_x = .{ camera_buffer[3], camera_buffer[4], camera_buffer[5] },
+        .basis_y = .{ camera_buffer[6], camera_buffer[7], camera_buffer[8] },
+        .basis_z = .{ camera_buffer[9], camera_buffer[10], camera_buffer[11] },
     });
     return 0;
 }
@@ -278,43 +281,57 @@ inline fn readU32(rec: *const [IR_NODE_SIZE]u8, comptime offset: usize) u32 {
 
 // ── Exports: voxel render ───────────────────────────────────────────────
 
-export fn pixel_buffer_ptr() [*]u8 {
-    return @ptrCast(&pixel_buffer);
+export fn gbuffer_ptr() [*]f32 {
+    return @ptrCast(&gbuffer);
 }
 
-// Renders one frame of the current scene with the voxel SDF renderer into
-// the shared pixel buffer. Returns total pixels written (= width*height
-// for a successful call, 0 on oversized dims or empty scene).
+// Renders one TILE of the current scene and packs its G-buffer into
+// `gbuffer` as rgba32float: (normal.x, normal.y, normal.z, wcz) per pixel.
+// The host uploads these floats to a WebGPU rgba32float texture and does
+// shading + depth projection on the GPU.
+//
+// The tile covers the sub-rect `[tile_x, tile_x+tile_width) × [tile_y,
+// tile_y+tile_height)` of a full image that's `full_width × full_height`
+// pixels. `view_half_w/h` describe the view-space half-extents of the
+// FULL image (not the tile); the kernel computes per-pixel rays as if
+// rendering the full image and then only emits the requested sub-rect.
+//
+// Callers split larger canvases into tiles each ≤ MAX_W × MAX_H.
+//
+// Returns tile_width*tile_height on success, 0 on empty scene / oversized
+// tile / malformed sub-rect.
 export fn render_voxels(
-    width: u32,
-    height: u32,
+    tile_width: u32, tile_height: u32,
+    full_width: u32, full_height: u32,
+    tile_x: u32, tile_y: u32,
     view_half_w: f32, view_half_h: f32,
     half: f32,
     level: u32,
 ) u32 {
     if (!scene_loaded) return 0;
-    if (width == 0 or height == 0) return 0;
-    if (width > voxel_mod.MAX_W or height > voxel_mod.MAX_H) return 0;
+    if (tile_width == 0 or tile_height == 0) return 0;
+    if (tile_width > voxel_mod.MAX_W or tile_height > voxel_mod.MAX_H) return 0;
+    if (tile_x + tile_width > full_width) return 0;
+    if (tile_y + tile_height > full_height) return 0;
     const r = voxel_mod.render(
         &scene_tape,
-        width,
-        height,
-        view_half_w,
-        view_half_h,
+        tile_width, tile_height,
+        full_width, full_height,
+        tile_x, tile_y,
+        view_half_w, view_half_h,
         half,
         level,
     );
-    image_mod.resolveGbuffer(
-        @ptrCast(&pixel_buffer),
-        width,
-        height,
-        r.depth,
-        r.normal,
-        view_half_w,
-        view_half_h,
-        .world_pos_lit,
-    );
-    return width * height;
+    // Interleave normal + depth into rgba32float (nx, ny, nz, wcz).
+    const total: usize = @as(usize, tile_width) * @as(usize, tile_height);
+    var i: usize = 0;
+    while (i < total) : (i += 1) {
+        gbuffer[i * 4 + 0] = r.normal[i * 3 + 0];
+        gbuffer[i * 4 + 1] = r.normal[i * 3 + 1];
+        gbuffer[i * 4 + 2] = r.normal[i * 3 + 2];
+        gbuffer[i * 4 + 3] = r.depth[i];
+    }
+    return tile_width * tile_height;
 }
 
 export fn max_voxel_width() u32 {

@@ -1,0 +1,77 @@
+module Kernel.Wasm
+
+// Thin bindings over the Zig kernel's WASM exports. Not much logic here —
+// this module only loads the module and exposes its exported functions
+// via a typed record.
+
+open Fable.Core
+open Fable.Core.JsInterop
+
+[<Emit("new URL($0, import.meta.url)")>]
+let private urlRelative (path: string) : obj = jsNative
+
+[<Emit("fetch($0)")>]
+let private fetch (url: obj) : JS.Promise<obj> = jsNative
+
+[<Emit("WebAssembly.instantiateStreaming($0, {})")>]
+let private instantiateStreaming (response: obj) : JS.Promise<obj> = jsNative
+
+[<Emit("new Uint8Array($0, $1, $2)")>]
+let private uint8View (buffer: obj) (offset: int) (length: int) : obj = jsNative
+
+[<Emit("new Float32Array($0, $1, $2)")>]
+let private f32View (buffer: obj) (offset: int) (length: int) : obj = jsNative
+
+[<Emit("$0.set($1)")>]
+let private copyInto (dst: obj) (src: obj) : unit = jsNative
+
+/// Typed shape of the kernel's WASM `instance.exports`. Keep in sync with
+/// `kernel/src/main.zig`.
+type Exports =
+    abstract memory: obj with get
+    abstract ir_upload_buffer_ptr: unit -> int
+    abstract ir_upload: byteLen: int -> int
+    abstract camera_buffer_ptr: unit -> int
+    abstract set_camera: unit -> int
+    abstract gbuffer_ptr: unit -> int
+    abstract render_voxels:
+        tile_width: int * tile_height: int *
+        full_width: int * full_height: int *
+        tile_x: int * tile_y: int *
+        view_half_w: float * view_half_h: float *
+        half: float * level: int -> int
+    abstract max_voxel_width: unit -> int
+    abstract max_voxel_height: unit -> int
+    abstract max_render_level: unit -> int
+
+/// Load the kernel's WASM from the given URL (typically `/kernel/viewer.wasm`).
+let load (url: string) : JS.Promise<Exports> =
+    promise {
+        let! response = fetch (urlRelative url)
+        let! result = instantiateStreaming response
+        let instance : obj = result?instance
+        return unbox instance?exports
+    }
+
+/// Write an IR blob (produced by `IrCodec.serialize`) into the kernel's
+/// upload buffer and invoke `ir_upload`. Returns the kernel's status code.
+let uploadIr (x: Exports) (ir: obj) : int =
+    let len : int = ir?length
+    let dst = uint8View x.memory?buffer (x.ir_upload_buffer_ptr ()) len
+    copyInto dst ir
+    x.ir_upload len
+
+/// Write the 12 camera floats (eye, basis_x, basis_y, basis_z) into the
+/// kernel's camera buffer and invoke `set_camera`.
+let setCamera (x: Exports) (values: float32[]) : int =
+    if values.Length <> 12 then
+        failwithf "setCamera expects 12 floats, got %d" values.Length
+    let dst = f32View x.memory?buffer (x.camera_buffer_ptr ()) 12
+    copyInto dst values
+    x.set_camera ()
+
+/// View into the kernel's G-buffer output for a tile of `w × h` pixels —
+/// 4 floats per pixel (nx, ny, nz, wcz). Same-memory view, no copy;
+/// pass directly to `device.queue.writeTexture`.
+let gbufferView (x: Exports) (w: int) (h: int) : obj =
+    f32View x.memory?buffer (x.gbuffer_ptr ()) (w * h * 4)

@@ -85,8 +85,15 @@ var normal_buf: [MAX_W * MAX_H * 3]f32 = undefined;
 const BuildCtx = struct {
     stats: *Stats,
     pixel_world: f32,
+    // Tile-local iteration bounds (pixels in this render call's output).
     width: u32,
     height: u32,
+    // Full-image pixel dimensions + this tile's offset within the full image.
+    // Used to compute world-space ray positions in the full-image NDC.
+    full_width: u32,
+    full_height: u32,
+    tile_x: u32,
+    tile_y: u32,
     image_depth_vox: u32,
     view_half_w: f32,
     view_half_h: f32,
@@ -96,21 +103,22 @@ const BuildCtx = struct {
 
 pub fn render(
     tape: *const tape_mod.Tape,
-    width: u32,
-    height: u32,
-    view_half_w: f32,
-    view_half_h: f32,
+    tile_width: u32, tile_height: u32,
+    full_width: u32, full_height: u32,
+    tile_x: u32, tile_y: u32,
+    view_half_w: f32, view_half_h: f32,
     half: f32,
     max_level: u32,
 ) RenderResult {
-    const pixel_world_x: f32 = 2.0 * view_half_w / @as(f32, @floatFromInt(width));
-    const pixel_world_y: f32 = 2.0 * view_half_h / @as(f32, @floatFromInt(height));
+    // pixel_world is the world-space extent of one full-image pixel.
+    const pixel_world_x: f32 = 2.0 * view_half_w / @as(f32, @floatFromInt(full_width));
+    const pixel_world_y: f32 = 2.0 * view_half_h / @as(f32, @floatFromInt(full_height));
     const pixel_world: f32 = @min(pixel_world_x, pixel_world_y);
 
     var stats: Stats = .{};
     stats.original_tape_ops = @intCast(tape.ops.len);
 
-    const total_px: usize = @as(usize, width) * @as(usize, height);
+    const total_px: usize = @as(usize, tile_width) * @as(usize, tile_height);
     clearDepthBuffer(total_px);
 
     const image_depth_vox: u32 = @intFromFloat(@ceil((2.0 * half) / pixel_world));
@@ -118,8 +126,12 @@ pub fn render(
     var bctx: BuildCtx = .{
         .stats = &stats,
         .pixel_world = pixel_world,
-        .width = width,
-        .height = height,
+        .width = tile_width,
+        .height = tile_height,
+        .full_width = full_width,
+        .full_height = full_height,
+        .tile_x = tile_x,
+        .tile_y = tile_y,
         .image_depth_vox = image_depth_vox,
         .view_half_w = view_half_w,
         .view_half_h = view_half_h,
@@ -127,11 +139,11 @@ pub fn render(
         .max_level = @min(max_level, PER_PIXEL_LEVEL),
     };
 
-    // Iterate top-level tiles. Z front-to-back (high vz first, which is
-    // high wcz = closer to camera).
+    // Iterate top-level tiles of this sub-region. Z front-to-back (high
+    // vz first, which is high wcz = closer to camera).
     const root_size = TILE_SIZES[0];
-    const nx = (width + root_size - 1) / root_size;
-    const ny = (height + root_size - 1) / root_size;
+    const nx = (tile_width + root_size - 1) / root_size;
+    const ny = (tile_height + root_size - 1) / root_size;
     const nz = (image_depth_vox + root_size - 1) / root_size;
 
     var zt: u32 = nz;
@@ -270,13 +282,16 @@ fn renderTileRecurse(
 }
 
 inline fn pixelToWorldX(ctx: *const BuildCtx, px: u32) f32 {
-    const wf: f32 = @floatFromInt(ctx.width);
-    return (@as(f32, @floatFromInt(px)) / wf * 2.0 - 1.0) * ctx.view_half_w;
+    // px is tile-local; convert to full-image pixel before NDC.
+    const full: f32 = @floatFromInt(ctx.full_width);
+    const absolute: f32 = @floatFromInt(ctx.tile_x + px);
+    return (absolute / full * 2.0 - 1.0) * ctx.view_half_w;
 }
 
 inline fn pixelToWorldY(ctx: *const BuildCtx, py: u32) f32 {
-    const hf: f32 = @floatFromInt(ctx.height);
-    return (1.0 - @as(f32, @floatFromInt(py)) / hf * 2.0) * ctx.view_half_h;
+    const full: f32 = @floatFromInt(ctx.full_height);
+    const absolute: f32 = @floatFromInt(ctx.tile_y + py);
+    return (1.0 - absolute / full * 2.0) * ctx.view_half_h;
 }
 
 fn allPixelsCloserThan(
@@ -315,13 +330,15 @@ fn emitLeafSamples(
     const nz: u32 = @intFromFloat(@max(2.0, nz_f));
     const dz = extent / @as(f32, @floatFromInt(nz));
 
-    const wf: f32 = @floatFromInt(ctx.width);
-    const hf: f32 = @floatFromInt(ctx.height);
+    // Full-image NDC uses absolute pixel coordinates = tile origin + local.
+    const full_wf: f32 = @floatFromInt(ctx.full_width);
+    const full_hf: f32 = @floatFromInt(ctx.full_height);
     const neg_inf: f32 = -std.math.inf(f32);
 
     var py: u32 = py_lo;
     while (py < py_hi) : (py += 1) {
-        const wcy_s = (1.0 - ((@as(f32, @floatFromInt(py)) + 0.5) / hf) * 2.0) * ctx.view_half_h;
+        const abs_py: f32 = @as(f32, @floatFromInt(ctx.tile_y + py)) + 0.5;
+        const wcy_s = (1.0 - (abs_py / full_hf) * 2.0) * ctx.view_half_h;
         const wcy_vec: eval_mod.F4 = @splat(wcy_s);
         const row_base: usize = @as(usize, py) * ctx.width;
 
@@ -335,7 +352,8 @@ fn emitLeafSamples(
             inline for (0..4) |l| {
                 const lane_offset: u32 = @min(l, lane_count - 1);
                 const lane_px = px_base + lane_offset;
-                wcx_arr[l] = (((@as(f32, @floatFromInt(lane_px)) + 0.5) / wf) * 2.0 - 1.0) * ctx.view_half_w;
+                const abs_px: f32 = @as(f32, @floatFromInt(ctx.tile_x + lane_px)) + 0.5;
+                wcx_arr[l] = ((abs_px / full_wf) * 2.0 - 1.0) * ctx.view_half_w;
                 idx_arr[l] = row_base + lane_px;
                 db_arr[l] = depth_buf[idx_arr[l]];
             }

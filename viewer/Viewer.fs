@@ -67,6 +67,12 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 let dpr = window.devicePixelRatio
                 let scene = Scene.create device ctx canvas dpr format atlas fontMetrics
 
+                // Field background renderer. Loads async; when ready, the
+                // render loop calls into it each frame.
+                let background : Kernel.Background.Background option ref = ref None
+                Kernel.Background.create scene
+                |> Promise.iter (fun bg -> background.Value <- Some bg)
+
                 // Resize: update canvas size + recreate depth/pick textures.
                 let resize () =
                     let w = int (canvas.clientWidth * dpr)
@@ -75,6 +81,9 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                         canvas?width <- w
                         canvas?height <- h
                         Scene.remakeAttachments scene
+                        match background.Value with
+                        | Some bg -> Kernel.Background.resize bg w h
+                        | None -> ()
                 resize ()
                 let observer = makeResizeObserver (fun _ -> resize ())
                 observe observer canvas
@@ -127,7 +136,7 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
 
                 // Render loop.
                 let rec frame (_: float) =
-                    Render.renderFrame scene toolCursor.Value
+                    Render.renderFrame scene toolCursor.Value background.Value
                     WebGPU.requestAnimationFrame frame |> ignore
                 WebGPU.requestAnimationFrame frame |> ignore
 

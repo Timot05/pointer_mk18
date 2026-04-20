@@ -6,7 +6,10 @@ module Camera
 
 open Server       // Vec3
 
-/// Same as HALF_FOV in camera.ts. Radians — ≈22.5°, giving a 45° FOV.
+/// Legacy name, kept for the screen-scale math. The viewer now projects
+/// orthographically, but the slab's vertical half-height is still derived
+/// from `Distance * tan(HALF_FOV)` so zoom gestures (which change Distance)
+/// still feel like a perspective dolly.
 let HALF_FOV = 0.3927
 
 let private clamp (lo: float) (hi: float) (v: float) : float =
@@ -17,6 +20,12 @@ type CameraState =
       mutable Elevation: float
       mutable Distance: float
       mutable Target: Vec3 }
+
+/// Vertical half-extent of the orthographic slab in world units. Shared
+/// with the Zig kernel via the Camera uniform and with screen-space math
+/// (label offsets, hit-tolerance scaling). Width is `aspect * viewHalfH`.
+let viewHalfH (c: CameraState) : float =
+    c.Distance * tan HALF_FOV
 
 let create () : CameraState =
     { Azimuth = 0.6
@@ -51,7 +60,7 @@ let orbit (c: CameraState) (dx: float) (dy: float) : unit =
 
 let pan (c: CameraState) (dx: float) (dy: float) (height: float) : unit =
     let b = basis c
-    let worldPerPx = (2.0 * c.Distance * tan HALF_FOV) / max height 1.0
+    let worldPerPx = (2.0 * viewHalfH c) / max height 1.0
     c.Target <-
         c.Target
         + (-dx * worldPerPx) * b.Right
@@ -72,16 +81,20 @@ let private rayPlaneHit (ray: Ray) (planeOrigin: Vec3) (planeNormal: Vec3) : Vec
         else Some (ray.Origin + t * ray.Direction)
 
 let screenToRay (width: float) (height: float) (c: CameraState) (x: float) (y: float) : Ray =
+    // Ortho projection: every pixel shoots a parallel ray in the
+    // Forward direction; only the origin varies with (x, y). Origin is
+    // placed on the plane through the eye (so t=0 corresponds to the
+    // eye's position along that pixel column).
     let ndcX = (x / max width 1.0) * 2.0 - 1.0
     let ndcY = 1.0 - (y / max height 1.0) * 2.0
     let aspect = width / max height 1.0
-    let tanHalf = tan HALF_FOV
+    let h = viewHalfH c
     let b = basis c
-    let dir =
-        (b.Forward
-         + (ndcX * aspect * tanHalf) * b.Right
-         + (ndcY * tanHalf) * b.Up).Normalized
-    { Origin = b.Eye; Direction = dir }
+    let origin =
+        b.Eye
+        + (ndcX * aspect * h) * b.Right
+        + (ndcY * h) * b.Up
+    { Origin = origin; Direction = b.Forward }
 
 /// Zoom while keeping whatever's under (x, y) fixed on screen. Adjusts
 /// target as well as distance — matches camera.ts's zoomTowardsPointer.
@@ -108,6 +121,10 @@ let zoomTowardsPointer
 let worldToScreen
     (width: float) (height: float) (c: CameraState) (world: Vec3)
     : (float * float) option =
+    // Ortho projection: NDC is a pure linear projection onto the camera
+    // basis; there's no division by forward-depth. We still reject
+    // points strictly behind the eye so callers can suppress labels and
+    // overlays that would otherwise wrap around.
     let w = max width 1.0
     let h = max height 1.0
     let b = basis c
@@ -116,9 +133,9 @@ let worldToScreen
     if z <= 1e-6 then None
     else
         let aspect = w / h
-        let tanHalf = tan HALF_FOV
-        let ndcX = Vec3.Dot(rel, b.Right) / (z * tanHalf * aspect)
-        let ndcY = Vec3.Dot(rel, b.Up) / (z * tanHalf)
+        let halfH = viewHalfH c
+        let ndcX = Vec3.Dot(rel, b.Right) / (aspect * halfH)
+        let ndcY = Vec3.Dot(rel, b.Up) / halfH
         Some (((ndcX + 1.0) * 0.5) * w, ((1.0 - ndcY) * 0.5) * h)
 
 /// Intersect a ray with a 2D plane described by an origin + two axes. Returns

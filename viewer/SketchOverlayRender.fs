@@ -1405,22 +1405,20 @@ let buildFramesGizmoBuffer
     out.ToArray()
 
 /// Pick instances sampled along every frame axis. The visual gizmo scales
-/// axis length by screen-space pixels at the frame's depth, so we compute
-/// the same `worldPerPx` on the CPU and sprinkle point-pick instances along
-/// each axis. Output format matches `worldPointPickPipeline` — 5 floats
-/// per instance: (wx, wy, wz, radiusPx, pickId).
+/// axis length by a constant `worldPerPx` (ortho projection — no depth
+/// term), so we compute the same value here and sprinkle point-pick
+/// instances along each axis. Output format matches `worldPointPickPipeline`
+/// — 5 floats per instance: (wx, wy, wz, radiusPx, pickId).
 let buildFrameAxesPickBuffer
     (frames: FrameView list)
     (pickables: Pickable list)
-    (eye: Vec3) (forward: Vec3)
-    (tanHalfFov: float) (viewportHeight: float) : float32[] =
+    (viewHalfH: float) (viewportHeight: float) : float32[] =
     let samplesPerAxis = 16
     let thicknessPx = 6.0f
+    let worldPerPx = (2.0 * viewHalfH) / max viewportHeight 1.0
     let out = ResizeArray<float32>()
     for frame in frames do
         let origin = frame.Transform.Trans
-        let depth = abs (Vec3.Dot(origin - eye, forward))
-        let worldPerPx = (2.0 * max depth 1e-3 * tanHalfFov) / max viewportHeight 1.0
         let axisPx = if frame.Id = "origin" then 64.0 else 52.0
         let axisLen = axisPx * worldPerPx
         let rot = frame.Transform.Rot

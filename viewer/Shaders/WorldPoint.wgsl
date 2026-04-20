@@ -1,7 +1,7 @@
 struct Camera {
     eye: vec3<f32>, _p0: f32,
     forward: vec3<f32>, _p1: f32,
-    right: vec3<f32>, _p2: f32,
+    right: vec3<f32>, view_half_h: f32,
     up: vec3<f32>, aspect: f32,
 };
 
@@ -41,12 +41,13 @@ fn project_world(pos: vec3<f32>) -> vec4<f32> {
     );
     let near = 0.001;
     let far = 1000.0;
-    let t = tan(0.3927);
+    let h = cam.view_half_h;
+    let w = cam.aspect * h;
     let proj = mat4x4<f32>(
-        vec4<f32>(1.0 / (cam.aspect * t), 0.0, 0.0, 0.0),
-        vec4<f32>(0.0, 1.0 / t, 0.0, 0.0),
-        vec4<f32>(0.0, 0.0, -(far + near) / (far - near), -1.0),
-        vec4<f32>(0.0, 0.0, -2.0 * far * near / (far - near), 0.0),
+        vec4<f32>(1.0 / w, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 1.0 / h, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, -1.0 / (far - near), 0.0),
+        vec4<f32>(0.0, 0.0, -near / (far - near), 1.0),
     );
     return proj * view * vec4<f32>(pos, 1.0);
 }

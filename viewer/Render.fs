@@ -43,13 +43,17 @@ let renderFrame
     let w : int = scene.Canvas?width
     let h : int = scene.Canvas?height
 
-    // Camera uniform.
+    // Camera uniform. Projection is orthographic everywhere — the slab's
+    // vertical half-extent `viewHalfH` parameterises the projection, and
+    // is shared with the Zig kernel (see `Kernel.Background.viewHalfV`)
+    // so field + overlays land on the same NDC coords.
     let b = Camera.basis scene.Camera
     let aspect = float32 (float w / max (float h) 1.0)
+    let viewHalfH = float32 (Camera.viewHalfH scene.Camera)
     let cameraData =
         [| float32 b.Eye.X;     float32 b.Eye.Y;     float32 b.Eye.Z;     0.0f
            float32 b.Forward.X; float32 b.Forward.Y; float32 b.Forward.Z; 0.0f
-           float32 b.Right.X;   float32 b.Right.Y;   float32 b.Right.Z;   0.0f
+           float32 b.Right.X;   float32 b.Right.Y;   float32 b.Right.Z;   viewHalfH
            float32 b.Up.X;      float32 b.Up.Y;      float32 b.Up.Z;      aspect |]
     WebGPU.writeFloat32 scene.Device.queue scene.CameraBuffer 0 cameraData
 
@@ -376,7 +380,7 @@ let renderFrame
     let frameAxisPickData =
         SketchOverlayRender.buildFrameAxesPickBuffer
             visibleFrames model.Pickables
-            b.Eye b.Forward (tan Camera.HALF_FOV) (float h)
+            (Camera.viewHalfH scene.Camera) (float h)
     if frameAxisPickData.Length > 0 then
         let buf = upload scene.Pool slots.FrameAxisPick frameAxisPickData
         pickPass.setPipeline scene.WorldPointPickPipeline

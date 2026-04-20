@@ -42,7 +42,8 @@ let renderFrame
         (scene: Scene.Scene)
         (toolCursor: (ActionId * float * float) option)
         (background: Kernel.Background.Background option)
-        (raymarch: Raymarch.Raymarch option) =
+        (raymarch: Raymarch.Raymarch option)
+        (fieldSlice: FieldSlice.FieldSlice option) =
     let w : int = scene.Canvas?width
     let h : int = scene.Canvas?height
 
@@ -87,6 +88,16 @@ let renderFrame
     | _ -> ()
     let model = ViewerPipeline.viewerModel state
     let viewState = ViewerPipeline.viewerState state
+
+    // Field iso-line overlay. Draws on top of the background (z-testing
+    // against the surface) and *behind* sketches (sketches with the same
+    // `less` compare land on top when they're in front of the slice
+    // plane). Runs regardless of viewer mode.
+    match fieldSlice with
+    | Some fs ->
+        FieldSlice.update fs state viewState
+        FieldSlice.draw fs colorPass
+    | None -> ()
     let frameById =
         viewState.SketchTransforms
         |> List.map (fun f -> f.Id, f.Transform)

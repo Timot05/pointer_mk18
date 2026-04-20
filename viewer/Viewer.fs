@@ -188,9 +188,14 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 // compile), so we instantiate unconditionally.
                 let raymarch = Raymarch.create scene
 
+                // Iso-line overlay. Runs in both modes; pipeline + buffer
+                // grow on demand.
+                let fieldSlice = FieldSlice.create scene
+
                 // Render loop.
                 let rec frame (_: float) =
-                    Render.renderFrame scene toolCursor.Value background.Value (Some raymarch)
+                    Render.renderFrame scene toolCursor.Value
+                        background.Value (Some raymarch) (Some fieldSlice)
                     WebGPU.requestAnimationFrame frame |> ignore
                 WebGPU.requestAnimationFrame frame |> ignore
 

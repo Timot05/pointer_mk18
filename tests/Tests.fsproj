@@ -31,7 +31,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\ui\App.fsproj" />
+    <ProjectReference Include="..\App.fsproj" />
   </ItemGroup>
 
 </Project>

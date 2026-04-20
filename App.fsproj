@@ -1,0 +1,99 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PointerMk18</RootNamespace>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- core / Math -->
+    <Compile Include="core\Math\Vec.fs" />
+    <Compile Include="core\Math\Quat.fs" />
+    <Compile Include="core\Math\Transform.fs" />
+
+    <!-- core / Solve (WebGpu bindings are used by GPU solver + graph) -->
+    <Compile Include="core\Solve\WebGpu.fs" />
+
+    <!-- core / Sketch (primitives) -->
+    <Compile Include="core\Sketch\Sketch.fs" />
+    <Compile Include="core\Sketch\SketchLoops.fs" />
+
+    <!-- core / Editor (domain + type check) -->
+    <Compile Include="core\Editor\Domain.fs" />
+    <Compile Include="core\Editor\TypeCheck.fs" />
+
+    <!-- core / Solve (graph IR and solvers) -->
+    <Compile Include="core\Solve\GraphIR.fs" />
+    <Compile Include="core\Solve\GpuGraph.fs" />
+    <Compile Include="core\Solve\CpuGraph.fs" />
+    <Compile Include="core\Solve\GpuSolver.fs" />
+    <Compile Include="core\Solve\GpuLmSolver.fs" />
+    <Compile Include="core\Solve\CpuLmSolver.fs" />
+
+    <!-- core / Sketch (compile uses solvers) -->
+    <Compile Include="core\Sketch\SketchCompile.fs" />
+
+    <!-- core / Editor (slot table / element / frames) -->
+    <Compile Include="core\Editor\SlotTable.fs" />
+    <Compile Include="core\Editor\Element.fs" />
+    <Compile Include="core\Editor\Frames.fs" />
+
+    <!-- core / Field -->
+    <Compile Include="core\Field\FieldIR.fs" />
+    <Compile Include="core\Field\SketchSdf.fs" />
+    <Compile Include="core\Field\FieldInterval.fs" />
+    <Compile Include="core\Field\TileRecursion.fs" />
+    <Compile Include="core\Field\FieldGrad.fs" />
+    <Compile Include="core\Field\MarchingCubes.fs" />
+
+    <!-- core / Solve (GPU field pipelines, after field IR) -->
+    <Compile Include="core\Solve\GpuSdf.fs" />
+    <Compile Include="core\Solve\GpuIsosurface.fs" />
+    <Compile Include="core\Solve\GpuFieldSlice.fs" />
+
+    <!-- core / Editor (pick + sketch authoring + pipeline + editor) -->
+    <Compile Include="core\Editor\Pickable.fs" />
+    <Compile Include="core\Sketch\SketchAuthoring.fs" />
+    <Compile Include="core\Sketch\SketchSolve.fs" />
+    <Compile Include="core\Editor\Pipeline.fs" />
+    <Compile Include="core\Editor\Palette.fs" />
+    <Compile Include="core\Editor\Editor.fs" />
+    <Compile Include="core\Editor\DocumentPipeline.fs" />
+    <Compile Include="core\Editor\ViewerPipeline.fs" />
+
+    <!-- ui (state + shell infra, browser DOM) -->
+    <Compile Include="ui\Store.fs" />
+    <Compile Include="ui\AppStore.fs" />
+    <Compile Include="ui\Benchmarks.fs" />
+    <Compile Include="ui\Dom.fs" />
+    <Compile Include="ui\Icons.fs" />
+    <Compile Include="ui\TopBar.fs" />
+    <Compile Include="ui\ActionList.fs" />
+    <Compile Include="ui\ParamsPanel.fs" />
+    <Compile Include="ui\SketchAuthoringPanel.fs" />
+    <Compile Include="ui\CommandPalette.fs" />
+    <Compile Include="ui\Shell.fs" />
+    <Compile Include="ui\Shortcuts.fs" />
+
+    <!-- viewer (WebGPU rendering) -->
+    <Compile Include="viewer\WebGPU.fs" />
+    <Compile Include="viewer\Camera.fs" />
+    <Compile Include="viewer\Colors.fs" />
+    <Compile Include="viewer\MsdfAtlas.fs" />
+    <Compile Include="viewer\SketchOverlayRender.fs" />
+    <Compile Include="viewer\LabelBuilder.fs" />
+    <Compile Include="viewer\Viewer.fs" />
+
+    <!-- entry point -->
+    <Compile Include="ui\Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Fable.Core" Version="4.5.0" />
+    <PackageReference Include="Fable.Browser.Dom" Version="2.19.0" />
+    <PackageReference Include="Fable.Promise" Version="3.2.0" />
+    <PackageReference Include="FSharp.SystemTextJson" Version="1.4.36" />
+  </ItemGroup>
+
+</Project>

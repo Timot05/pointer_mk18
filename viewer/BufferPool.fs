@@ -70,45 +70,68 @@ let upload (pool: Pool) (slot: Slot) (data: float32[]) : IGPUBuffer =
         buf
     | None -> failwith "unreachable"
 
-/// Bag of every slot used by the viewer. One-shot record so the render
-/// loop can reach each buffer by name.
+/// Dictionary of slots keyed by sketch id. One slot per sketch per
+/// category — required because `queue.writeBuffer` is serialised
+/// against `submit()` rather than interleaved with recorded commands.
+/// Sharing one slot across multiple sketches causes the last sketch's
+/// `writeBuffer` to overwrite everyone else's vertex data, making every
+/// sketch render with the last sketch's geometry.
+type PerSketchSlots = System.Collections.Generic.Dictionary<string, Slot>
+
+let createPerSketchSlots () : PerSketchSlots = System.Collections.Generic.Dictionary()
+
+/// Idempotent lookup that allocates a fresh `Slot` the first time a
+/// given sketch id is seen. Buffers created here live for the rest of
+/// the session (there's no eviction yet — deleting a sketch leaves its
+/// slot in the map until the whole pool is destroyed).
+let getSketchSlot (ps: PerSketchSlots) (id: string) : Slot =
+    match ps.TryGetValue id with
+    | true, slot -> slot
+    | false, _ ->
+        let slot = createSlot ()
+        ps.[id] <- slot
+        slot
+
+/// Bag of every slot used by the viewer. Per-sketch categories live in
+/// `PerSketchSlots` dictionaries; globally-scoped categories stay as
+/// single `Slot`s.
 type Slots =
-    { Grid: Slot
-      LoopFill: Slot
-      Gizmo: Slot
-      ConstraintLine: Slot
-      SketchLine: Slot
-      SketchPoint: Slot
-      Label: Slot
-      LoopPick: Slot
-      LinePick: Slot
-      PointPick: Slot
-      DimPick: Slot
-      ToolPreviewLine: Slot
-      ToolPreviewPoint: Slot
-      PlacementPreviewLine: Slot
-      PlacementPreviewLabel: Slot
+    { Grid: PerSketchSlots
+      LoopFill: PerSketchSlots
+      Gizmo: PerSketchSlots
+      ConstraintLine: PerSketchSlots
+      SketchLine: PerSketchSlots
+      SketchPoint: PerSketchSlots
+      Label: PerSketchSlots
+      LoopPick: PerSketchSlots
+      LinePick: PerSketchSlots
+      PointPick: PerSketchSlots
+      DimPick: PerSketchSlots
+      ToolPreviewLine: PerSketchSlots
+      ToolPreviewPoint: PerSketchSlots
+      PlacementPreviewLine: PerSketchSlots
+      PlacementPreviewLabel: PerSketchSlots
       FrameOriginPoint: Slot
       FrameOriginPick: Slot
       FrameAxisPick: Slot
       FrameGizmo: Slot }
 
 let createSlots () : Slots =
-    { Grid = createSlot ()
-      LoopFill = createSlot ()
-      Gizmo = createSlot ()
-      ConstraintLine = createSlot ()
-      SketchLine = createSlot ()
-      SketchPoint = createSlot ()
-      Label = createSlot ()
-      LoopPick = createSlot ()
-      LinePick = createSlot ()
-      PointPick = createSlot ()
-      DimPick = createSlot ()
-      ToolPreviewLine = createSlot ()
-      ToolPreviewPoint = createSlot ()
-      PlacementPreviewLine = createSlot ()
-      PlacementPreviewLabel = createSlot ()
+    { Grid = createPerSketchSlots ()
+      LoopFill = createPerSketchSlots ()
+      Gizmo = createPerSketchSlots ()
+      ConstraintLine = createPerSketchSlots ()
+      SketchLine = createPerSketchSlots ()
+      SketchPoint = createPerSketchSlots ()
+      Label = createPerSketchSlots ()
+      LoopPick = createPerSketchSlots ()
+      LinePick = createPerSketchSlots ()
+      PointPick = createPerSketchSlots ()
+      DimPick = createPerSketchSlots ()
+      ToolPreviewLine = createPerSketchSlots ()
+      ToolPreviewPoint = createPerSketchSlots ()
+      PlacementPreviewLine = createPerSketchSlots ()
+      PlacementPreviewLabel = createPerSketchSlots ()
       FrameOriginPoint = createSlot ()
       FrameOriginPick = createSlot ()
       FrameAxisPick = createSlot ()

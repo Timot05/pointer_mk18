@@ -251,7 +251,6 @@ module ViewerPipeline =
 
         let highlightedTargetAllowed target =
             match target with
-            | TargetFrameAxis _ -> false
             | TargetFrameOrigin _ -> frameHighlightAllowed && Editor.belongsToActiveSketch state target
             | _ -> Editor.belongsToActiveSketch state target
 

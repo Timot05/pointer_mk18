@@ -188,10 +188,12 @@ module Pipeline =
         |> List.collect (fun action ->
             match Map.tryFind action.Id typeMap with
             | Some FieldType.Frame ->
-                [ PickFrameOrigin(nextId(), action.Id)
-                  PickFrameAxis(nextId(), action.Id, "xAxis")
-                  PickFrameAxis(nextId(), action.Id, "yAxis")
-                  PickFrameAxis(nextId(), action.Id, "zAxis") ]
+                // One pickable per frame — the whole gizmo (origin + axes)
+                // picks as the same `TargetFrameOrigin`. Per-axis picks
+                // via `PickFrameAxis` were retired; sketch constraints
+                // only need the frame identity. The DU case is kept so
+                // the pattern matches elsewhere still typecheck.
+                [ PickFrameOrigin(nextId(), action.Id) ]
             | Some FieldType.Sketch ->
                 match action.Kind with
                 | Sketch(_, _, sk) -> buildSketchPickables b counter action.Id sk

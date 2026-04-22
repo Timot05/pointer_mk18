@@ -68,6 +68,20 @@ type Scene =
       // Camera
       Camera: Camera.CameraState }
 
+/// One sketch's worth of frame-uniform data (pos + xAxis + yAxis as
+/// vec4s = 16 floats = 64 bytes). Label uniforms are the same shape
+/// plus a canvas-size vec4 — also 64 bytes.
+let FRAME_SLOT_BYTES = 64
+let LABEL_SLOT_BYTES = 64
+/// WebGPU's `minUniformBufferOffsetAlignment` is typically 256 bytes on
+/// desktop adapters; padding each slot to this guarantees valid dynamic
+/// offsets regardless of device.
+let FRAME_STRIDE = 256
+/// Maximum concurrent sketches supported by the frame / label uniforms.
+/// Trivially bumpable; 32 is well above realistic editing scenes.
+let FRAME_CAPACITY = 32
+let FRAME_BUFFER_BYTES = FRAME_STRIDE * FRAME_CAPACITY
+
 let private alphaBlend () =
     {| color = {| srcFactor = "src-alpha"; dstFactor = "one-minus-src-alpha"; operation = "add" |}
        alpha = {| srcFactor = "one"; dstFactor = "one-minus-src-alpha"; operation = "add" |} |}
@@ -124,12 +138,28 @@ let create
             { layout = cameraBindGroupLayout
               entries = [| { binding = 0; resource = box { buffer = cameraBuffer } } |] }
 
-    let frameBuffer = uniformBuffer device 64
-    let frameBindGroupLayout = vertexOnlyLayout device
+    // Per-sketch uniform blocks. Each sketch's frame (pos, xAxis, yAxis =
+    // 64 bytes) lives at a 256-byte slot inside one shared buffer —
+    // 256 is WebGPU's `minUniformBufferOffsetAlignment`. The render pass
+    // sets a dynamic offset per sketch so every sketch's draws read their
+    // own block. Required because `queue.writeBuffer` is a queue-level
+    // op sequenced against `submit()`, NOT interleaved with commands in
+    // a single command buffer — so naive write-then-draw per sketch
+    // inside one submit makes every draw see the LAST write.
+    let frameBuffer = uniformBuffer device FRAME_BUFFER_BYTES
+    let frameBindGroupLayout =
+        device.createBindGroupLayout
+            { entries =
+                [| box
+                    {| binding = 0
+                       visibility = GPUShaderStage.Vertex
+                       buffer = {| ``type`` = "uniform"; hasDynamicOffset = true |} |} |] }
     let frameBindGroup =
         device.createBindGroup
             { layout = frameBindGroupLayout
-              entries = [| { binding = 0; resource = box { buffer = frameBuffer } } |] }
+              entries =
+                [| { binding = 0
+                     resource = box {| buffer = frameBuffer; offset = 0; size = FRAME_SLOT_BYTES |} } |] }
 
     let viewportBuffer = uniformBuffer device 16
     let viewportBindGroupLayout = vertexOnlyLayout device
@@ -138,14 +168,14 @@ let create
             { layout = viewportBindGroupLayout
               entries = [| { binding = 0; resource = box { buffer = viewportBuffer } } |] }
 
-    let labelUniformBuffer = uniformBuffer device 64
+    let labelUniformBuffer = uniformBuffer device FRAME_BUFFER_BYTES
     let labelBindGroupLayout =
         device.createBindGroupLayout
             { entries =
                 [| box
                     {| binding = 0
                        visibility = GPUShaderStage.Vertex
-                       buffer = {| ``type`` = "uniform" |} |}
+                       buffer = {| ``type`` = "uniform"; hasDynamicOffset = true |} |}
                    box
                     {| binding = 1
                        visibility = GPUShaderStage.Fragment
@@ -158,7 +188,8 @@ let create
         device.createBindGroup
             { layout = labelBindGroupLayout
               entries =
-                [| { binding = 0; resource = box { buffer = labelUniformBuffer } }
+                [| { binding = 0
+                     resource = box {| buffer = labelUniformBuffer; offset = 0; size = LABEL_SLOT_BYTES |} }
                    { binding = 1; resource = box (atlas.Texture.createView()) }
                    { binding = 2; resource = box atlas.Sampler } |] }
 

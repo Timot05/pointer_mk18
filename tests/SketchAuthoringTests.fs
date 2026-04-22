@@ -488,7 +488,12 @@ let ``Point and frame origin can build a frame coincident constraint`` () =
     | FrameCoincident("p0", "f1", "origin") -> ()
     | other -> failwithf "Expected FrameCoincident, got %A" other
 
-[<Fact>]
+// Frame-axis picking is currently retired — the pick pipeline no longer
+// emits `TargetFrameAxis`, so `FrameParallel` / `FramePerpendicular`
+// constraints can't be built from selection. The `FrameParallel`
+// constraint DU case is preserved for when per-axis picking returns;
+// restore this test alongside it.
+[<Fact(Skip = "Frame-axis picking retired; per-axis frame constraints unreachable until it returns")>]
 let ``Line and frame axis can build a frame parallel constraint`` () =
     let doc = frameConstraintDoc ()
     let next =

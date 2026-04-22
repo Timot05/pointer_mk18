@@ -363,23 +363,18 @@ module SketchAuthoring =
                 | TargetArc(id, entityId) when id = sketchId -> Some entityId
                 | _ -> None) |}
 
-    let private selectionForFrames (targets: SelectionTarget list) =
-        {| Origins =
-            targets
-            |> List.choose (function
-                | TargetFrameOrigin(frameId) -> Some frameId
-                | _ -> None)
-           Axes =
-            targets
-            |> List.choose (function
-                | TargetFrameAxis(frameId, part) -> Some(frameId, part)
-                | _ -> None) |}
+    /// Frame origin ids present in the selection. `TargetFrameAxis` is
+    /// no longer emitted by the pick pipeline — the whole frame gizmo
+    /// picks as a single `TargetFrameOrigin` — so only origins show up
+    /// here.
+    let private selectionForFrames (targets: SelectionTarget list) : string list =
+        targets
+        |> List.choose (function
+            | TargetFrameOrigin(frameId) -> Some frameId
+            | _ -> None)
 
-    let private frameOriginFromSelection (origins: string list) (axes: (string * string) list) =
-        match
-            (origins @ (axes |> List.map fst))
-            |> List.distinct
-        with
+    let private frameOriginFromSelection (origins: string list) =
+        match origins |> List.distinct with
         | [ frameId ] -> Some frameId
         | _ -> None
 
@@ -481,14 +476,14 @@ module SketchAuthoring =
 
     let private buildConstraint sketch sketchId kind targets cursor =
         let selection = selectionForSketch sketchId targets
-        let frameSelection = selectionForFrames targets
-        let frameOrigin = frameOriginFromSelection frameSelection.Origins frameSelection.Axes
+        let frameOrigins = selectionForFrames targets
+        let frameOrigin = frameOriginFromSelection frameOrigins
         match kind with
         | "Coincident" ->
             match selection.Points with
             | [ a; b ] -> Some(Coincident(a, b))
             | [ pointId ] ->
-                match frameSelection.Origins with
+                match frameOrigins with
                 | [ frameId ] -> Some(FrameCoincident(pointId, frameId, "origin"))
                 | _ -> None
             | _ -> None
@@ -510,22 +505,22 @@ module SketchAuthoring =
                 tryLine sketch lineId |> Option.map (fun (aStart, aEnd) -> Midpoint(pointId, lineId, aStart, aEnd))
             | _ -> None
         | "Parallel" ->
-            match selection.Lines, frameSelection.Axes with
-            | [ lineA; lineB ], _ ->
+            // Frame-axis-parallel constraint (FrameParallel) is currently
+            // unreachable — the pick layer stopped emitting per-axis
+            // targets. Restore the axis branch if/when per-axis picking
+            // comes back.
+            match selection.Lines with
+            | [ lineA; lineB ] ->
                 Option.map2 (fun (aStart, aEnd) (bStart, bEnd) -> Parallel(aStart, aEnd, bStart, bEnd, lineA, lineB))
                     (tryLine sketch lineA)
                     (tryLine sketch lineB)
-            | [ lineA ], [ (frameId, part) ] when part <> "origin" ->
-                tryLine sketch lineA |> Option.map (fun (aStart, aEnd) -> FrameParallel(aStart, aEnd, lineA, frameId, part))
             | _ -> None
         | "Perpendicular" ->
-            match selection.Lines, frameSelection.Axes with
-            | [ lineA; lineB ], _ ->
+            match selection.Lines with
+            | [ lineA; lineB ] ->
                 Option.map2 (fun (aStart, aEnd) (bStart, bEnd) -> Perpendicular(aStart, aEnd, bStart, bEnd, lineA, lineB))
                     (tryLine sketch lineA)
                     (tryLine sketch lineB)
-            | [ lineA ], [ (frameId, part) ] when part <> "origin" ->
-                tryLine sketch lineA |> Option.map (fun (aStart, aEnd) -> FramePerpendicular(aStart, aEnd, lineA, frameId, part))
             | _ -> None
         | "Equal" ->
             match selection.Lines, selection.Circles, selection.Arcs with
@@ -673,7 +668,6 @@ module SketchAuthoring =
         | TargetCircle(id, entityId) when id = sketchId -> Some(RefCircle entityId)
         | TargetArc(id, entityId) when id = sketchId -> Some(RefArc entityId)
         | TargetFrameOrigin(frameId) -> Some(RefFrameOrigin frameId)
-        | TargetFrameAxis(frameId, part) -> Some(RefFrameAxis(frameId, part))
         | _ -> None
 
     let updatePlacementDraft sketchId kind hoveredTarget draft =

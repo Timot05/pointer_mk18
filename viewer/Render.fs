@@ -12,28 +12,53 @@ open PointerMk18.Ui
 open WebGPU
 open BufferPool
 
-let private emitSketchFrameUniforms (scene: Scene.Scene) (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) =
-    let frameData =
-        [| float32 pos.X;   float32 pos.Y;   float32 pos.Z;   0.0f
-           float32 xAxis.X; float32 xAxis.Y; float32 xAxis.Z; 0.0f
-           float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f
-           0.0f; 0.0f; 0.0f; 0.0f |]
-    WebGPU.writeFloat32 scene.Device.queue scene.FrameBuffer 0 frameData
-
-    let canvasWpx = float32 (scene.Canvas.clientWidth * scene.Dpr)
-    let canvasHpx = float32 (scene.Canvas.clientHeight * scene.Dpr)
-    let labelUniform =
-        [| canvasWpx; canvasHpx; 0.0f; 0.0f
-           float32 pos.X;   float32 pos.Y;   float32 pos.Z;   0.0f
-           float32 xAxis.X; float32 xAxis.Y; float32 xAxis.Z; 0.0f
-           float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f |]
-    WebGPU.writeFloat32 scene.Device.queue scene.LabelUniformBuffer 0 labelUniform
-
 let private axesOf (transform: RigidTransform) =
     let pos = transform.Trans
     let xAxis = transform.Rot.Rotate({ X = 1.0; Y = 0.0; Z = 0.0 })
     let yAxis = transform.Rot.Rotate({ X = 0.0; Y = 1.0; Z = 0.0 })
     pos, xAxis, yAxis
+
+/// Per-sketch frame uniform block — matches the `SketchFrame` WGSL
+/// struct in Line.wgsl (16 floats / 64 bytes).
+let private sketchFrameData (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) : float32[] =
+    [| float32 pos.X;   float32 pos.Y;   float32 pos.Z;   0.0f
+       float32 xAxis.X; float32 xAxis.Y; float32 xAxis.Z; 0.0f
+       float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f
+       0.0f; 0.0f; 0.0f; 0.0f |]
+
+let private sketchLabelData
+        (canvasWpx: float32) (canvasHpx: float32)
+        (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) : float32[] =
+    [| canvasWpx; canvasHpx; 0.0f; 0.0f
+       float32 pos.X;   float32 pos.Y;   float32 pos.Z;   0.0f
+       float32 xAxis.X; float32 xAxis.Y; float32 xAxis.Z; 0.0f
+       float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f |]
+
+/// Write every visible sketch's frame + label uniform blocks into the
+/// shared per-sketch buffers at distinct dynamic-offset slots, *before*
+/// the command encoder records any draws. Returns a map from sketch id
+/// → byte offset so each draw can select its own block via
+/// `setBindGroupWithOffset`. See `Scene.fs` for the reason this has to
+/// happen up front (`queue.writeBuffer` is serialised against
+/// `submit()`, not interleaved with commands inside a single command
+/// buffer).
+let private writeSketchUniforms
+        (scene: Scene.Scene)
+        (sketchTransforms: FrameView list) : Map<ActionId, int> =
+    let canvasWpx = float32 (scene.Canvas.clientWidth * scene.Dpr)
+    let canvasHpx = float32 (scene.Canvas.clientHeight * scene.Dpr)
+    let used = min sketchTransforms.Length Scene.FRAME_CAPACITY
+    sketchTransforms
+    |> List.truncate used
+    |> List.mapi (fun i f ->
+        let pos, xAxis, yAxis = axesOf f.Transform
+        let offset = i * Scene.FRAME_STRIDE
+        WebGPU.writeFloat32 scene.Device.queue scene.FrameBuffer offset
+            (sketchFrameData pos xAxis yAxis)
+        WebGPU.writeFloat32 scene.Device.queue scene.LabelUniformBuffer offset
+            (sketchLabelData canvasWpx canvasHpx pos xAxis yAxis)
+        f.Id, offset)
+    |> Map.ofList
 
 /// Render one frame. Call from a requestAnimationFrame loop in Viewer.
 /// The 3D field can be produced by the Zig-WASM voxel kernel (`background`)
@@ -111,64 +136,89 @@ let renderFrame
         |> List.map (fun f -> f.Id, f.Transform)
         |> Map.ofList
 
+    // Reserve a unique dynamic-offset slot per sketch + upload its frame
+    // uniforms once, before any draws are recorded. Every per-sketch
+    // draw below looks the offset up by id.
+    let sketchOffsets = writeSketchUniforms scene viewState.SketchTransforms
+
     let isVisible (actionId: string) =
         Map.tryFind actionId viewState.Visible
         |> Option.defaultValue true
 
     let slots = scene.Slots
 
-    let drawLine (colorPass: IGPURenderPassEncoder) (slot: Slot) (data: float32[]) =
+    // All per-sketch draw helpers take an explicit `frameOffset` — the
+    // byte offset into the shared frame uniform buffer reserved for the
+    // current sketch. See `writeSketchUniforms` below.
+    let drawLine (colorPass: IGPURenderPassEncoder) (frameOffset: int) (slot: Slot) (data: float32[]) =
         if data.Length > 0 then
             let buf = upload scene.Pool slot data
             colorPass.setPipeline scene.LinePipeline
             colorPass.setBindGroup(0, scene.CameraBindGroup)
-            colorPass.setBindGroup(1, scene.FrameBindGroup)
+            colorPass.setBindGroupWithOffset(1, scene.FrameBindGroup, frameOffset)
             colorPass.setVertexBuffer(0, buf)
             colorPass.draw (data.Length / 6)
 
-    let drawTri (colorPass: IGPURenderPassEncoder) (slot: Slot) (data: float32[]) =
+    let drawTri (colorPass: IGPURenderPassEncoder) (frameOffset: int) (slot: Slot) (data: float32[]) =
         if data.Length > 0 then
             let buf = upload scene.Pool slot data
             colorPass.setPipeline scene.TriPipeline
             colorPass.setBindGroup(0, scene.CameraBindGroup)
-            colorPass.setBindGroup(1, scene.FrameBindGroup)
+            colorPass.setBindGroupWithOffset(1, scene.FrameBindGroup, frameOffset)
             colorPass.setVertexBuffer(0, buf)
             colorPass.draw (data.Length / 6)
 
-    let drawPoints (pass: IGPURenderPassEncoder) (pipeline: IGPURenderPipeline) (slot: Slot) (data: float32[]) (floatsPerInstance: int) =
+    let drawPoints (pass: IGPURenderPassEncoder) (pipeline: IGPURenderPipeline) (frameOffset: int) (slot: Slot) (data: float32[]) (floatsPerInstance: int) =
         if data.Length > 0 then
             let buf = upload scene.Pool slot data
             pass.setPipeline pipeline
             pass.setBindGroup(0, scene.CameraBindGroup)
-            pass.setBindGroup(1, scene.FrameBindGroup)
+            pass.setBindGroupWithOffset(1, scene.FrameBindGroup, frameOffset)
             pass.setBindGroup(2, scene.ViewportBindGroup)
             pass.setVertexBuffer(0, scene.PointQuadBuffer)
             pass.setVertexBuffer(1, buf)
             pass.drawInstanced(6, data.Length / floatsPerInstance)
 
-    let drawLabel (colorPass: IGPURenderPassEncoder) (slot: Slot) (data: float32[]) =
+    let drawLabel (colorPass: IGPURenderPassEncoder) (frameOffset: int) (slot: Slot) (data: float32[]) =
         if data.Length > 0 then
             let buf = upload scene.Pool slot data
             colorPass.setPipeline scene.LabelPipeline
             colorPass.setBindGroup(0, scene.CameraBindGroup)
-            colorPass.setBindGroup(1, scene.LabelBindGroup)
+            colorPass.setBindGroupWithOffset(1, scene.LabelBindGroup, frameOffset)
             colorPass.setVertexBuffer(0, buf)
             colorPass.draw (data.Length / 10)
 
     // ── Color pass: per-sketch draws ──────────────────────────────────
     for sketch in model.Sketches do
-        match Map.tryFind sketch.Id frameById with
-        | None -> ()
-        | Some _ when not (isVisible sketch.Id) -> ()
-        | Some transform ->
-            let pos, xAxis, yAxis = axesOf transform
-            emitSketchFrameUniforms scene pos xAxis yAxis
+        match Map.tryFind sketch.Id frameById, Map.tryFind sketch.Id sketchOffsets with
+        | None, _ | _, None -> ()
+        | Some _, _ when not (isVisible sketch.Id) -> ()
+        | Some _, Some frameOffset ->
+            let isActiveEditSketch =
+                viewState.SketchUi.EditMode
+                && state.Doc.SelectedId = Some sketch.Id
 
-            let gridData =
-                SketchOverlayRender.buildSketchGridBuffer
-                    sketch.Id sketch.Sketch.Entities
-                    state.Compiled.Slots.Index viewState.Params 1.0 10
-            drawLine colorPass slots.Grid gridData
+            // Per-sketch buffer slot lookup — each category resolves to
+            // this sketch's own `Slot` so sketches can't stomp each
+            // other's vertex data via `queue.writeBuffer` ordering.
+            let gridSlot = getSketchSlot slots.Grid sketch.Id
+            let loopFillSlot = getSketchSlot slots.LoopFill sketch.Id
+            let gizmoSlot = getSketchSlot slots.Gizmo sketch.Id
+            let sketchLineSlot = getSketchSlot slots.SketchLine sketch.Id
+            let constraintLineSlot = getSketchSlot slots.ConstraintLine sketch.Id
+            let placementPreviewLineSlot = getSketchSlot slots.PlacementPreviewLine sketch.Id
+            let placementPreviewLabelSlot = getSketchSlot slots.PlacementPreviewLabel sketch.Id
+            let toolPreviewLineSlot = getSketchSlot slots.ToolPreviewLine sketch.Id
+            let toolPreviewPointSlot = getSketchSlot slots.ToolPreviewPoint sketch.Id
+            let sketchPointSlot = getSketchSlot slots.SketchPoint sketch.Id
+            let labelSlot = getSketchSlot slots.Label sketch.Id
+
+            if isActiveEditSketch then
+                let gridData =
+                    SketchOverlayRender.buildSketchGridBuffer
+                        sketch.Id sketch.Sketch.Entities
+                        state.Compiled.Slots.Index viewState.Params 1.0 10
+                drawLine colorPass frameOffset gridSlot gridData
 
             let sketchLoops =
                 viewState.SketchLoops
@@ -181,17 +231,17 @@ let renderFrame
                     sketch.Id sketch.Sketch sketchLoops
                     state.Compiled.Slots.Index viewState.Params
                     viewState.HighlightedTarget viewState.HighlightedTargets
-            drawTri colorPass slots.LoopFill loopFillData
+            drawTri colorPass frameOffset loopFillSlot loopFillData
 
             let sketchGizmoData = SketchOverlayRender.buildSketchGizmoBuffer ()
-            drawLine colorPass slots.Gizmo sketchGizmoData
+            drawLine colorPass frameOffset gizmoSlot sketchGizmoData
 
             let lineData =
                 SketchOverlayRender.buildSketchLineBuffer
                     sketch.Id sketch.Sketch.Entities
                     state.Compiled.Slots.Index viewState.Params
                     viewState.HighlightedTarget viewState.HighlightedTargets
-            drawLine colorPass slots.SketchLine lineData
+            drawLine colorPass frameOffset sketchLineSlot lineData
 
             let showDimensions =
                 List.contains sketch.Id viewState.VisibleDimensionSketchIds
@@ -201,7 +251,7 @@ let renderFrame
                     state.Compiled.Slots.Index viewState.Params
                     showDimensions
                     viewState.HighlightedTarget viewState.HighlightedTargets
-            drawLine colorPass slots.ConstraintLine constraintLineData
+            drawLine colorPass frameOffset constraintLineSlot constraintLineData
 
             // Placement preview.
             match viewState.SketchUi.PendingConstraintPlacement with
@@ -217,7 +267,7 @@ let renderFrame
                             sketch.Id sketch.Sketch.Entities
                             state.Compiled.Slots.Index viewState.Params
                             pending.Constraint cursor
-                    drawLine colorPass slots.PlacementPreviewLine previewLines
+                    drawLine colorPass frameOffset placementPreviewLineSlot previewLines
 
                     let previewPoints =
                         SketchOverlayRender.resolvePointMap
@@ -233,14 +283,11 @@ let renderFrame
                             sketch.Id
                             [ SketchOverlayRender.withLabelPosition cursor pending.Constraint ]
                             None []
-                    drawLabel colorPass slots.PlacementPreviewLabel previewLabelData
+                    drawLabel colorPass frameOffset placementPreviewLabelSlot previewLabelData
                 | None -> ()
             | _ -> ()
 
             // Tool preview.
-            let isActiveEditSketch =
-                viewState.SketchUi.EditMode
-                && state.Doc.SelectedId = Some sketch.Id
             if isActiveEditSketch
                && viewState.SketchUi.Tool <> ""
                && viewState.SketchUi.Tool <> "none" then
@@ -251,12 +298,12 @@ let renderFrame
                 let toolLineData =
                     SketchOverlayRender.buildToolPreviewLineBuffer
                         viewState.SketchUi.Tool viewState.SketchUi.ToolPoints cursorForSketch
-                drawLine colorPass slots.ToolPreviewLine toolLineData
+                drawLine colorPass frameOffset toolPreviewLineSlot toolLineData
 
                 let toolPointData =
                     SketchOverlayRender.buildToolPreviewPointBuffer
                         viewState.SketchUi.Tool viewState.SketchUi.ToolPoints cursorForSketch
-                drawPoints colorPass scene.PointPipeline slots.ToolPreviewPoint toolPointData 7
+                drawPoints colorPass scene.PointPipeline frameOffset toolPreviewPointSlot toolPointData 7
 
             // Points.
             let pointData =
@@ -264,7 +311,7 @@ let renderFrame
                     sketch.Id sketch.Sketch.Entities
                     state.Compiled.Slots.Index viewState.Params
                     viewState.HighlightedTarget viewState.HighlightedTargets
-            drawPoints colorPass scene.PointPipeline slots.SketchPoint pointData 7
+            drawPoints colorPass scene.PointPipeline frameOffset sketchPointSlot pointData 7
 
             // Labels.
             let points =
@@ -282,7 +329,7 @@ let renderFrame
                         sketch.Id sketch.Sketch.Constraints
                         viewState.HighlightedTarget viewState.HighlightedTargets
                 else [||]
-            drawLabel colorPass slots.Label labelData
+            drawLabel colorPass frameOffset labelSlot labelData
 
     // ── Color pass: frame gizmos + origin dots (world-space, no frame uniform) ──
     let visibleFrames =
@@ -299,18 +346,6 @@ let renderFrame
         colorPass.setBindGroup(1, scene.ViewportBindGroup)
         colorPass.setVertexBuffer(0, buf)
         colorPass.draw (gizmoData.Length / 12)
-
-    let frameOriginData =
-        SketchOverlayRender.buildFrameOriginsPointBuffer
-            visibleFrames viewState.HighlightedTarget viewState.HighlightedTargets
-    if frameOriginData.Length > 0 then
-        let buf = upload scene.Pool slots.FrameOriginPoint frameOriginData
-        colorPass.setPipeline scene.WorldPointPipeline
-        colorPass.setBindGroup(0, scene.CameraBindGroup)
-        colorPass.setBindGroup(1, scene.ViewportBindGroup)
-        colorPass.setVertexBuffer(0, scene.PointQuadBuffer)
-        colorPass.setVertexBuffer(1, buf)
-        colorPass.drawInstanced(6, frameOriginData.Length / 8)
 
     colorPass.endPass()
 
@@ -330,16 +365,14 @@ let renderFrame
                        depthClearValue = 1.0 |} |})
 
     for sketch in model.Sketches do
-        match Map.tryFind sketch.Id frameById with
-        | None -> ()
-        | Some _ when not (isVisible sketch.Id) -> ()
-        | Some transform ->
-            let pos, xAxis, yAxis = axesOf transform
-            WebGPU.writeFloat32 scene.Device.queue scene.FrameBuffer 0
-                [| float32 pos.X;   float32 pos.Y;   float32 pos.Z;   0.0f
-                   float32 xAxis.X; float32 xAxis.Y; float32 xAxis.Z; 0.0f
-                   float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f
-                   0.0f; 0.0f; 0.0f; 0.0f |]
+        match Map.tryFind sketch.Id frameById, Map.tryFind sketch.Id sketchOffsets with
+        | None, _ | _, None -> ()
+        | Some _, _ when not (isVisible sketch.Id) -> ()
+        | Some _, Some frameOffset ->
+            let loopPickSlot = getSketchSlot slots.LoopPick sketch.Id
+            let linePickSlot = getSketchSlot slots.LinePick sketch.Id
+            let pointPickSlot = getSketchSlot slots.PointPick sketch.Id
+            let dimPickSlot = getSketchSlot slots.DimPick sketch.Id
 
             let sketchPickLoops =
                 viewState.SketchLoops
@@ -353,10 +386,10 @@ let renderFrame
                     state.Compiled.Slots.Index viewState.Params
                     model.Pickables
             if loopPickData.Length > 0 then
-                let buf = upload scene.Pool slots.LoopPick loopPickData
+                let buf = upload scene.Pool loopPickSlot loopPickData
                 pickPass.setPipeline scene.LoopPickPipeline
                 pickPass.setBindGroup(0, scene.CameraBindGroup)
-                pickPass.setBindGroup(1, scene.FrameBindGroup)
+                pickPass.setBindGroupWithOffset(1, scene.FrameBindGroup, frameOffset)
                 pickPass.setVertexBuffer(0, buf)
                 pickPass.draw (loopPickData.Length / 3)
 
@@ -366,10 +399,10 @@ let renderFrame
                     state.Compiled.Slots.Index viewState.Params
                     model.Pickables
             if linePickData.Length > 0 then
-                let buf = upload scene.Pool slots.LinePick linePickData
+                let buf = upload scene.Pool linePickSlot linePickData
                 pickPass.setPipeline scene.LinePickPipeline
                 pickPass.setBindGroup(0, scene.CameraBindGroup)
-                pickPass.setBindGroup(1, scene.FrameBindGroup)
+                pickPass.setBindGroupWithOffset(1, scene.FrameBindGroup, frameOffset)
                 pickPass.setVertexBuffer(0, scene.LinePickCornerBuffer)
                 pickPass.setVertexBuffer(1, buf)
                 pickPass.drawInstanced(6, linePickData.Length / 5)
@@ -379,7 +412,7 @@ let renderFrame
                     sketch.Id sketch.Sketch.Entities
                     state.Compiled.Slots.Index viewState.Params
                     model.Pickables
-            drawPoints pickPass scene.PointPickPipeline slots.PointPick pointPickData 4
+            drawPoints pickPass scene.PointPickPipeline frameOffset pointPickSlot pointPickData 4
 
             let pickShowDims =
                 List.contains sketch.Id viewState.VisibleDimensionSketchIds
@@ -390,7 +423,7 @@ let renderFrame
                         state.Compiled.Slots.Index viewState.Params
                         model.Pickables
                 else [||]
-            drawPoints pickPass scene.PointPickPipeline slots.DimPick dimPickData 4
+            drawPoints pickPass scene.PointPickPipeline frameOffset dimPickSlot dimPickData 4
 
     // Frame-origin + frame-axis picks (world-space).
     let frameOriginPickData =

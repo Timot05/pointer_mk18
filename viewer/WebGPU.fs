@@ -100,6 +100,12 @@ type [<AllowNullLiteral>] IGPURenderPassEncoder =
     [<Emit("$0.draw($1, $2)")>]
     abstract drawInstanced: vertexCount: int * instanceCount: int -> unit
 
+    /// Bind with a single dynamic buffer offset. Used by per-sketch
+    /// frame uniforms so one shared buffer can back multiple draws
+    /// within a single command buffer.
+    [<Emit("$0.setBindGroup($1, $2, [$3])")>]
+    abstract setBindGroupWithOffset: index: int * bindGroup: IGPUBindGroup * offset: int -> unit
+
 type [<AllowNullLiteral>] IGPUComputePassEncoder =
     abstract setPipeline: pipeline: IGPUComputePipeline -> unit
     abstract setBindGroup: index: int * bindGroup: IGPUBindGroup -> unit

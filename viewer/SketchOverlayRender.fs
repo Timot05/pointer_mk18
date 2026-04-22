@@ -1372,7 +1372,6 @@ let buildFramesGizmoBuffer
             let matches t =
                 match t with
                 | TargetFrameOrigin id -> id = frame.Id
-                | TargetFrameAxis(id, _) -> id = frame.Id
                 | _ -> false
             (match hovered with Some h -> matches h | None -> false)
             || List.exists matches selected
@@ -1422,15 +1421,18 @@ let buildFrameAxesPickBuffer
         let axisPx = if frame.Id = "origin" then 64.0 else 52.0
         let axisLen = axisPx * worldPerPx
         let rot = frame.Transform.Rot
-        let pickFor (part: string) =
+        // Hovering any axis line picks the frame as a whole — same
+        // pickId as the origin, so downstream selection only ever sees
+        // `TargetFrameOrigin`.
+        let pickIdOpt =
             pickables
             |> List.tryPick (function
-                | PickFrameAxis(pid, fid, p) when fid = frame.Id && p = part -> Some pid
+                | PickFrameOrigin(pid, fid) when fid = frame.Id -> Some pid
                 | _ -> None)
-        let emit (part: string) (localAxis: Vec3) =
-            match pickFor part with
-            | None -> ()
-            | Some pid ->
+        match pickIdOpt with
+        | None -> ()
+        | Some pid ->
+            let emit (localAxis: Vec3) =
                 let axWorld = rot.Rotate localAxis
                 for i in 1 .. samplesPerAxis do
                     let t = (float i) / float samplesPerAxis
@@ -1440,9 +1442,9 @@ let buildFrameAxesPickBuffer
                     out.Add(float32 pos.Z)
                     out.Add thicknessPx
                     out.Add(float32 pid)
-        emit "xAxis" { X = 1.0; Y = 0.0; Z = 0.0 }
-        emit "yAxis" { X = 0.0; Y = 1.0; Z = 0.0 }
-        emit "zAxis" { X = 0.0; Y = 0.0; Z = 1.0 }
+            emit { X = 1.0; Y = 0.0; Z = 0.0 }
+            emit { X = 0.0; Y = 1.0; Z = 0.0 }
+            emit { X = 0.0; Y = 0.0; Z = 1.0 }
     out.ToArray()
 
 /// Pick instances for all frame origins. Layout per instance: 5 floats —

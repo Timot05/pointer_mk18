@@ -70,10 +70,8 @@
     <Compile Include="ui\Icons.fs" />
     <Compile Include="ui\TopBar.fs" />
     <Compile Include="ui\ActionList.fs" />
-    <Compile Include="ui\ParamsPanel.fs" />
     <Compile Include="ui\SketchAuthoringPanel.fs" />
     <Compile Include="ui\CommandPalette.fs" />
-    <Compile Include="ui\Shell.fs" />
     <Compile Include="ui\Shortcuts.fs" />
 
     <!-- viewer (WebGPU rendering) -->
@@ -93,6 +91,8 @@
     <Compile Include="viewer\Kernel\IrCodec.fs" />
     <Compile Include="viewer\Kernel\FieldToIr.fs" />
     <Compile Include="viewer\Kernel\Wasm.fs" />
+    <Compile Include="ui\MeshExport.fs" />
+    <Compile Include="ui\ParamsPanel.fs" />
     <Compile Include="viewer\Kernel\Worker.fs" />
     <Compile Include="viewer\Kernel\Background.fs" />
     <Compile Include="viewer\Raymarch.fs" />
@@ -102,6 +102,7 @@
     <Compile Include="viewer\Input.fs" />
     <Compile Include="viewer\Render.fs" />
     <Compile Include="viewer\Viewer.fs" />
+    <Compile Include="ui\Shell.fs" />
 
     <!-- entry point -->
     <Compile Include="ui\Program.fs" />

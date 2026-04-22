@@ -3,6 +3,9 @@ const tape_mod = @import("tape.zig");
 const field_ir = @import("field_ir.zig");
 const lower_mod = @import("lower.zig");
 const voxel_mod = @import("voxel.zig");
+const eval_mod = @import("eval.zig");
+const grad_mod = @import("grad.zig");
+const mesh_mod = @import("mesh.zig");
 
 // ── Scene storage ────────────────────────────────────────────────────────
 // The host uploads a serialized Field IR tree. Zig decodes it into these
@@ -18,6 +21,10 @@ var scene_consts: [voxel_mod.MAX_CONST]f32 = undefined;
 var scene_tape: tape_mod.Tape = undefined;
 var scene_camera: ?lower_mod.MutableCamera = null;
 var scene_loaded: bool = false;
+const mesh_allocator = std.heap.wasm_allocator;
+var scene_mesh: ?mesh_mod.MeshBuffers = null;
+var mesh_eval_slots: [voxel_mod.MAX_TAPE]f32 = undefined;
+var mesh_grad_slots: [voxel_mod.MAX_TAPE]grad_mod.Grad = undefined;
 
 // ── Upload buffer (JS writes IR bytes, then calls ir_upload) ─────────────
 const IR_UPLOAD_CAPACITY: usize = 64 * 1024;
@@ -164,6 +171,7 @@ export fn ir_upload(byte_len: usize) u32 {
     scene_tape = builder.finalize(lowered.output);
     scene_camera = lowered.mutable_camera;
     scene_loaded = true;
+    clearSceneMesh();
     return 0;
 }
 
@@ -277,6 +285,69 @@ fn decodePrim(rec: *const [IR_PRIM_SIZE]u8) !field_ir.SketchPrimitive2d {
 
 inline fn readU32(rec: *const [IR_NODE_SIZE]u8, comptime offset: usize) u32 {
     return std.mem.readInt(u32, rec[offset..][0..4], .little);
+}
+
+fn clearSceneMesh() void {
+    if (scene_mesh) |*mesh| {
+        mesh.deinit(mesh_allocator);
+        scene_mesh = null;
+    }
+}
+
+fn sampleScene(_: ?*const anyopaque, pos: mesh_mod.types.Vec3) f32 {
+    return eval_mod.evalScalar(&scene_tape, pos.x, pos.y, pos.z, &mesh_eval_slots);
+}
+
+fn gradientScene(_: ?*const anyopaque, pos: mesh_mod.types.Vec3) mesh_mod.types.Vec3 {
+    const g = grad_mod.evalGrad(&scene_tape, pos.x, pos.y, pos.z, &mesh_grad_slots);
+    return .{ .x = g[1], .y = g[2], .z = g[3] };
+}
+
+export fn mesh_build(half_extent: f32, max_depth: u32) u32 {
+    if (!scene_loaded) return 1;
+    if (!(half_extent > 0.0)) return 2;
+    if (max_depth == 0 or max_depth > 12) return 2;
+
+    clearSceneMesh();
+
+    const bounds: mesh_mod.types.Aabb = .{
+        .min = .{ .x = -half_extent, .y = -half_extent, .z = -half_extent },
+        .max = .{ .x = half_extent, .y = half_extent, .z = half_extent },
+    };
+
+    const built = mesh_mod.buildMesh(
+        mesh_allocator,
+        .{
+            .ctx = null,
+            .sampleFn = sampleScene,
+            .gradientFn = gradientScene,
+        },
+        bounds,
+        .{ .max_depth = @intCast(max_depth) },
+    ) catch return 3;
+
+    scene_mesh = built;
+    return 0;
+}
+
+export fn mesh_vertices_ptr() usize {
+    const mesh = scene_mesh orelse return 0;
+    return @intFromPtr(mesh.vertices.ptr);
+}
+
+export fn mesh_vertices_len() u32 {
+    const mesh = scene_mesh orelse return 0;
+    return @as(u32, @intCast(mesh.vertices.len * 3));
+}
+
+export fn mesh_triangles_ptr() usize {
+    const mesh = scene_mesh orelse return 0;
+    return @intFromPtr(mesh.triangles.ptr);
+}
+
+export fn mesh_triangles_len() u32 {
+    const mesh = scene_mesh orelse return 0;
+    return @as(u32, @intCast(mesh.triangles.len * 3));
 }
 
 // ── Exports: voxel render ───────────────────────────────────────────────

@@ -271,6 +271,12 @@ let private renderKindControls
         append (ref "child" child MeshChild)
         append (drag "size" size MeshSize)
         append (drag "res" (float res) MeshResolution)
+        let exportBtn = document.createElement "button" :?> HTMLButtonElement
+        exportBtn.className <- "control-button"
+        exportBtn.textContent <- "download mesh"
+        exportBtn.disabled <- Option.isNone child
+        exportBtn.addEventListener ("click", fun _ -> MeshExport.downloadMesh selected)
+        append (exportBtn :> HTMLElement)
 
     strip
 

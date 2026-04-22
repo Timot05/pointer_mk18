@@ -347,6 +347,25 @@ let copyTextureToBuffer1x1
     (x: int) (y: int)
     (buffer: IGPUBuffer) : unit = jsNative
 
+/// Copy a WxH rect from a 2D texture into a buffer. `bytesPerRow` must
+/// be a multiple of 256 per WebGPU spec.
+[<Emit("""$0.copyTextureToBuffer(
+    { texture: $1, origin: { x: $2, y: $3, z: 0 }, mipLevel: 0 },
+    { buffer: $4, bytesPerRow: $7 },
+    { width: $5, height: $6, depthOrArrayLayers: 1 }
+)""")>]
+let copyTextureToBufferRect
+    (encoder: IGPUCommandEncoder)
+    (texture: IGPUTexture)
+    (x: int) (y: int)
+    (buffer: IGPUBuffer)
+    (width: int) (height: int)
+    (bytesPerRow: int) : unit = jsNative
+
+/// Read `count` u32s from a mapped ArrayBuffer starting at byteOffset.
+[<Emit("Array.from(new Uint32Array($0, $1, $2))")>]
+let readU32Range (buffer: JS.ArrayBuffer) (byteOffset: int) (count: int) : uint32[] = jsNative
+
 /// Read the first u32 from a mapped buffer's range.
 [<Emit("new Uint32Array($0)[0] >>> 0")>]
 let readFirstU32 (buffer: JS.ArrayBuffer) : uint32 = jsNative

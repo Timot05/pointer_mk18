@@ -213,7 +213,7 @@ module Editor =
         | FixedConstraint -> "Fixed"
 
     let initState () =
-        let doc = Document.stressDocument ()
+        let doc = Document.emptyDocument ()
         let compiled = Pipeline.compile doc.Actions
         { Doc = doc
           Compiled = compiled
@@ -660,9 +660,18 @@ module Editor =
                 let actionId = Document.freshActionId kind state.Doc
                 match Palette.buildAction state.PaletteSession actionId with
                 | Some action ->
+                    // Drop straight into sketch-edit mode on a fresh
+                    // Sketch action — same QoL as the sidebar's
+                    // AddDefaultAction path.
+                    let enterSketchEdit =
+                        match action.Kind with
+                        | Sketch _ -> true
+                        | _ -> false
                     { state with
                         Doc = Document.addAction action state.Doc
-                        PaletteSession = Palette.empty }
+                        PaletteSession = Palette.empty
+                        SketchEditMode =
+                            if enterSketchEdit then true else state.SketchEditMode }
                     |> recompileState
                 | None ->
                     { state with PaletteSession = Palette.empty }
@@ -783,7 +792,15 @@ module Editor =
                           Visible = true
                           Display = None
                           FieldSlice = None }
-                    { state with Doc = Document.addAction action state.Doc } |> recompileState
+                    let next = { state with Doc = Document.addAction action state.Doc }
+                    // Drop straight into sketch-edit mode on a fresh
+                    // Sketch action — the user otherwise has to click
+                    // the edit toggle as their first action every time.
+                    let next =
+                        match template with
+                        | SketchTemplate -> { next with SketchEditMode = true }
+                        | _ -> next
+                    next |> recompileState
                 | AddAction action ->
                     { state with Doc = Document.addAction action state.Doc } |> recompileState
                 | UpdateAction(id, action) ->

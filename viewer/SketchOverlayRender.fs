@@ -803,7 +803,11 @@ let buildSketchPointBuffer
 
 /// Thickness (in 2D sketch coords) used for thick-line pick geometry.
 /// Fixed world-space width — not ideal at varying zoom, but simple.
-let private LINE_PICK_THICKNESS = 0.15f
+/// Kept deliberately generous (~0.5 units) so picks land even when the
+/// user isn't on the visual centerline. Keep in sync with the
+/// `THICKNESS` constant in `viewer/Shaders/LinePick.wgsl` — the shader
+/// hard-codes its own copy.
+let private LINE_PICK_THICKNESS = 0.5f
 
 /// Append one instance worth of data (ax, ay, bx, by, pickId) per line
 /// segment for the thick-line pick pipeline.
@@ -1275,7 +1279,10 @@ let buildSketchPointPickBuffer
                     | _ -> fallback
                 let rx = readSlot (sprintf "sketch.entity.%s.x" id) x
                 let ry = readSlot (sprintf "sketch.entity.%s.y" id) y
-                [ float32 rx; float32 ry; 10.0f; float32 pickId ]
+                // Pick radius in pixels — deliberately fat (visual
+                // point is 5 px, pick disc is 28 px) so clicks near the
+                // point still register.
+                [ float32 rx; float32 ry; 28.0f; float32 pickId ]
         | _ -> [])
     |> List.toArray
 
@@ -1413,7 +1420,9 @@ let buildFrameAxesPickBuffer
     (pickables: Pickable list)
     (viewHalfH: float) (viewportHeight: float) : float32[] =
     let samplesPerAxis = 16
-    let thicknessPx = 6.0f
+    // Fat pick tube along each axis — visual axis line is thin (1–2 px),
+    // pick tube is ~12 px so the axis is easy to grab.
+    let thicknessPx = 12.0f
     let worldPerPx = (2.0 * viewHalfH) / max viewportHeight 1.0
     let out = ResizeArray<float32>()
     for frame in frames do
@@ -1464,7 +1473,10 @@ let buildFrameOriginsPickBuffer
             out.Add(float32 pos.X)
             out.Add(float32 pos.Y)
             out.Add(float32 pos.Z)
-            out.Add (POINT_RADIUS_PX * 2.5f)
+            // Fat pick disc over the frame's origin — ~20 px radius
+            // so clicks near the origin (or on the axis cluster near
+            // it) land on the frame.
+            out.Add(POINT_RADIUS_PX * 4.0f)
             out.Add(float32 pid)
         | None -> ()
     out.ToArray()

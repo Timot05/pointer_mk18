@@ -42,7 +42,11 @@ fn project_world(pos: vec3<f32>) -> vec4<f32> {
     return proj * view * vec4<f32>(pos, 1.0);
 }
 
-const THICKNESS: f32 = 0.15;
+// Generous hit tube around each sketch line segment. Bigger than
+// visually rendered thickness so the user can pick without landing
+// exactly on the centerline. Keep in sync with `LINE_PICK_THICKNESS`
+// in `viewer/SketchOverlayRender.fs`.
+const THICKNESS: f32 = 0.5;
 
 @vertex
 fn vs(

@@ -102,6 +102,26 @@ body {
   color: var(--text-primary);
 }
 
+.control-button {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.control-button:hover {
+  background: var(--bg-surface-hover);
+}
+
+.control-button:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
 .topbar-button-active {
   color: var(--text-primary);
   font-weight: 600;

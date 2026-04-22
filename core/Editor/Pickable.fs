@@ -89,9 +89,12 @@ module Pickable =
         | PickPoint _ -> 0
         | PickLine _ | PickCircle _ | PickArc _ -> 1
         | PickDimension _ -> 2
-        | PickLoop _ -> 3
-        | PickFrameOrigin _ -> 4
-        | PickFrameAxis _ -> 4
+        | PickFrameOrigin _
+        | PickFrameAxis _ -> 3
+        // Loops are the widest hit region of all — a whole filled face.
+        // Put them last so hovering a point/line/frame inside a loop
+        // always resolves to the narrower thing the user's aimed at.
+        | PickLoop _ -> 4
 
     let reduceCandidates (pickables: Pickable list) (candidates: PickCandidate list) : Pickable option =
         let byId = pickables |> List.map (fun p -> pickId p, p) |> Map.ofList
@@ -103,11 +106,18 @@ module Pickable =
 
     let selectionPriority =
         function
-        | TargetPoint _
-        | TargetFrameOrigin _ -> 0
+        | TargetPoint _ -> 0
         | TargetLine _
         | TargetCircle _
-        | TargetArc _
-        | TargetFrameAxis _ -> 1
+        | TargetArc _ -> 1
         | TargetDimension _ -> 2
-        | TargetLoop _ -> 3
+        // Frames sit below sketch entities but above loops — fat gizmos
+        // shouldn't steal clicks from sketch geometry, but still need
+        // to beat the filled-face hit region of a loop.
+        | TargetFrameOrigin _
+        | TargetFrameAxis _ -> 3
+        // Loops = filled region, the widest target of all. Hovering
+        // anywhere inside a loop should resolve to the narrower shape
+        // (point/line/frame) the cursor is actually aimed at; only
+        // hover the loop when nothing else is under the cursor.
+        | TargetLoop _ -> 4

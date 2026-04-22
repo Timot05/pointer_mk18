@@ -28,6 +28,12 @@ let private uint8View (buffer: obj) (offset: int) (length: int) : obj = jsNative
 [<Emit("new Float32Array($0, $1, $2)")>]
 let private f32View (buffer: obj) (offset: int) (length: int) : obj = jsNative
 
+[<Emit("new Uint32Array($0, $1, $2)")>]
+let private u32View (buffer: obj) (offset: int) (length: int) : obj = jsNative
+
+[<Emit("Array.from($0)")>]
+let private arrayFrom<'T> (x: obj) : 'T[] = jsNative
+
 [<Emit("$0.set($1)")>]
 let private copyInto (dst: obj) (src: obj) : unit = jsNative
 
@@ -40,6 +46,11 @@ type Exports =
     abstract camera_buffer_ptr: unit -> int
     abstract set_camera: unit -> int
     abstract gbuffer_ptr: unit -> int
+    abstract mesh_build: halfExtent: float * maxDepth: int -> int
+    abstract mesh_vertices_ptr: unit -> int
+    abstract mesh_vertices_len: unit -> int
+    abstract mesh_triangles_ptr: unit -> int
+    abstract mesh_triangles_len: unit -> int
     abstract render_voxels:
         tile_width: int * tile_height: int *
         full_width: int * full_height: int *
@@ -100,3 +111,21 @@ let setCamera (x: Exports) (values: float32[]) : int =
 /// pass directly to `device.queue.writeTexture`.
 let gbufferView (x: Exports) (w: int) (h: int) : obj =
     f32View x.memory?buffer (x.gbuffer_ptr ()) (w * h * 4)
+
+/// Copy mesh vertex storage out of WASM as a flat float array:
+/// `[x0; y0; z0; x1; y1; z1; ...]`.
+let meshVertices (x: Exports) : float[] =
+    let len = x.mesh_vertices_len ()
+    if len <= 0 then [||]
+    else
+        f32View x.memory?buffer (x.mesh_vertices_ptr ()) len
+        |> arrayFrom<float>
+
+/// Copy mesh triangle storage out of WASM as flat indices:
+/// `[a0; b0; c0; a1; b1; c1; ...]`.
+let meshTriangles (x: Exports) : int[] =
+    let len = x.mesh_triangles_len ()
+    if len <= 0 then [||]
+    else
+        u32View x.memory?buffer (x.mesh_triangles_ptr ()) len
+        |> arrayFrom<int>

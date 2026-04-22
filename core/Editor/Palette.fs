@@ -10,9 +10,11 @@ type ScalarDef =
       Label: string
       Default: float }
 
-/// Each step in the palette wizard is either picking a ref or adjusting scalars.
+/// Each step in the palette wizard is either picking a ref, picking
+/// one of a fixed set of choices, or adjusting scalars.
 type PaletteStep =
     | RefStep of key: string * label: string * accepts: FieldType list
+    | ChoiceStep of key: string * label: string * options: (string * string) list
     | ScalarsStep of label: string * fields: ScalarDef list
 
 // ── Types sent to the frontend ───────────────────────────────────────
@@ -37,6 +39,7 @@ type PaletteState =
       PickedKind: string option
       Chips: PaletteChip list
       Prompt: string
+      Query: string
       Items: PaletteItem list
       ScalarFields: PaletteScalarField list
       HintBar: string list }
@@ -88,7 +91,8 @@ module Palette =
         | "Box" ->
             [ scalars "dimensions" [ s "width" "width" 10.0; s "height" "height" 10.0; s "depth" "depth" 10.0 ] ]
         | "HalfPlane" ->
-            [ scalars "offset" [ s "offset" "offset" 0.0 ] ]
+            [ ChoiceStep("axis", "axis", [ "X", "X"; "Y", "Y"; "Z", "Z" ])
+              scalars "offset" [ s "offset" "offset" 0.0 ] ]
         | "Translate" ->
             [ ref' "child" "from"
               scalars "offset" [ s "x" "x" 0.0; s "y" "y" 0.0; s "z" "z" 0.0 ] ]
@@ -102,8 +106,13 @@ module Palette =
             [ ref' "origin" "on frame" ]
         | "FromSketch" ->
             [ ref' "child" "sketch" ]
-        | "Union" | "Subtract" | "Intersect" ->
+        | "Union" | "Intersect" ->
             [ ref' "a" "tool"; ref' "b" "target"
+              scalars "blend" [ s "radius" "blend" 0.0 ] ]
+        | "Subtract" ->
+            // Subtract = `a` with a `b`-shaped hole carved out, so `a` is
+            // the base (target) and `b` is the cutter (tool).
+            [ ref' "a" "target"; ref' "b" "tool"
               scalars "blend" [ s "radius" "blend" 0.0 ] ]
         | "Thicken" ->
             [ ref' "child" "from"
@@ -154,6 +163,14 @@ module Palette =
         | RefStep(key, label, _) ->
             let v = values |> Map.tryFind key |> Option.defaultValue "\u2013"
             [ { Label = label; Value = v } ]
+        | ChoiceStep(key, label, options) ->
+            let rawValue = values |> Map.tryFind key |> Option.defaultValue "\u2013"
+            let display =
+                options
+                |> List.tryFind (fun (id, _) -> id = rawValue)
+                |> Option.map snd
+                |> Option.defaultValue rawValue
+            [ { Label = label; Value = display } ]
         | ScalarsStep(_, fields) ->
             fields |> List.map (fun f ->
                 let v = values |> Map.tryFind f.Key |> Option.defaultValue (string f.Default)
@@ -167,13 +184,14 @@ module Palette =
     let toState (session: PaletteSession) (typeMap: Map<ActionId, FieldType>) (doc: Document) : PaletteState =
         let closed =
             { IsOpen = false; Mode = "closed"; PickedKind = None; Chips = []
-              Prompt = ""; Items = []; ScalarFields = []; HintBar = [] }
+              Prompt = ""; Query = ""; Items = []; ScalarFields = []; HintBar = [] }
         if session.StepIndex < 0 then closed
         else
         match session.PickedKind with
         | None ->
             { IsOpen = true; Mode = "command"; PickedKind = None; Chips = []
               Prompt = "Add action\u2026"
+              Query = session.Query
               Items = filterTemplates session.Query
               ScalarFields = []
               HintBar = [ "\u2191\u2193 navigate"; "\u21B5 select"; "esc cancel" ] }
@@ -190,7 +208,18 @@ module Palette =
                 | RefStep(_, label, accepts) ->
                     { IsOpen = true; Mode = "ref"; PickedKind = Some kind; Chips = chips
                       Prompt = $"Pick \"{label}\" for {kind}\u2026"
+                      Query = session.Query
                       Items = filterActions session.Query accepts typeMap doc
+                      ScalarFields = []
+                      HintBar = [ "\u2191\u2193 navigate"; "\u21B5 next"; "\u2318\u21B5 create now"; "\u232B back"; "esc cancel" ] }
+                | ChoiceStep(_, label, options) ->
+                    let filtered =
+                        if System.String.IsNullOrEmpty(session.Query) then options
+                        else options |> List.filter (fun (_, lbl) -> fuzzyMatch session.Query lbl)
+                    { IsOpen = true; Mode = "ref"; PickedKind = Some kind; Chips = chips
+                      Prompt = $"Pick \"{label}\" for {kind}\u2026"
+                      Query = session.Query
+                      Items = filtered |> List.map (fun (id, lbl) -> { Id = id; Label = lbl; Kind = kind })
                       ScalarFields = []
                       HintBar = [ "\u2191\u2193 navigate"; "\u21B5 next"; "\u2318\u21B5 create now"; "\u232B back"; "esc cancel" ] }
                 | ScalarsStep(_, fields) ->
@@ -204,6 +233,7 @@ module Palette =
                             { Key = f.Key; Label = f.Label; Value = v })
                     { IsOpen = true; Mode = "scalars"; PickedKind = Some kind; Chips = chips
                       Prompt = ""
+                      Query = ""
                       Items = []
                       ScalarFields = scalarFields
                       HintBar = [ "drag to adjust"; "\u21B5 next"; "\u2318\u21B5 create now"; "\u232B back"; "esc cancel" ] }
@@ -221,6 +251,7 @@ module Palette =
             |> List.collect (fun step ->
                 match step with
                 | ScalarsStep(_, fields) -> fields |> List.map (fun f -> f.Key, string f.Default)
+                | ChoiceStep(key, _, (defId, _) :: _) -> [ key, defId ]
                 | _ -> [])
             |> Map.ofList
         { session with PickedKind = Some kindCase; Steps = steps; StepIndex = 0; Values = seeded; Query = "" }
@@ -229,7 +260,8 @@ module Palette =
         if session.StepIndex >= session.Steps.Length then session
         else
             match session.Steps.[session.StepIndex] with
-            | RefStep(key, _, _) ->
+            | RefStep(key, _, _)
+            | ChoiceStep(key, _, _) ->
                 let values = session.Values |> Map.add key itemId
                 { session with Values = values; StepIndex = session.StepIndex + 1; Query = "" }
             | _ -> session
@@ -272,7 +304,7 @@ module Palette =
                 | "Sphere" -> Sphere(flt "radius" 8.0)
                 | "Cylinder" -> Cylinder(flt "radius" 5.0, flt "height" 20.0)
                 | "Box" -> Box(flt "width" 10.0, flt "height" 10.0, flt "depth" 10.0)
-                | "HalfPlane" -> HalfPlane("Z", flt "offset" 0.0, false)
+                | "HalfPlane" -> HalfPlane(str "axis" |> Option.defaultValue "Z", flt "offset" 0.0, false)
                 | "Translate" -> Translate(str "child", flt "x" 0.0, flt "y" 0.0, flt "z" 0.0)
                 | "Rotate" -> Rotate(str "child", flt "ax" 0.0, flt "ay" 0.0, flt "az" 1.0, flt "angle" 0.0)
                 | "Move" -> ActionKind.Move(str "child", str "frame")

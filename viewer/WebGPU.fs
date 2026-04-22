@@ -106,6 +106,11 @@ type [<AllowNullLiteral>] IGPURenderPassEncoder =
     [<Emit("$0.setBindGroup($1, $2, [$3])")>]
     abstract setBindGroupWithOffset: index: int * bindGroup: IGPUBindGroup * offset: int -> unit
 
+    /// Bind with N dynamic buffer offsets. The array order matches the
+    /// order of `hasDynamicOffset` bindings in the group's layout.
+    [<Emit("$0.setBindGroup($1, $2, $3)")>]
+    abstract setBindGroupWithOffsets: index: int * bindGroup: IGPUBindGroup * offsets: int[] -> unit
+
 type [<AllowNullLiteral>] IGPUComputePassEncoder =
     abstract setPipeline: pipeline: IGPUComputePipeline -> unit
     abstract setBindGroup: index: int * bindGroup: IGPUBindGroup -> unit
@@ -113,6 +118,12 @@ type [<AllowNullLiteral>] IGPUComputePassEncoder =
 
     [<Emit("$0.end()")>]
     abstract endPass: unit -> unit
+
+    [<Emit("$0.setBindGroup($1, $2, [$3])")>]
+    abstract setBindGroupWithOffset: index: int * bindGroup: IGPUBindGroup * offset: int -> unit
+
+    [<Emit("$0.setBindGroup($1, $2, $3)")>]
+    abstract setBindGroupWithOffsets: index: int * bindGroup: IGPUBindGroup * offsets: int[] -> unit
 
 type [<AllowNullLiteral>] IGPUCommandEncoder =
     abstract beginRenderPass: descriptor: obj -> IGPURenderPassEncoder
@@ -336,6 +347,8 @@ let imageHeight (image: obj) : int = jsNative
 
 /// Copy a 1×1 pixel from a 2D texture into a buffer at offset 0.
 /// bytesPerRow is set to 256, the minimum alignment WebGPU requires.
+/// Kept for reference; the active pick path now uses a compute shader
+/// writing into a storage buffer and avoids the texture readback.
 [<Emit("""$0.copyTextureToBuffer(
     { texture: $1, origin: { x: $2, y: $3, z: 0 }, mipLevel: 0 },
     { buffer: $4, bytesPerRow: 256 },
@@ -347,24 +360,22 @@ let copyTextureToBuffer1x1
     (x: int) (y: int)
     (buffer: IGPUBuffer) : unit = jsNative
 
-/// Copy a WxH rect from a 2D texture into a buffer. `bytesPerRow` must
-/// be a multiple of 256 per WebGPU spec.
-[<Emit("""$0.copyTextureToBuffer(
-    { texture: $1, origin: { x: $2, y: $3, z: 0 }, mipLevel: 0 },
-    { buffer: $4, bytesPerRow: $7 },
-    { width: $5, height: $6, depthOrArrayLayers: 1 }
-)""")>]
-let copyTextureToBufferRect
+/// Buffer → buffer copy inside the encoder. Used to move pick results
+/// from the read_write storage buffer to a MapRead buffer for CPU.
+[<Emit("$0.copyBufferToBuffer($1, $2, $3, $4, $5)")>]
+let copyBufferToBuffer
     (encoder: IGPUCommandEncoder)
-    (texture: IGPUTexture)
-    (x: int) (y: int)
-    (buffer: IGPUBuffer)
-    (width: int) (height: int)
-    (bytesPerRow: int) : unit = jsNative
+    (src: IGPUBuffer) (srcOffset: int)
+    (dst: IGPUBuffer) (dstOffset: int)
+    (size: int) : unit = jsNative
 
-/// Read `count` u32s from a mapped ArrayBuffer starting at byteOffset.
+/// Read an arbitrary range of u32s from a mapped ArrayBuffer.
 [<Emit("Array.from(new Uint32Array($0, $1, $2))")>]
 let readU32Range (buffer: JS.ArrayBuffer) (byteOffset: int) (count: int) : uint32[] = jsNative
+
+/// Read a range of f32s from a mapped ArrayBuffer as an F# array.
+[<Emit("Array.from(new Float32Array($0, $1, $2))")>]
+let readF32Range (buffer: JS.ArrayBuffer) (byteOffset: int) (count: int) : float32[] = jsNative
 
 /// Read the first u32 from a mapped buffer's range.
 [<Emit("new Uint32Array($0)[0] >>> 0")>]

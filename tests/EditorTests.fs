@@ -10,13 +10,17 @@ let updateMany messages state =
 let slotFor actionId path (state: EditorState) =
     state.Compiled.Slots.Index.[{ ActionId = actionId; Path = path }]
 
+let defaultDocState () =
+    Editor.initState ()
+    |> updateMany [ ReplaceDocument(Document.defaultDocument ()) ]
+
 [<Fact>]
-let ``Editor init state starts with compiled default document`` () =
+let ``Editor init state starts with compiled empty document`` () =
     let state = Editor.initState ()
 
     Assert.Equal("untitled", state.Doc.Name)
     Assert.Equal(Some "origin", state.Doc.SelectedId)
-    Assert.NotEmpty(state.Doc.Actions)
+    Assert.Single(state.Doc.Actions) |> ignore
     Assert.NotEmpty(state.Compiled.Pickables)
     Assert.False(state.SketchEditMode)
     Assert.Equal("none", state.SketchTool)
@@ -24,7 +28,7 @@ let ``Editor init state starts with compiled default document`` () =
 [<Fact>]
 let ``Sketch tool and constraint placement are normalized through editor update`` () =
     let state =
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit
@@ -40,7 +44,7 @@ let ``Sketch tool and constraint placement are normalized through editor update`
 [<Fact>]
 let ``Delete intent is a no-op in sketch edit mode with no selected sketch targets`` () =
     let before =
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit ]
@@ -55,7 +59,7 @@ let ``Delete intent is a no-op in sketch edit mode with no selected sketch targe
 [<Fact>]
 let ``Frame pick during sketch edit keeps the active sketch selected`` () =
     let before =
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit ]
@@ -74,7 +78,7 @@ let ``Frame pick during sketch edit keeps the active sketch selected`` () =
 [<Fact>]
 let ``Line tool chains segments through a shared endpoint`` () =
     let before =
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit
@@ -119,7 +123,7 @@ let ``Line tool chains segments through a shared endpoint`` () =
 [<Fact>]
 let ``First snapped line tool point stores the reused point coordinates`` () =
     let before =
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit
@@ -142,7 +146,7 @@ let ``First snapped line tool point stores the reused point coordinates`` () =
 [<Fact>]
 let ``Clear model resets editor transient state and leaves only origin`` () =
     let dirty =
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit
@@ -163,7 +167,7 @@ let ``Clear model resets editor transient state and leaves only origin`` () =
 [<Fact>]
 let ``Editor selectors expose coherent document and viewer state`` () =
     let state =
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit ]
@@ -198,7 +202,7 @@ let ``ViewerState sketch loops are computed from live slot values, not unsolved 
           Constraints = [] }
 
     let baseState =
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany [ ReplaceSketch("sketch1", openLoopSketch) ]
 
     let closedSlots = Array.copy baseState.SlotValues
@@ -228,7 +232,7 @@ let ``Sketch drag messages update editor drag state and emit solve effects`` () 
           YField = SketchEntityField("p0", PointY)
           Target = { X = 1.0; Y = 2.0 } }
 
-    let started, startEffects = Editor.update (BeginSketchDrag drag) (Editor.initState ())
+    let started, startEffects = Editor.update (BeginSketchDrag drag) (defaultDocState ())
     let moved, moveEffects = Editor.update (UpdateSketchDragTarget { X = 3.0; Y = 4.0 }) started
     let finished, finishEffects = Editor.update FinishSketchDrag moved
 
@@ -253,7 +257,7 @@ let ``Clear model cancels any active sketch drag`` () =
               YField = SketchConstraintField(0, ConstraintLabelY)
               Target = { X = 5.0; Y = 6.0 } }
 
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit
@@ -270,7 +274,7 @@ let ``ViewerPlaceConstraint stores a labelPosition on the new distance constrain
     // position gets stored — otherwise ViewerPipeline.viewerState drops it
     // from ConstraintLabelPositions and the viewer renders no number.
     let baseline =
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit
@@ -321,7 +325,7 @@ let ``Applying a matching solved drag result during finish commits sketch params
           Target = { X = 42.0; Y = 24.0 } }
 
     let finishing =
-        Editor.initState ()
+        defaultDocState ()
         |> updateMany
             [ SelectAction "sketch1"
               ToggleSketchEdit
@@ -347,7 +351,7 @@ let ``Applying a matching solved drag result during finish commits sketch params
 
 [<Fact>]
 let ``Slot-backed param edit updates live slot values without recompiling`` () =
-    let before = Editor.initState ()
+    let before = defaultDocState ()
     let radiusSlot = slotFor "cyl1" "radius" before
 
     let after =
@@ -366,7 +370,7 @@ let ``Slot-backed param edit updates live slot values without recompiling`` () =
 
 [<Fact>]
 let ``Structural param edit recompiles topology and refreshes slot values`` () =
-    let before = Editor.initState ()
+    let before = defaultDocState ()
 
     let after =
         Editor.update (Editor.setActionParamValue "frame1" TranslateChild (VString "cyl1")) before
@@ -381,7 +385,7 @@ let ``Structural param edit recompiles topology and refreshes slot values`` () =
 
 [<Fact>]
 let ``Frame numeric params allocate slots in the compiled slot table`` () =
-    let state = Editor.initState ()
+    let state = defaultDocState ()
 
     Assert.True(state.Compiled.Slots.Index.ContainsKey { ActionId = "frame1"; Path = "x" })
     Assert.True(state.Compiled.Slots.Index.ContainsKey { ActionId = "frame1"; Path = "y" })
@@ -389,7 +393,7 @@ let ``Frame numeric params allocate slots in the compiled slot table`` () =
 
 [<Fact>]
 let ``Frame numeric param edit updates viewer frames without recompiling`` () =
-    let before = Editor.initState ()
+    let before = defaultDocState ()
     let beforeViewer = ViewerPipeline.viewerState before
     let beforeFrame = beforeViewer.Frames |> List.find (fun frame -> frame.Id = "frame1")
 

@@ -247,8 +247,8 @@ let private renderKindControls
         append (ref "target" b UnionB)
         append (drag "radius" r UnionRadius)
     | Subtract(a, b, r) ->
-        append (ref "tool" a SubtractA)
-        append (ref "target" b SubtractB)
+        append (ref "target" a SubtractA)
+        append (ref "tool" b SubtractB)
         append (drag "radius" r SubtractRadius)
     | Intersect(a, b, r) ->
         append (ref "tool" a IntersectA)

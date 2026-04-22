@@ -205,20 +205,6 @@ let private pushFixedTick (out: ResizeArray<float32>) (p: float * float) =
     pushSegment out (px - d, py - d) (px + d, py + d) FIXED_COLOUR
     pushSegment out (px - d, py + d) (px + d, py - d) FIXED_COLOUR
 
-/// Emit a short horizontal or vertical dash at the midpoint for H/V
-/// constraints.
-let private pushHVDash
-    (out: ResizeArray<float32>) (a: float * float) (b: float * float)
-    (isHorizontal: bool) =
-    let (ax, ay) = a
-    let (bx, by) = b
-    let mx, my = (ax + bx) * 0.5, (ay + by) * 0.5
-    let d = 0.8
-    if isHorizontal then
-        pushSegment out (mx - d, my) (mx + d, my) DIM_COLOUR
-    else
-        pushSegment out (mx, my - d) (mx, my + d) DIM_COLOUR
-
 let private isDimActive
     (sketchId: ActionId) (idx: int)
     (hovered: SelectionTarget option) (selected: SelectionTarget list) : bool =
@@ -464,11 +450,6 @@ let private pushConstraintGeometry
         match pt p with
         | Some point -> pushFixedTick out point
         | None -> ()
-    | Horizontal(a, b) | Vertical(a, b) ->
-        let isH = match c with Horizontal _ -> true | _ -> false
-        match pt a, pt b with
-        | Some pa, Some pb -> pushHVDash out pa pb isH
-        | _ -> ()
     | _ when not showDimensions -> ()
     | Distance(a, b, _, lp) ->
         match pt a, pt b with
@@ -802,13 +783,6 @@ let buildSketchPointBuffer
     |> List.toArray
 
 /// Thickness (in 2D sketch coords) used for thick-line pick geometry.
-/// Fixed world-space width — not ideal at varying zoom, but simple.
-/// Kept deliberately generous (~0.5 units) so picks land even when the
-/// user isn't on the visual centerline. Keep in sync with the
-/// `THICKNESS` constant in `viewer/Shaders/LinePick.wgsl` — the shader
-/// hard-codes its own copy.
-let private LINE_PICK_THICKNESS = 0.5f
-
 /// Append one instance worth of data (ax, ay, bx, by, pickId) per line
 /// segment for the thick-line pick pipeline.
 let private pushPickSegment (out: ResizeArray<float32>) (a: float * float) (b: float * float) (pickId: int) =
@@ -913,10 +887,6 @@ let buildSketchPickLineBuffer
         | REArc(_, _, _, ArcThreePoint _) -> ())
 
     out.ToArray()
-
-/// The shader needs this as a uniform or a constant. Exposed here so the
-/// viewer can pass it through.
-let pickLineThickness () = LINE_PICK_THICKNESS
 
 // ─── Loop resolution + triangulation (for fill + picking) ───────────────
 
@@ -1410,73 +1380,3 @@ let buildFramesGizmoBuffer
         pushAxis (rot.Rotate({ X = 0.0; Y = 0.0; Z = 1.0 })) (colourFor axisColourZ)
     out.ToArray()
 
-/// Pick instances sampled along every frame axis. The visual gizmo scales
-/// axis length by a constant `worldPerPx` (ortho projection — no depth
-/// term), so we compute the same value here and sprinkle point-pick
-/// instances along each axis. Output format matches `worldPointPickPipeline`
-/// — 5 floats per instance: (wx, wy, wz, radiusPx, pickId).
-let buildFrameAxesPickBuffer
-    (frames: FrameView list)
-    (pickables: Pickable list)
-    (viewHalfH: float) (viewportHeight: float) : float32[] =
-    let samplesPerAxis = 16
-    // Fat pick tube along each axis — visual axis line is thin (1–2 px),
-    // pick tube is ~12 px so the axis is easy to grab.
-    let thicknessPx = 12.0f
-    let worldPerPx = (2.0 * viewHalfH) / max viewportHeight 1.0
-    let out = ResizeArray<float32>()
-    for frame in frames do
-        let origin = frame.Transform.Trans
-        let axisPx = if frame.Id = "origin" then 64.0 else 52.0
-        let axisLen = axisPx * worldPerPx
-        let rot = frame.Transform.Rot
-        // Hovering any axis line picks the frame as a whole — same
-        // pickId as the origin, so downstream selection only ever sees
-        // `TargetFrameOrigin`.
-        let pickIdOpt =
-            pickables
-            |> List.tryPick (function
-                | PickFrameOrigin(pid, fid) when fid = frame.Id -> Some pid
-                | _ -> None)
-        match pickIdOpt with
-        | None -> ()
-        | Some pid ->
-            let emit (localAxis: Vec3) =
-                let axWorld = rot.Rotate localAxis
-                for i in 1 .. samplesPerAxis do
-                    let t = (float i) / float samplesPerAxis
-                    let pos = origin + (axisLen * t) * axWorld
-                    out.Add(float32 pos.X)
-                    out.Add(float32 pos.Y)
-                    out.Add(float32 pos.Z)
-                    out.Add thicknessPx
-                    out.Add(float32 pid)
-            emit { X = 1.0; Y = 0.0; Z = 0.0 }
-            emit { X = 0.0; Y = 1.0; Z = 0.0 }
-            emit { X = 0.0; Y = 0.0; Z = 1.0 }
-    out.ToArray()
-
-/// Pick instances for all frame origins. Layout per instance: 5 floats —
-/// (wx, wy, wz, radiusPx, pickId).
-let buildFrameOriginsPickBuffer
-    (frames: FrameView list) (pickables: Pickable list) : float32[] =
-    let out = ResizeArray<float32>()
-    for frame in frames do
-        let pickIdOpt =
-            pickables
-            |> List.tryPick (function
-                | PickFrameOrigin(pid, fid) when fid = frame.Id -> Some pid
-                | _ -> None)
-        match pickIdOpt with
-        | Some pid ->
-            let pos = frame.Transform.Trans
-            out.Add(float32 pos.X)
-            out.Add(float32 pos.Y)
-            out.Add(float32 pos.Z)
-            // Fat pick disc over the frame's origin — ~20 px radius
-            // so clicks near the origin (or on the axis cluster near
-            // it) land on the frame.
-            out.Add(POINT_RADIUS_PX * 4.0f)
-            out.Add(float32 pid)
-        | None -> ()
-    out.ToArray()

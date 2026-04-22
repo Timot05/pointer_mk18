@@ -91,10 +91,6 @@ type SketchLoopView =
     { Id: string
       EntityIds: string list }
 
-type PickCandidateInput =
-    { PickId: int
-      Score: float32 }
-
 type Effect =
     | RunSketchSolve of SketchDrag
     | FinalizeSketchDrag of SketchDrag

@@ -41,11 +41,6 @@
 
     <!-- core / Field -->
     <Compile Include="core\Field\FieldIR.fs" />
-    <Compile Include="core\Field\SketchSdf.fs" />
-    <Compile Include="core\Field\FieldInterval.fs" />
-    <Compile Include="core\Field\TileRecursion.fs" />
-    <Compile Include="core\Field\FieldGrad.fs" />
-    <Compile Include="core\Field\MarchingCubes.fs" />
 
     <!-- core / Solve (GPU field pipelines, after field IR) -->
     <Compile Include="core\Solve\GpuSdf.fs" />
@@ -98,6 +93,7 @@
     <Compile Include="viewer\Raymarch.fs" />
     <Compile Include="viewer\FieldSlice.fs" />
 
+    <Compile Include="viewer\PickCompute.fs" />
     <Compile Include="viewer\DimensionEditor.fs" />
     <Compile Include="viewer\Input.fs" />
     <Compile Include="viewer\Render.fs" />

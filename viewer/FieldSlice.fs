@@ -151,8 +151,11 @@ let private ensureVertexCapacity (fs: FieldSlice) (neededFloats: int) =
 
 // Emit 6 vertices (two triangles) for one slice quad. Vertex positions
 // are world-space corners of the plane: origin ± extent along PlaneX/Y.
-let private appendQuad (out: ResizeArray<float32>) (slice: FieldSliceView) =
-    let s = float32 slice.Extent
+// The extent is camera-driven so the plane always covers the viewport
+// with slack — the shader's distance fade (scaled to `view_half_h`)
+// takes over well inside the quad so its edge is never visible.
+let private appendQuad (out: ResizeArray<float32>) (viewHalfH: float) (slice: FieldSliceView) =
+    let s = float32 (max 40.0 (viewHalfH * 12.0))
     let o = slice.PlaneOrigin
     let ux = slice.PlaneX
     let uy = slice.PlaneY
@@ -197,13 +200,16 @@ let update (fs: FieldSlice) (state: EditorState) (viewerState: ViewerState) =
         WebGPU.writeFloat32 fs.Scene.Device.queue fs.SlotBuffer 0 data
 
     // Rebuild the vertex buffer whenever slice set changes. Cheap enough
-    // to do every frame (usually ≤ a handful of slices).
+    // to do every frame (usually ≤ a handful of slices). Quad size
+    // tracks the current zoom level so the plane effectively spans
+    // the viewport at any scale.
     let slices = viewerState.FieldSlices
     if slices.IsEmpty then
         fs.VertexCount <- 0
     else
+        let viewHalfH = Camera.viewHalfH fs.Scene.Camera
         let verts = ResizeArray<float32>()
-        for slice in slices do appendQuad verts slice
+        for slice in slices do appendQuad verts viewHalfH slice
         let data = verts.ToArray()
         ensureVertexCapacity fs data.Length
         match fs.VertexBuffer with

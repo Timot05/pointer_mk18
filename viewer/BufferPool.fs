@@ -103,17 +103,11 @@ type Slots =
       SketchLine: PerSketchSlots
       SketchPoint: PerSketchSlots
       Label: PerSketchSlots
-      LoopPick: PerSketchSlots
-      LinePick: PerSketchSlots
-      PointPick: PerSketchSlots
-      DimPick: PerSketchSlots
       ToolPreviewLine: PerSketchSlots
       ToolPreviewPoint: PerSketchSlots
       PlacementPreviewLine: PerSketchSlots
       PlacementPreviewLabel: PerSketchSlots
       FrameOriginPoint: Slot
-      FrameOriginPick: Slot
-      FrameAxisPick: Slot
       FrameGizmo: Slot }
 
 let createSlots () : Slots =
@@ -124,15 +118,9 @@ let createSlots () : Slots =
       SketchLine = createPerSketchSlots ()
       SketchPoint = createPerSketchSlots ()
       Label = createPerSketchSlots ()
-      LoopPick = createPerSketchSlots ()
-      LinePick = createPerSketchSlots ()
-      PointPick = createPerSketchSlots ()
-      DimPick = createPerSketchSlots ()
       ToolPreviewLine = createPerSketchSlots ()
       ToolPreviewPoint = createPerSketchSlots ()
       PlacementPreviewLine = createPerSketchSlots ()
       PlacementPreviewLabel = createPerSketchSlots ()
       FrameOriginPoint = createSlot ()
-      FrameOriginPick = createSlot ()
-      FrameAxisPick = createSlot ()
       FrameGizmo = createSlot () }

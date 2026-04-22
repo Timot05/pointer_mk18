@@ -32,7 +32,7 @@ let render
         (onSave: unit -> unit)
         (onLoad: unit -> unit) : HTMLElement =
     let topbar = Dom.el "div" "topbar"
-    topbar.appendChild (Dom.elText "span" "topbar-logo" "pointer mk18" :> Node) |> ignore
+    topbar.appendChild (Dom.elText "span" "topbar-logo" "Dekal" :> Node) |> ignore
 
     let fileMenu = Dom.el "div" "topbar-menu"
     let fileBtn = Dom.elText "button" "topbar-button" "File"

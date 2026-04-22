@@ -29,11 +29,13 @@ let private addEvent (target: obj) (name: string) (h: obj -> unit) : unit = jsNa
 
 let private DRAG_THRESHOLD_PX = 4.0
 
-/// Hooks the viewer needs to expose back to the input subsystem. `PickAt`
-/// triggers the 1-pixel GPU readback; `ToolCursor` is updated by this
-/// module and read by the render loop.
+/// Hooks the viewer needs to expose back to the input subsystem.
+/// `PickAt` dispatches the compute picker for a 5×5 window around the
+/// cursor and returns every hit as a deduped `PickCandidateInput list`
+/// — the core's `reduceSelectionCandidates` picks the winner.
+/// `ToolCursor` is updated by this module and read by the render loop.
 type Hooks =
-    { PickAt: int -> int -> JS.Promise<uint32>
+    { PickAt: int -> int -> JS.Promise<PickCandidateInput list>
       PickableById: unit -> Map<int, Pickable>
       ToolCursor: (ActionId * float * float) option ref }
 
@@ -116,22 +118,25 @@ let install
             let px = int ((x - rect?left) * dpr)
             let py = int ((y - rect?top) * dpr)
             hooks.PickAt px py
-            |> Promise.iter (fun id ->
+            |> Promise.iter (fun candidates ->
+                // Resolve the top pickable locally too, for side-effects
+                // (dragPickable, placement target validation). The store
+                // separately runs `reduceSelectionCandidates` when it
+                // processes ViewerHover / ViewerPick.
+                let topPickable =
+                    Pickable.reduceCandidates
+                        (pickableById () |> Map.toList |> List.map snd)
+                        candidates
                 if placementActive then
                     dragPickable <- None
-                    let hovered =
-                        if id = 0u then None
-                        else Map.tryFind (int id - 1) (pickableById ())
                     let isTargetable =
-                        match hovered with
+                        match topPickable with
                         | Some (PickPoint _) | Some (PickLine _)
                         | Some (PickCircle _) | Some (PickArc _)
                         | Some (PickFrameOrigin _) -> true
                         | _ -> false
                     if isTargetable then
-                        let pickId = int id - 1
-                        Store.dispatch AppStore.store
-                            (ViewerHover [ { PickId = pickId; Score = 0.0f } ])
+                        Store.dispatch AppStore.store (ViewerHover candidates)
                         Store.dispatch AppStore.store ViewerDimensionClickTarget
                     else
                         let latest = ViewerPipeline.viewerState AppStore.store.State
@@ -145,14 +150,10 @@ let install
                     | Some (_, u, v) ->
                         Store.dispatch AppStore.store (ViewerToolClick(u, v))
                     | None -> ()
-                elif id = 0u then
-                    dragPickable <- None
-                    Store.dispatch AppStore.store (ViewerPick(selectionIntent e, []))
                 else
-                    let pickId = int id - 1
-                    dragPickable <- Map.tryFind pickId (pickableById ())
+                    dragPickable <- topPickable
                     Store.dispatch AppStore.store
-                        (ViewerPick(selectionIntent e, [ { PickId = pickId; Score = 0.0f } ]))))
+                        (ViewerPick(selectionIntent e, candidates))))
 
     addEvent canvas "dblclick" (fun e ->
         ePreventDefault e
@@ -160,33 +161,35 @@ let install
         let px = int ((eClientX e - rect?left) * dpr)
         let py = int ((eClientY e - rect?top) * dpr)
         hooks.PickAt px py
-        |> Promise.iter (fun id ->
-            if id <> 0u then
-                let pickId = int id - 1
-                match Map.tryFind pickId (pickableById ()) with
-                | Some (PickDimension(_, sid, idx, _)) ->
+        |> Promise.iter (fun candidates ->
+            let topPickable =
+                Pickable.reduceCandidates
+                    (pickableById () |> Map.toList |> List.map snd)
+                    candidates
+            match topPickable with
+            | Some (PickDimension(_, sid, idx, _)) ->
+                let vs = ViewerPipeline.viewerState AppStore.store.State
+                if not vs.SketchUi.EditMode then
+                    Store.dispatch AppStore.store (SelectAction sid)
+                    Store.dispatch AppStore.store ToggleSketchEdit
+                Store.dispatch AppStore.store (StartEditingDimension idx)
+            | Some p ->
+                let sketchIdOpt =
+                    match p with
+                    | PickPoint(_, sid, _, _, _)
+                    | PickLine(_, sid, _, _, _)
+                    | PickCircle(_, sid, _, _, _)
+                    | PickArc(_, sid, _, _, _, _, _)
+                    | PickLoop(_, sid, _, _) -> Some sid
+                    | _ -> None
+                match sketchIdOpt with
+                | Some sid ->
                     let vs = ViewerPipeline.viewerState AppStore.store.State
+                    Store.dispatch AppStore.store (SelectAction sid)
                     if not vs.SketchUi.EditMode then
-                        Store.dispatch AppStore.store (SelectAction sid)
                         Store.dispatch AppStore.store ToggleSketchEdit
-                    Store.dispatch AppStore.store (StartEditingDimension idx)
-                | Some p ->
-                    let sketchIdOpt =
-                        match p with
-                        | PickPoint(_, sid, _, _, _)
-                        | PickLine(_, sid, _, _, _)
-                        | PickCircle(_, sid, _, _, _)
-                        | PickArc(_, sid, _, _, _, _, _)
-                        | PickLoop(_, sid, _, _) -> Some sid
-                        | _ -> None
-                    match sketchIdOpt with
-                    | Some sid ->
-                        let vs = ViewerPipeline.viewerState AppStore.store.State
-                        Store.dispatch AppStore.store (SelectAction sid)
-                        if not vs.SketchUi.EditMode then
-                            Store.dispatch AppStore.store ToggleSketchEdit
-                    | None -> ()
-                | None -> ()))
+                | None -> ()
+            | None -> ()))
 
     addEvent window "mousemove" (fun e ->
         let state = AppStore.store.State
@@ -212,13 +215,8 @@ let install
             let h : int = canvas?height
             if px >= 0 && py >= 0 && px < w && py < h then
                 hooks.PickAt px py
-                |> Promise.iter (fun id ->
-                    if id = 0u then
-                        Store.dispatch AppStore.store (ViewerHover [])
-                    else
-                        let pickId = int id - 1
-                        Store.dispatch AppStore.store
-                            (ViewerHover [ { PickId = pickId; Score = 0.0f } ]))
+                |> Promise.iter (fun candidates ->
+                    Store.dispatch AppStore.store (ViewerHover candidates))
 
         match dragButton with
         | None -> ()

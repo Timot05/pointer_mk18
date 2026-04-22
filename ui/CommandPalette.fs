@@ -160,6 +160,9 @@ let private mount (dispatch: Message -> unit)
         input.placeholder <- state.Prompt
         input.spellcheck <- false
         input.autocomplete <- "off"
+        // State owns the query text. The session clears it on pick/back,
+        // so picking an item empties the input for free.
+        input.value <- state.Query
         row.appendChild (input :> Node) |> ignore
         inputOpt <- Some input
     elif state.Mode = "scalars" && state.Chips.IsEmpty && state.PickedKind.IsSome then
@@ -206,23 +209,12 @@ let private mount (dispatch: Message -> unit)
     match inputOpt with
     | None -> ()
     | Some input ->
-        let mutable debounceId : float option = None
-
         input.addEventListener (
             "input",
             fun _ ->
-                match debounceId with
-                | Some id -> window.clearTimeout id
-                | None -> ()
-                debounceId <-
-                    window.setTimeout (
-                        (fun _ ->
-                            dispatch (PaletteSetQuery input.value)
-                            let next = getPaletteState ()
-                            patchResults dispatch getDocActionCount next.Items sync),
-                        80
-                    )
-                    |> Some
+                dispatch (PaletteSetQuery input.value)
+                let next = getPaletteState ()
+                patchResults dispatch getDocActionCount next.Items sync
         )
 
         input.addEventListener (
@@ -322,28 +314,13 @@ let sync (dispatch: Message -> unit)
             | _, None ->
                 activeIndex <- 0
                 mount dispatch getPaletteState getDocActionCount syncImpl state
-            | Some bd, Some previousStructure when previousStructure <> nextStructure ->
-                let preservedValue =
-                    match bd.querySelector ".palette-input" with
-                    | :? HTMLInputElement as input -> Some input.value
-                    | _ -> None
-                let preservedSelection =
-                    match bd.querySelector ".palette-input" with
-                    | :? HTMLInputElement as input -> Some(input.selectionStart, input.selectionEnd)
-                    | _ -> None
+            | Some _, Some previousStructure when previousStructure <> nextStructure ->
+                // state.Query is the source of truth — mount reads it
+                // into input.value, so re-mounts that follow a pick (which
+                // resets Query to "") produce a cleared input.
                 activeIndex <- 0
                 unmount ()
                 mount dispatch getPaletteState getDocActionCount syncImpl state
-                match preservedValue, backdrop with
-                | Some value, Some nextBd ->
-                    match nextBd.querySelector ".palette-input" with
-                    | :? HTMLInputElement as nextInput ->
-                        nextInput.value <- value
-                        match preservedSelection with
-                        | Some(startPos, endPos) -> nextInput.setSelectionRange(startPos, endPos)
-                        | _ -> ()
-                    | _ -> ()
-                | _ -> ()
             | Some bd, Some _ ->
                 if state.Mode = "command" || state.Mode = "ref" then
                     if lastItemsSignature <> Some(itemsSignature state.Items) then

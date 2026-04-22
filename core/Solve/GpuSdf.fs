@@ -311,7 +311,7 @@ fn rotate_axis_angle_inv(p: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32>
 
     // ── Interval-arithmetic WGSL codegen ────────────────────────────────────
     //
-    // Mirrors `FieldInterval.fs` in WGSL. Produces per-surface
+    // Produces per-surface
     // `interval_sdf_{i}(box) -> Intv` — a conservative [lo, hi] bound on the
     // surface's SDF over an axis-aligned box of input intervals.
     //

@@ -190,23 +190,13 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 Store.subscribe AppStore.store onStoreChange
                 onStoreChange ()
 
-                // Async 1×1 pick readback. Shared with input handlers.
-                let mutable pickInFlight = false
-                let pickAt (px: int) (py: int) : JS.Promise<uint32> =
-                    promise {
-                        if pickInFlight then return 0u
-                        else
-                            pickInFlight <- true
-                            let encoder = device.createCommandEncoder()
-                            WebGPU.copyTextureToBuffer1x1 encoder scene.PickTex px py scene.PickReadBuffer
-                            device.queue.submit [| encoder.finish() |]
-                            do! scene.PickReadBuffer.mapAsync GPUMapMode.Read
-                            let arr = scene.PickReadBuffer.getMappedRange()
-                            let id = WebGPU.readFirstU32 arr
-                            scene.PickReadBuffer.unmap()
-                            pickInFlight <- false
-                            return id
-                    }
+                // Compute-shader picker. Dispatched on mouse events, reads
+                // back a 5×5 window of candidates, and forwards the full
+                // deduped list — the core reducer (`reduceSelectionCandidates`)
+                // picks the winner by priority + score.
+                let pickCompute = PickCompute.create scene
+                let pickAt (px: int) (py: int) : JS.Promise<PickCandidateInput list> =
+                    PickCompute.pickAt pickCompute px py
 
                 // Tool cursor (sketch-local u,v) is updated by mousemove and
                 // read by the render loop for preview geometry.
@@ -322,6 +312,14 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                         let renderStart = WebGPU.performanceNow ()
                         Render.renderFrame scene toolCursor.Value
                             background.Value (Some raymarch) (Some fieldSlice)
+                        // Keep the compute-pick geometry buffers in sync
+                        // with whatever Render just drew, using the same
+                        // `viewState` source. Sketch order inside the
+                        // picker matches Render's `writeSketchUniforms`
+                        // truncation so the dynamic frame-uniform offsets
+                        // line up.
+                        let vs = ViewerPipeline.viewerState state
+                        PickCompute.update pickCompute state vs
                         let renderEnd = WebGPU.performanceNow ()
                         let renderMs = renderEnd - renderStart
                         let alpha = 0.2

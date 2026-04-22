@@ -20,7 +20,6 @@ type Scene =
 
       // Textures (mutable — recreated on resize)
       mutable DepthTex: IGPUTexture
-      mutable PickTex: IGPUTexture
 
       // Uniform buffers + bind groups
       CameraBuffer: IGPUBuffer
@@ -37,12 +36,8 @@ type Scene =
       LinePipeline: IGPURenderPipeline
       TriPipeline: IGPURenderPipeline
       PointPipeline: IGPURenderPipeline
-      PointPickPipeline: IGPURenderPipeline
-      LoopPickPipeline: IGPURenderPipeline
-      LinePickPipeline: IGPURenderPipeline
       GizmoPipeline: IGPURenderPipeline
       WorldPointPipeline: IGPURenderPipeline
-      WorldPointPickPipeline: IGPURenderPipeline
       LabelPipeline: IGPURenderPipeline
       BackgroundPipeline: IGPURenderPipeline
 
@@ -52,10 +47,6 @@ type Scene =
 
       // Static geometry
       PointQuadBuffer: IGPUBuffer
-      LinePickCornerBuffer: IGPUBuffer
-
-      // Pick readback
-      PickReadBuffer: IGPUBuffer
 
       // Font atlas
       Atlas: MsdfAtlas
@@ -117,12 +108,6 @@ let create
         (atlas: MsdfAtlas)
         (fontMetrics: FontMetrics)
         : Scene =
-
-    // ── Pick readback buffer (256 B = WebGPU's min bytesPerRow alignment).
-    let pickReadBuffer =
-        device.createBuffer
-            { size = 256
-              usage = GPUBufferUsage.CopyDst ||| GPUBufferUsage.MapRead }
 
     // ── Camera / frame / viewport / label uniforms ────────────────────
     let cameraBuffer = uniformBuffer device 64
@@ -200,21 +185,11 @@ let create
             [| -1.0f; -1.0f; 1.0f; -1.0f; -1.0f; 1.0f
                1.0f; -1.0f;  1.0f;  1.0f; -1.0f; 1.0f |]
 
-    // Thick-line pick extrusion corners (t, s).
-    let linePickCornerBuffer =
-        staticVertexBuffer device
-            [| 0.0f; -1.0f; 1.0f; -1.0f; 0.0f; 1.0f
-               1.0f; -1.0f;  1.0f;  1.0f; 0.0f; 1.0f |]
-
     // ── Shaders ───────────────────────────────────────────────────────
     let lineShader = device.createShaderModule { code = Shaders.line }
     let pointShader = device.createShaderModule { code = Shaders.point }
-    let loopPickShader = device.createShaderModule { code = Shaders.loopPick }
-    let linePickShader = device.createShaderModule { code = Shaders.linePick }
-    let pointPickShader = device.createShaderModule { code = Shaders.pointPick }
     let gizmoShader = device.createShaderModule { code = Shaders.gizmo }
     let worldPointShader = device.createShaderModule { code = Shaders.worldPoint }
-    let worldPointPickShader = device.createShaderModule { code = Shaders.worldPointPick }
     let labelShader = device.createShaderModule { code = Shaders.label }
 
     // ── Pipeline layouts ──────────────────────────────────────────────
@@ -285,14 +260,6 @@ let create
                {| shaderLocation = 2; offset = 8;  format = "float32" |}
                {| shaderLocation = 3; offset = 12; format = "float32x4" |} |] |}
 
-    let pointPickInstanceLayout =
-        {| arrayStride = 4 * 4
-           stepMode = "instance"
-           attributes =
-            [| {| shaderLocation = 1; offset = 0;  format = "float32x2" |}
-               {| shaderLocation = 2; offset = 8;  format = "float32" |}
-               {| shaderLocation = 3; offset = 12; format = "float32" |} |] |}
-
     let quadCornerLayout =
         {| arrayStride = 2 * 4
            stepMode = "vertex"
@@ -314,71 +281,6 @@ let create
                    primitive = {| topology = "triangle-list" |}
                    depthStencil =
                     {| format = "depth24plus"; depthWriteEnabled = false; depthCompare = "less" |} |})
-
-    let pointPickPipeline =
-        device.createRenderPipeline
-            (box
-                {| layout = camFrameViewportLayout
-                   vertex =
-                    {| ``module`` = pointPickShader
-                       entryPoint = "vs"
-                       buffers = [| box quadCornerLayout; box pointPickInstanceLayout |] |}
-                   fragment =
-                    {| ``module`` = pointPickShader
-                       entryPoint = "fs"
-                       targets = [| {| format = "r32uint" |} |] |}
-                   primitive = {| topology = "triangle-list" |}
-                   depthStencil =
-                    {| format = "depth24plus"; depthWriteEnabled = true; depthCompare = "less" |} |})
-
-    // ── Loop pick (triangulated loop fills → r32uint) ────────────────
-    let loopPickPipeline =
-        device.createRenderPipeline
-            (box
-                {| layout = camFrameLayout
-                   vertex =
-                    {| ``module`` = loopPickShader
-                       entryPoint = "vs"
-                       buffers =
-                        [| {| arrayStride = 3 * 4
-                              stepMode = "vertex"
-                              attributes =
-                                [| {| shaderLocation = 0; offset = 0; format = "float32x2" |}
-                                   {| shaderLocation = 1; offset = 8; format = "float32" |} |] |} |] |}
-                   fragment =
-                    {| ``module`` = loopPickShader
-                       entryPoint = "fs"
-                       targets = [| {| format = "r32uint" |} |] |}
-                   primitive = {| topology = "triangle-list" |}
-                   depthStencil =
-                    {| format = "depth24plus"; depthWriteEnabled = true; depthCompare = "less" |} |})
-
-    // ── Line pick (thick extruded segments) ──────────────────────────
-    let linePickPipeline =
-        device.createRenderPipeline
-            (box
-                {| layout = camFrameLayout
-                   vertex =
-                    {| ``module`` = linePickShader
-                       entryPoint = "vs"
-                       buffers =
-                        [| {| arrayStride = 2 * 4
-                              stepMode = "vertex"
-                              attributes =
-                                [| {| shaderLocation = 0; offset = 0; format = "float32x2" |} |] |}
-                           {| arrayStride = 5 * 4
-                              stepMode = "instance"
-                              attributes =
-                                [| {| shaderLocation = 1; offset = 0;  format = "float32x2" |}
-                                   {| shaderLocation = 2; offset = 8;  format = "float32x2" |}
-                                   {| shaderLocation = 3; offset = 16; format = "float32" |} |] |} |] |}
-                   fragment =
-                    {| ``module`` = linePickShader
-                       entryPoint = "fs"
-                       targets = [| {| format = "r32uint" |} |] |}
-                   primitive = {| topology = "triangle-list" |}
-                   depthStencil =
-                    {| format = "depth24plus"; depthWriteEnabled = true; depthCompare = "less" |} |})
 
     // ── Gizmo (screen-scaled axis lines, line-list) ──────────────────
     let gizmoPipeline =
@@ -431,32 +333,6 @@ let create
                    primitive = {| topology = "triangle-list" |}
                    depthStencil =
                     {| format = "depth24plus"; depthWriteEnabled = false; depthCompare = "less" |} |})
-
-    let worldPointPickPipeline =
-        device.createRenderPipeline
-            (box
-                {| layout = camViewportLayout
-                   vertex =
-                    {| ``module`` = worldPointPickShader
-                       entryPoint = "vs"
-                       buffers =
-                        [| {| arrayStride = 2 * 4
-                              stepMode = "vertex"
-                              attributes =
-                                [| {| shaderLocation = 0; offset = 0; format = "float32x2" |} |] |}
-                           {| arrayStride = 5 * 4
-                              stepMode = "instance"
-                              attributes =
-                                [| {| shaderLocation = 1; offset = 0;  format = "float32x3" |}
-                                   {| shaderLocation = 2; offset = 12; format = "float32" |}
-                                   {| shaderLocation = 3; offset = 16; format = "float32" |} |] |} |] |}
-                   fragment =
-                    {| ``module`` = worldPointPickShader
-                       entryPoint = "fs"
-                       targets = [| {| format = "r32uint" |} |] |}
-                   primitive = {| topology = "triangle-list" |}
-                   depthStencil =
-                    {| format = "depth24plus"; depthWriteEnabled = true; depthCompare = "less" |} |})
 
     // ── MSDF label pipeline ──────────────────────────────────────────
     let labelPipeline =
@@ -536,7 +412,6 @@ let create
       Format = format
 
       DepthTex = Unchecked.defaultof<_>
-      PickTex = Unchecked.defaultof<_>
 
       CameraBuffer = cameraBuffer
       CameraBindGroup = cameraBindGroup
@@ -551,12 +426,8 @@ let create
       LinePipeline = linePipeline
       TriPipeline = triPipeline
       PointPipeline = pointPipeline
-      PointPickPipeline = pointPickPipeline
-      LoopPickPipeline = loopPickPipeline
-      LinePickPipeline = linePickPipeline
       GizmoPipeline = gizmoPipeline
       WorldPointPipeline = worldPointPipeline
-      WorldPointPickPipeline = worldPointPickPipeline
       LabelPipeline = labelPipeline
       BackgroundPipeline = backgroundPipeline
 
@@ -564,9 +435,6 @@ let create
       BackgroundSampler = backgroundSampler
 
       PointQuadBuffer = pointQuadBuffer
-      LinePickCornerBuffer = linePickCornerBuffer
-
-      PickReadBuffer = pickReadBuffer
 
       Atlas = atlas
       FontMetrics = fontMetrics
@@ -576,7 +444,7 @@ let create
 
       Camera = Camera.create () }
 
-/// Recreate depth + pick textures at the current canvas size. Call from the
+/// Recreate the depth texture at the current canvas size. Call from the
 /// ResizeObserver callback and from mount.
 let remakeAttachments (scene: Scene) =
     let w : int = scene.Canvas?width
@@ -588,9 +456,3 @@ let remakeAttachments (scene: Scene) =
                 { size = { width = w; height = h; depthOrArrayLayers = 1 }
                   format = "depth24plus"
                   usage = GPUTextureUsage.RenderAttachment }
-        if not (isNull (box scene.PickTex)) then scene.PickTex.destroy()
-        scene.PickTex <-
-            scene.Device.createTexture
-                { size = { width = w; height = h; depthOrArrayLayers = 1 }
-                  format = "r32uint"
-                  usage = GPUTextureUsage.RenderAttachment ||| GPUTextureUsage.CopySrc }

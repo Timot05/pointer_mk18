@@ -92,7 +92,6 @@ let renderFrame
 
     let colorView = scene.Ctx.getCurrentTexture().createView()
     let depthView = scene.DepthTex.createView()
-    let pickView = scene.PickTex.createView()
     let encoder = scene.Device.createCommandEncoder()
 
     let state = AppStore.store.State
@@ -349,124 +348,10 @@ let renderFrame
 
     colorPass.endPass()
 
-    // ── Pick pass ─────────────────────────────────────────────────────
-    let pickPass =
-        encoder.beginRenderPass
-            (box
-                {| colorAttachments =
-                    [| {| view = pickView
-                          loadOp = "clear"
-                          storeOp = "store"
-                          clearValue = {| r = 0; g = 0; b = 0; a = 0 |} |} |]
-                   depthStencilAttachment =
-                    {| view = depthView
-                       depthLoadOp = "clear"
-                       depthStoreOp = "store"
-                       depthClearValue = 1.0 |} |})
-
-    // Pick pass draw order encodes priority. Every pick pipeline uses
-    // depthWriteEnabled = true with depthCompare = "less", so on a flat
-    // sketch plane the FIRST draw to write a pixel wins (subsequent
-    // same-depth draws fail the < test). Order draws from highest
-    // priority to lowest:
-    //   point  →  line  →  dim  →  frame  →  loop
-    // matching `Pickable.priority` in core/Editor/Pickable.fs.
-
-    // ── Pass 1: per-sketch points (priority 0), lines (1), dims (2) ──
-    for sketch in model.Sketches do
-        match Map.tryFind sketch.Id frameById, Map.tryFind sketch.Id sketchOffsets with
-        | None, _ | _, None -> ()
-        | Some _, _ when not (isVisible sketch.Id) -> ()
-        | Some _, Some frameOffset ->
-            let pointPickSlot = getSketchSlot slots.PointPick sketch.Id
-            let linePickSlot = getSketchSlot slots.LinePick sketch.Id
-            let dimPickSlot = getSketchSlot slots.DimPick sketch.Id
-
-            let pointPickData =
-                SketchOverlayRender.buildSketchPointPickBuffer
-                    sketch.Id sketch.Sketch.Entities
-                    state.Compiled.Slots.Index viewState.Params
-                    model.Pickables
-            drawPoints pickPass scene.PointPickPipeline frameOffset pointPickSlot pointPickData 4
-
-            let linePickData =
-                SketchOverlayRender.buildSketchPickLineBuffer
-                    sketch.Id sketch.Sketch.Entities
-                    state.Compiled.Slots.Index viewState.Params
-                    model.Pickables
-            if linePickData.Length > 0 then
-                let buf = upload scene.Pool linePickSlot linePickData
-                pickPass.setPipeline scene.LinePickPipeline
-                pickPass.setBindGroup(0, scene.CameraBindGroup)
-                pickPass.setBindGroupWithOffset(1, scene.FrameBindGroup, frameOffset)
-                pickPass.setVertexBuffer(0, scene.LinePickCornerBuffer)
-                pickPass.setVertexBuffer(1, buf)
-                pickPass.drawInstanced(6, linePickData.Length / 5)
-
-            let pickShowDims =
-                List.contains sketch.Id viewState.VisibleDimensionSketchIds
-            let dimPickData =
-                if pickShowDims then
-                    SketchOverlayRender.buildSketchDimensionPickBuffer
-                        sketch.Id sketch.Sketch
-                        state.Compiled.Slots.Index viewState.Params
-                        model.Pickables
-                else [||]
-            drawPoints pickPass scene.PointPickPipeline frameOffset dimPickSlot dimPickData 4
-
-    // ── Pass 2: world-space frame-origin + frame-axis picks (priority 3) ──
-    let frameOriginPickData =
-        SketchOverlayRender.buildFrameOriginsPickBuffer visibleFrames model.Pickables
-    if frameOriginPickData.Length > 0 then
-        let buf = upload scene.Pool slots.FrameOriginPick frameOriginPickData
-        pickPass.setPipeline scene.WorldPointPickPipeline
-        pickPass.setBindGroup(0, scene.CameraBindGroup)
-        pickPass.setBindGroup(1, scene.ViewportBindGroup)
-        pickPass.setVertexBuffer(0, scene.PointQuadBuffer)
-        pickPass.setVertexBuffer(1, buf)
-        pickPass.drawInstanced(6, frameOriginPickData.Length / 5)
-
-    let frameAxisPickData =
-        SketchOverlayRender.buildFrameAxesPickBuffer
-            visibleFrames model.Pickables
-            (Camera.viewHalfH scene.Camera) (float h)
-    if frameAxisPickData.Length > 0 then
-        let buf = upload scene.Pool slots.FrameAxisPick frameAxisPickData
-        pickPass.setPipeline scene.WorldPointPickPipeline
-        pickPass.setBindGroup(0, scene.CameraBindGroup)
-        pickPass.setBindGroup(1, scene.ViewportBindGroup)
-        pickPass.setVertexBuffer(0, scene.PointQuadBuffer)
-        pickPass.setVertexBuffer(1, buf)
-        pickPass.drawInstanced(6, frameAxisPickData.Length / 5)
-
-    // ── Pass 3: per-sketch loops (priority 4 — last, lowest priority) ──
-    for sketch in model.Sketches do
-        match Map.tryFind sketch.Id frameById, Map.tryFind sketch.Id sketchOffsets with
-        | None, _ | _, None -> ()
-        | Some _, _ when not (isVisible sketch.Id) -> ()
-        | Some _, Some frameOffset ->
-            let loopPickSlot = getSketchSlot slots.LoopPick sketch.Id
-
-            let sketchPickLoops =
-                viewState.SketchLoops
-                |> List.tryFind (fun l -> l.SketchId = sketch.Id)
-                |> Option.map (fun l -> l.Loops)
-                |> Option.defaultValue []
-
-            let loopPickData =
-                SketchOverlayRender.buildSketchLoopPickBuffer
-                    sketch.Id sketch.Sketch sketchPickLoops
-                    state.Compiled.Slots.Index viewState.Params
-                    model.Pickables
-            if loopPickData.Length > 0 then
-                let buf = upload scene.Pool loopPickSlot loopPickData
-                pickPass.setPipeline scene.LoopPickPipeline
-                pickPass.setBindGroup(0, scene.CameraBindGroup)
-                pickPass.setBindGroupWithOffset(1, scene.FrameBindGroup, frameOffset)
-                pickPass.setVertexBuffer(0, buf)
-                pickPass.draw (loopPickData.Length / 3)
-
-    pickPass.endPass()
+    // Pick pass retired — the compute-shader picker in `PickCompute.fs`
+    // replaces the raster pick render entirely. It dispatches its own
+    // command buffer on demand (mouse events), so nothing pick-related
+    // runs in this frame.
 
     // Submit + reclaim old buffers.
     scene.Device.queue.submit [| encoder.finish() |]

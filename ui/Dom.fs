@@ -2,6 +2,13 @@ module PointerMk18.Ui.Dom
 
 open Browser.Dom
 open Browser.Types
+open Fable.Core
+
+[<Emit("$0.dataset[$1]")>]
+let private getDataset (elem: HTMLElement) (key: string) : string = jsNative
+
+[<Emit("$0.dataset[$1] = $2")>]
+let private setDataset (elem: HTMLElement) (key: string) (value: string) : unit = jsNative
 
 // ---------------------------------------------------------------------------
 // Thin DOM helpers. Ported from user-interface/src/dom.ts. Intended to stay
@@ -45,7 +52,7 @@ let kbdHintTitled (keys: string) (tooltip: string) : HTMLElement =
 //   - dblclick     replaces the element with an <input type="number">;
 //                  onCommit fires on blur or Enter, Escape restores
 // ---------------------------------------------------------------------------
-let setupDraggable (elem: HTMLElement) (initial: float) (onRapid: float -> unit) (onCommit: float -> unit) : unit =
+let rec setupDraggable (elem: HTMLElement) (initial: float) (onRapid: float -> unit) (onCommit: float -> unit) : unit =
 
     let mutable startX = 0.0
     let mutable startVal = initial
@@ -93,9 +100,26 @@ let setupDraggable (elem: HTMLElement) (initial: float) (onRapid: float -> unit)
             input.``type`` <- "number"
             input.className <- "control-value-input"
             input.value <- elem.textContent
-            elem.parentNode.replaceChild (input, elem) |> ignore
+            let parent = elem.parentNode
+            parent.replaceChild (input, elem) |> ignore
             input.focus ()
             input.select ()
+
+            let restoreSpan valueText =
+                let nextElem = elText "span" "control-value" valueText
+                setDataset nextElem "slotActionId" (getDataset elem "slotActionId")
+                setDataset nextElem "slotPath" (getDataset elem "slotPath")
+                setupDraggable nextElem initial onRapid onCommit
+                parent.replaceChild (nextElem, input) |> ignore
+
+            let mutable finished = false
+
+            let finish restoreValue dispatchValue =
+                if not finished then
+                    finished <- true
+                    restoreSpan (sprintf "%.1f" restoreValue)
+                    if dispatchValue then
+                        onCommit restoreValue
 
             let commit () =
                 let v =
@@ -103,7 +127,7 @@ let setupDraggable (elem: HTMLElement) (initial: float) (onRapid: float -> unit)
                     | true, x -> x
                     | _ -> initial
 
-                onCommit v
+                finish v true
 
             input.addEventListener ("blur", fun _ -> commit ())
 
@@ -116,7 +140,7 @@ let setupDraggable (elem: HTMLElement) (initial: float) (onRapid: float -> unit)
                         input.blur ()
 
                     if ke.key = "Escape" then
-                        input.value <- sprintf "%.1f" initial
-                        input.blur ()
+                        ke.preventDefault ()
+                        finish initial false
             )
     )

@@ -46,31 +46,6 @@ let private kindSubtitle (kind: ActionKind) : string =
     | Mesh(_, size, res) -> sprintf "%g \u00D7%d" size res
     | _ -> ""
 
-// ── Template table for the "+ Add" dropdown ────────────────────────────
-
-let private templates : (ActionTemplate * string) list =
-    [ SphereTemplate, "Sphere"
-      CylinderTemplate, "Cylinder"
-      BoxTemplate, "Box"
-      HalfPlaneTemplate, "HalfPlane"
-      TranslateTemplate, "Translate"
-      RotateTemplate, "Rotate"
-      MoveTemplate, "Move"
-      UnionTemplate, "Union"
-      SubtractTemplate, "Subtract"
-      IntersectTemplate, "Intersect"
-      SketchTemplate, "Sketch"
-      FromSketchTemplate, "FromSketch"
-      ThickenTemplate, "Thicken"
-      ShellTemplate, "Shell"
-      MeshTemplate, "Mesh" ]
-
-[<Emit("Math.random().toString(36).slice(2, 8)")>]
-let private randomSuffix () : string = jsNative
-
-let private newActionId (label: string) : string =
-    label.ToLower() + "_" + randomSuffix ()
-
 // ── Action row ─────────────────────────────────────────────────────────
 
 let private isOrigin (kind: ActionKind) =
@@ -146,39 +121,6 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     paletteBtn.addEventListener ("click", fun _ -> dispatch PaletteOpen)
     header.appendChild (paletteBtn :> Node) |> ignore
 
-    // "+ Add" dropdown
-    let addWrapper = Dom.el "div" "add-wrapper"
-    let addBtn = Dom.elText "button" "btn-add" "+"
-    let dropdown = Dom.el "div" "dropdown"
-    dropdown?style?display <- "none"
-
-    for (template, label) in templates do
-        let item = Dom.el "button" "dropdown-item"
-        item.appendChild (Icons.forTemplate template :> Node) |> ignore
-        item.appendChild (Dom.elText "span" "" label :> Node) |> ignore
-        item.addEventListener (
-            "click",
-            fun _ ->
-                dropdown?style?display <- "none"
-                dispatch (AddDefaultAction(template, newActionId label))
-        )
-        dropdown.appendChild (item :> Node) |> ignore
-
-    addBtn.addEventListener (
-        "click",
-        fun e ->
-            e.stopPropagation ()
-            dropdown?style?display <-
-                if unbox<string> (dropdown?style?display) = "none" then "flex" else "none"
-    )
-    document.addEventListener (
-        "click",
-        fun _ -> dropdown?style?display <- "none"
-    )
-
-    addWrapper.appendChild (addBtn :> Node) |> ignore
-    addWrapper.appendChild (dropdown :> Node) |> ignore
-    header.appendChild (addWrapper :> Node) |> ignore
     left.appendChild (header :> Node) |> ignore
 
     // ── List with drag-reorder ─────────────────────────────────────────

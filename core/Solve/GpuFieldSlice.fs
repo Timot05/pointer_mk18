@@ -89,8 +89,11 @@ module GpuFieldSlice =
         sb.AppendLine("  let iso_frac = abs(fract(abs_d / iso_spacing + 0.5) - 0.5) * 2.0 * iso_spacing;") |> ignore
         sb.AppendLine("  let iso_line = 1.0 - smoothstep(0.0, iso_width, iso_frac);") |> ignore
         sb.AppendLine("  let zero_line = 1.0 - smoothstep(0.0, zero_width, abs_d);") |> ignore
-        sb.AppendLine("  let fade_start = iso_spacing * 6.0;") |> ignore
-        sb.AppendLine("  let fade_end = iso_spacing * 18.0;") |> ignore
+        // Cap iso-line visibility at ~10 rings away from the zero iso-
+        // line. The quad is sized well beyond `fade_end` so the plane's
+        // actual edge is never visible.
+        sb.AppendLine("  let fade_start = iso_spacing * 4.0;") |> ignore
+        sb.AppendLine("  let fade_end = iso_spacing * 10.0;") |> ignore
         sb.AppendLine("  let dist_fade = 1.0 - smoothstep(fade_start, fade_end, abs_d);") |> ignore
         sb.AppendLine("  let final_alpha = max(iso_line * 0.42 * dist_fade, zero_line);") |> ignore
         sb.AppendLine("  if (final_alpha < 0.005) { discard; }") |> ignore

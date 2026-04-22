@@ -34,11 +34,34 @@ pub const Stats = extern struct {
     // Tile-level fast skip: tiles whose whole x,y span was already behind a
     // closer depth, so we didn't even run interval eval.
     tiles_depth_skipped: u32 = 0,
+    // How many leaf tiles took the bulk SDF path vs. the scalar fallback.
+    // Fallbacks happen only when the post-simplify leaf tape exceeds
+    // LEAF_BULK_MAX_SLOTS — a non-zero count here suggests either the cap
+    // is too tight or simplify isn't shrinking the tape enough.
+    leaf_bulk_calls: u32 = 0,
+    leaf_bulk_fallbacks: u32 = 0,
 };
 
-pub const MAX_TAPE: u32 = 1024;
-pub const MAX_CONST: u32 = 256;
-pub const MAX_CHOICES: u32 = 256;
+// ── Tape sizing ──────────────────────────────────────────────────────────
+//
+// `MAX_TAPE` / `MAX_CONST` cap the scene tape produced by lowering. Evaluation
+// scratch arrays (interval_slots, simd_slots, grad_slots, choice_trace) and
+// `simplify`'s output buffers are derived from these.
+//
+// `simplify.zig` promises "2× the original is safe" for its output buffers
+// (transient constants from binary folds can briefly exceed the original op
+// count before DCE collapses them). Simplified tapes feed into the next
+// recursion level's `evalInterval`, so the eval-side slot arrays must also
+// accept post-simplify sizes, not just MAX_TAPE.
+//
+// `MAX_CHOICES` bounds the min/max count of any tape passed to
+// `evalInterval`. Choice count is always ≤ op count, so sizing it to the
+// largest tape we'll ever evaluate (SIMPLIFY_OUT_TAPE) is a safe upper bound.
+pub const MAX_TAPE: u32 = 4096;
+pub const MAX_CONST: u32 = 1024;
+pub const SIMPLIFY_OUT_TAPE: u32 = 2 * MAX_TAPE;
+pub const SIMPLIFY_OUT_CONST: u32 = 2 * MAX_TAPE;
+pub const MAX_CHOICES: u32 = SIMPLIFY_OUT_TAPE;
 
 pub const MAX_W: u32 = 1024;
 pub const MAX_H: u32 = 1024;
@@ -63,20 +86,62 @@ pub const RenderResult = struct {
     normal: []const f32,
 };
 
-var interval_slots: [MAX_TAPE]interval_mod.Interval = undefined;
+// Eval-side slot arrays accept post-simplify tapes (up to SIMPLIFY_OUT_TAPE).
+var interval_slots: [SIMPLIFY_OUT_TAPE]interval_mod.Interval = undefined;
 var choice_trace: [MAX_CHOICES]interval_mod.Choice = undefined;
-var simd_slots: [MAX_TAPE]eval_mod.F4 = undefined;
-var grad_slots: [MAX_TAPE]grad_mod.Grad = undefined;
-var grad_simd_slots: [MAX_TAPE]grad_mod.GradBatch = undefined;
-var scratch_value: [MAX_TAPE]simplify_mod.Value = undefined;
-var scratch_new_idx: [MAX_TAPE]u32 = undefined;
-var scratch_live: [MAX_TAPE]bool = undefined;
+var simd_slots: [SIMPLIFY_OUT_TAPE]eval_mod.F4 = undefined;
+var grad_slots: [SIMPLIFY_OUT_TAPE]grad_mod.Grad = undefined;
+var grad_simd_slots: [SIMPLIFY_OUT_TAPE]grad_mod.GradBatch = undefined;
+
+// simplify scratch — `values` is indexed by the input tape (≤ SIMPLIFY_OUT_TAPE
+// when fed a previously simplified tape); `live` and `new_idx` are indexed by
+// the emitter's post-fold op count, which can reach 2× the input — i.e.
+// 2 × SIMPLIFY_OUT_TAPE in the pathological recursion case. The output tape is
+// clamped to SIMPLIFY_OUT_TAPE via the `DepthStorage` buffer below, so sizing
+// these to SIMPLIFY_OUT_TAPE matches the buffer that bounds `op_count`.
+var scratch_value: [SIMPLIFY_OUT_TAPE]simplify_mod.Value = undefined;
+var scratch_new_idx: [SIMPLIFY_OUT_TAPE]u32 = undefined;
+var scratch_live: [SIMPLIFY_OUT_TAPE]bool = undefined;
 
 const DepthStorage = struct {
-    ops: [MAX_TAPE]tape_mod.Instruction,
-    consts: [MAX_CONST]f32,
+    ops: [SIMPLIFY_OUT_TAPE]tape_mod.Instruction,
+    consts: [SIMPLIFY_OUT_CONST]f32,
 };
 var depth_storage: [TILE_SIZES.len]DepthStorage = undefined;
+
+// ── Leaf-tile bulk evaluator scratch ─────────────────────────────────────
+//
+// At the finest tile level we pack every (wcx, wcy, wcz) triple for pixels
+// that aren't already occluded into flat arrays, run one bulk SDF tape walk
+// over the whole tile, then per-column scan for the frontmost hit. Amortizes
+// per-op dispatch cost over hundreds of points instead of four.
+//
+// Scratch is sized for a typical post-simplify leaf tape; rare leaves whose
+// tape exceeds LEAF_BULK_MAX_SLOTS fall back to `emitLeafSamplesScalar` so
+// we never silently render garbage.
+//
+// Dimensions:
+//   LEAF_TILE_SIZE   = 8 voxel edges ⇒ up to 64 pixels per leaf.
+//   MAX_Z_SAMPLES    = nz + 1 where nz ≤ 8 in well-conditioned tiles, +1 slack
+//                      for FP ceil overshoot, so cap at 10.
+pub const LEAF_BULK_MAX_SLOTS: u32 = 512;
+const LEAF_TILE_SIZE: u32 = 8;
+const MAX_Z_SAMPLES: u32 = 10;
+pub const LEAF_BULK_MAX_POINTS: u32 = LEAF_TILE_SIZE * LEAF_TILE_SIZE * MAX_Z_SAMPLES;
+const LEAF_BULK_MAX_PIXELS: u32 = LEAF_TILE_SIZE * LEAF_TILE_SIZE;
+
+var leaf_bulk_xs: [LEAF_BULK_MAX_POINTS]f32 = undefined;
+var leaf_bulk_ys: [LEAF_BULK_MAX_POINTS]f32 = undefined;
+var leaf_bulk_zs: [LEAF_BULK_MAX_POINTS]f32 = undefined;
+var leaf_bulk_sdf: [LEAF_BULK_MAX_POINTS]f32 = undefined;
+var leaf_bulk_slots: [LEAF_BULK_MAX_SLOTS * LEAF_BULK_MAX_POINTS]f32 = undefined;
+
+// Per-pixel metadata, parallel arrays indexed 0..n_pixels.
+var leaf_px_idx: [LEAF_BULK_MAX_PIXELS]usize = undefined;      // depth_buf index
+var leaf_px_wcx: [LEAF_BULK_MAX_PIXELS]f32 = undefined;
+var leaf_px_wcy: [LEAF_BULK_MAX_PIXELS]f32 = undefined;
+var leaf_px_db: [LEAF_BULK_MAX_PIXELS]f32 = undefined;         // existing depth
+var leaf_px_start: [LEAF_BULK_MAX_PIXELS]u32 = undefined;      // start offset in xs/ys/zs
 
 // G-buffer. depth_buf == -inf marks "no hit".
 var depth_buf: [MAX_W * MAX_H]f32 = undefined;
@@ -314,6 +379,197 @@ fn allPixelsCloserThan(
 }
 
 fn emitLeafSamples(
+    ctx: *BuildCtx,
+    tape: *const tape_mod.Tape,
+    px_lo: u32,
+    px_hi: u32,
+    py_lo: u32,
+    py_hi: u32,
+    wz_lo: f32,
+    wz_hi: f32,
+) void {
+    if (tape.ops.len > LEAF_BULK_MAX_SLOTS) {
+        ctx.stats.leaf_bulk_fallbacks += 1;
+        emitLeafSamplesScalar(ctx, tape, px_lo, px_hi, py_lo, py_hi, wz_lo, wz_hi);
+        return;
+    }
+    ctx.stats.leaf_bulk_calls += 1;
+    emitLeafSamplesBulk(ctx, tape, px_lo, px_hi, py_lo, py_hi, wz_lo, wz_hi);
+}
+
+// Bulk SDF + batched-gradient leaf sampler.
+//
+// Strategy (mirrors fidget's `render_tile_pixels` in fidget-raster):
+//   1. For each pixel whose existing depth is in front of wz_hi we can stop
+//      early — nothing in this tile can improve on it (per-pixel early out).
+//   2. Pack n_z_samples (x, y, z) triples per surviving pixel into flat
+//      arrays, ordered front-to-back so the column scan below finds the
+//      frontmost hit first.
+//   3. One `evalFloatSlice` call walks the tape once over all N points.
+//   4. Per-pixel column scan: first sample with sdf < 0 AND wcz > existing
+//      depth becomes the hit. Capture its (wcx, wcy, hit_wcz) for gradient.
+//   5. Gradient pass in groups of 4 via the existing `evalGrad4` — keeping
+//      the SIMD-4 grad path is enough because hit count per leaf is low
+//      (≤ 64) and grad cost is already one walk per quad in the original.
+fn emitLeafSamplesBulk(
+    ctx: *BuildCtx,
+    tape: *const tape_mod.Tape,
+    px_lo: u32,
+    px_hi: u32,
+    py_lo: u32,
+    py_hi: u32,
+    wz_lo: f32,
+    wz_hi: f32,
+) void {
+    const extent = wz_hi - wz_lo;
+    const nz_f = @ceil(extent / ctx.pixel_world);
+    const nz_u: u32 = @intFromFloat(@max(2.0, nz_f));
+    const n_z_samples: u32 = nz_u + 1;
+    // Clamp to the scratch cap. Overshooting MAX_Z_SAMPLES in practice would
+    // mean the pixel_world/extent ratio is unexpectedly small; safer to lose
+    // a sliver of z resolution than to walk off the scratch.
+    const nz_clamped: u32 = @min(n_z_samples, MAX_Z_SAMPLES);
+    const dz = extent / @as(f32, @floatFromInt(nz_u));
+    const neg_inf: f32 = -std.math.inf(f32);
+
+    const full_wf: f32 = @floatFromInt(ctx.full_width);
+    const full_hf: f32 = @floatFromInt(ctx.full_height);
+
+    // ── Pass 1: build candidate list ─────────────────────────────────
+    var n_pixels: u32 = 0;
+    var n_points: u32 = 0;
+
+    var py: u32 = py_lo;
+    while (py < py_hi) : (py += 1) {
+        const abs_py: f32 = @as(f32, @floatFromInt(ctx.tile_y + py)) + 0.5;
+        const wcy = (1.0 - (abs_py / full_hf) * 2.0) * ctx.view_half_h;
+        const row_base: usize = @as(usize, py) * ctx.width;
+
+        var px: u32 = px_lo;
+        while (px < px_hi) : (px += 1) {
+            const idx = row_base + px;
+            const db = depth_buf[idx];
+            // Per-pixel early exit: if the whole tile is behind existing
+            // depth, this pixel can't contribute.
+            if (db >= wz_hi) continue;
+
+            const abs_px: f32 = @as(f32, @floatFromInt(ctx.tile_x + px)) + 0.5;
+            const wcx = ((abs_px / full_wf) * 2.0 - 1.0) * ctx.view_half_w;
+
+            leaf_px_idx[n_pixels] = idx;
+            leaf_px_wcx[n_pixels] = wcx;
+            leaf_px_wcy[n_pixels] = wcy;
+            leaf_px_db[n_pixels] = db;
+            leaf_px_start[n_pixels] = n_points;
+            n_pixels += 1;
+
+            // Push z samples front-to-back (high wcz first), matching the
+            // original scalar loop's `zi = nz+1; zi -= 1` iteration. The
+            // column scan stops at the first negative which is therefore
+            // the frontmost hit.
+            var zi: u32 = nz_clamped;
+            while (zi > 0) {
+                zi -= 1;
+                const wcz = wz_lo + @as(f32, @floatFromInt(zi)) * dz;
+                leaf_bulk_xs[n_points] = wcx;
+                leaf_bulk_ys[n_points] = wcy;
+                leaf_bulk_zs[n_points] = wcz;
+                n_points += 1;
+            }
+        }
+    }
+
+    if (n_pixels == 0) return;
+
+    // ── Pass 2: one bulk SDF tape walk over all points ──────────────
+    eval_mod.evalFloatSlice(
+        tape,
+        leaf_bulk_xs[0..n_points],
+        leaf_bulk_ys[0..n_points],
+        leaf_bulk_zs[0..n_points],
+        leaf_bulk_sdf[0..n_points],
+        &leaf_bulk_slots,
+        LEAF_BULK_MAX_POINTS,
+    );
+
+    // ── Pass 3: per-column scan + grad staging ──────────────────────
+    // Reuse leaf_px_* slots after this point: index 0..n_grad indexes into
+    // staged grad inputs. We overwrite leaf_px_idx[], leaf_px_wcx/wcy[] with
+    // the subset of pixels that actually hit.
+    var n_grad: u32 = 0;
+    var p: u32 = 0;
+    while (p < n_pixels) : (p += 1) {
+        const start = leaf_px_start[p];
+        const end = start + nz_clamped;
+        const db = leaf_px_db[p];
+
+        var hit_wcz: f32 = neg_inf;
+        var s: u32 = start;
+        while (s < end) : (s += 1) {
+            if (leaf_bulk_sdf[s] < 0.0 and leaf_bulk_zs[s] > db) {
+                hit_wcz = leaf_bulk_zs[s];
+                break;
+            }
+        }
+        if (hit_wcz == neg_inf) continue;
+
+        // Compact into the front of the per-pixel arrays as grad-staging.
+        leaf_px_idx[n_grad] = leaf_px_idx[p];
+        leaf_px_wcx[n_grad] = leaf_px_wcx[p];
+        leaf_px_wcy[n_grad] = leaf_px_wcy[p];
+        leaf_px_db[n_grad] = hit_wcz; // reuse slot to carry hit z into grad
+        n_grad += 1;
+    }
+
+    if (n_grad == 0) return;
+
+    // ── Pass 4: batched gradient eval (SIMD-4 groups) ────────────────
+    // Keep the existing `evalGrad4` — per-leaf grad count is capped at 64 so
+    // the dispatch overhead is small relative to the SDF hot loop we already
+    // amortized. A bulk-grad evaluator would be a further step.
+    var g: u32 = 0;
+    while (g < n_grad) : (g += 4) {
+        const n_lanes: u32 = @min(4, n_grad - g);
+
+        var xs: [4]f32 = undefined;
+        var ys: [4]f32 = undefined;
+        var zs: [4]f32 = undefined;
+        inline for (0..4) |l| {
+            const src: u32 = g + @min(@as(u32, l), n_lanes - 1);
+            xs[l] = leaf_px_wcx[src];
+            ys[l] = leaf_px_wcy[src];
+            zs[l] = leaf_px_db[src];
+        }
+        const wcx_vec: eval_mod.F4 = xs;
+        const wcy_vec: eval_mod.F4 = ys;
+        const wcz_vec: eval_mod.F4 = zs;
+
+        const gb = grad_mod.evalGrad4(tape, wcx_vec, wcy_vec, wcz_vec, &grad_simd_slots);
+        const dx_arr: [4]f32 = gb.dx;
+        const dy_arr: [4]f32 = gb.dy;
+        const dz_arr: [4]f32 = gb.dz;
+
+        var l: u32 = 0;
+        while (l < n_lanes) : (l += 1) {
+            const gx = dx_arr[l];
+            const gy = dy_arr[l];
+            const gz = dz_arr[l];
+            const mag = @sqrt(gx * gx + gy * gy + gz * gz);
+            const nvx: f32 = if (mag < 1e-9) 0 else gx / mag;
+            const nvy: f32 = if (mag < 1e-9) 1 else gy / mag;
+            const nvz: f32 = if (mag < 1e-9) 0 else gz / mag;
+            const src: u32 = g + l;
+            const idx = leaf_px_idx[src];
+            depth_buf[idx] = leaf_px_db[src];
+            normal_buf[idx * 3 + 0] = nvx;
+            normal_buf[idx * 3 + 1] = nvy;
+            normal_buf[idx * 3 + 2] = nvz;
+            ctx.stats.pixels_written += 1;
+        }
+    }
+}
+
+fn emitLeafSamplesScalar(
     ctx: *BuildCtx,
     tape: *const tape_mod.Tape,
     px_lo: u32,

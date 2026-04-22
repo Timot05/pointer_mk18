@@ -58,6 +58,11 @@ pub const TapeBuilder = struct {
     }
 
     fn push(self: *TapeBuilder, ins: Instruction) NodeRef {
+        // OOB here means the tape outgrew its pre-allocated slab. Overflow is
+        // silent in ReleaseFast without this guard — it stomps whatever module
+        // state follows `ops` in memory and we eventually crash somewhere
+        // unrelated. Assert so the failure mode is legible.
+        std.debug.assert(self.op_count < self.ops.len);
         const idx = self.op_count;
         self.ops[idx] = ins;
         self.op_count += 1;
@@ -75,6 +80,7 @@ pub const TapeBuilder = struct {
         return self.push(.{ .op = .input_z, .a = 0, .b = 0 });
     }
     pub fn constant(self: *TapeBuilder, v: f32) NodeRef {
+        std.debug.assert(self.const_count < self.constants.len);
         const ci = self.const_count;
         self.constants[ci] = v;
         self.const_count += 1;

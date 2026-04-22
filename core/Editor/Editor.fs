@@ -213,7 +213,7 @@ module Editor =
         | FixedConstraint -> "Fixed"
 
     let initState () =
-        let doc = Document.defaultDocument ()
+        let doc = Document.stressDocument ()
         let compiled = Pipeline.compile doc.Actions
         { Doc = doc
           Compiled = compiled

@@ -651,3 +651,85 @@ module Document =
                 Visible = true
                 Display = None
                 FieldSlice = None } ] }
+
+    // Stress document — extends the default doc with a small CSG blob so the
+    // viewer renders something non-trivial on fresh load. Tunable via the
+    // `gridN` constant. Keep `defaultDocument` untouched so the existing
+    // pipeline/typecheck tests continue to compare against the small reference.
+    //
+    // NOTE: the Zig voxel kernel has `MAX_TAPE = 1024` and `simplify`'s
+    // out-buffer is sized to MAX_TAPE, so the lowered tape must stay well
+    // under that limit (transient constants can briefly double the op count).
+    let stressDocument () : Document =
+        let baseDoc = defaultDocument ()
+
+        let mk id name kind =
+            { Id = id
+              Name = Some name
+              Kind = kind
+              Visible = true
+              Display = None
+              FieldSlice = None }
+
+        let gridN = 2
+        let spacing = 6.0
+        let sphereR = 2.6
+        let smoothR = 0.8
+        let centerOffset = float (gridN - 1) * spacing * 0.5
+
+        let gridCells =
+            [ for i in 0 .. gridN - 1 do
+                for j in 0 .. gridN - 1 do
+                    for k in 0 .. gridN - 1 do
+                        yield i, j, k ]
+
+        let translatedSphereId (i, j, k) = sprintf "tsph_%d_%d_%d" i j k
+
+        let sphereActions =
+            gridCells
+            |> List.collect (fun (i, j, k) ->
+                let sid = sprintf "ssrc_%d_%d_%d" i j k
+                let x = float i * spacing - centerOffset
+                let y = float j * spacing - centerOffset
+                let z = float k * spacing - centerOffset
+                [ mk sid "sph" (Sphere(radius = sphereR))
+                  mk (translatedSphereId (i, j, k)) "tsph" (Translate(child = Some sid, x = x, y = y, z = z)) ])
+
+        let chainUnions (prefix: string) (radius: float) (ids: string list) : DocAction list * string option =
+            match ids with
+            | [] -> [], None
+            | first :: rest ->
+                let folder (acc, lastId, counter) nextId =
+                    let uid = sprintf "%s_%d" prefix counter
+                    let union = mk uid "u" (Union(a = Some lastId, b = Some nextId, radius = radius))
+                    acc @ [ union ], uid, counter + 1
+                let actions, lastId, _ = List.fold folder ([], first, 0) rest
+                actions, Some lastId
+
+        let sphereUnionActions, gridRootId =
+            gridCells |> List.map translatedSphereId |> chainUnions "usph" smoothR
+
+        let displayOn = { DisplaySettings.defaults with Enabled = true }
+
+        let finalId, finalAction =
+            match gridRootId with
+            | Some rootId ->
+                // Display lives on a dedicated final action so the root id is
+                // stable regardless of how many spheres/unions were emitted.
+                let finalId = "stressFinal"
+                let kind = Translate(child = Some rootId, x = 0.0, y = 0.0, z = 0.0)
+                finalId,
+                { Id = finalId
+                  Name = Some "stress root"
+                  Kind = kind
+                  Visible = true
+                  Display = Some displayOn
+                  FieldSlice = None }
+            | None ->
+                "origin", baseDoc.Actions |> List.head
+
+        let extras = sphereActions @ sphereUnionActions @ [ finalAction ]
+
+        { baseDoc with
+            Actions = baseDoc.Actions @ extras
+            SelectedId = Some finalId }

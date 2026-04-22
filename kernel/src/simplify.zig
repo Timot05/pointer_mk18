@@ -24,6 +24,10 @@ const Emitter = struct {
     const_count: u32 = 0,
 
     fn emit(self: *Emitter, op: tape_mod.Op, a: u32, b: u32) u32 {
+        // Caller must size `out_ops` to ≥ 2 × orig.ops.len; see the `simplify`
+        // contract. Assert so an under-sized buffer fails loudly instead of
+        // silently corrupting whatever module state follows it.
+        std.debug.assert(self.op_count < self.out_ops.len);
         const s = self.op_count;
         self.out_ops[s] = .{ .op = op, .a = a, .b = b };
         self.op_count += 1;
@@ -31,6 +35,7 @@ const Emitter = struct {
     }
 
     fn emitConst(self: *Emitter, c: f32) u32 {
+        std.debug.assert(self.const_count < self.out_consts.len);
         const ci = self.const_count;
         self.out_consts[ci] = c;
         self.const_count += 1;
@@ -199,14 +204,17 @@ fn foldSquare(c: f32) f32 { return c * c; }
 // (b) propagating known-constant values through all arithmetic ops, and
 // (c) dead-code-eliminating ops whose results no longer reach the output.
 //
-// Workspace requirements:
-//   values:   >= orig.ops.len entries
-//   live:     >= out_ops.len entries (conservatively == out_ops.len)
-//   new_idx:  >= out_ops.len entries
-//
-// The input `out_ops` / `out_constants` must be sized to hold the largest
-// possible intermediate tape (constants we materialize for binary ops can
-// briefly exceed the original size before DCE; 2× the original is safe).
+// Buffer requirements — caller MUST satisfy these or the emitter will OOB
+// (enforced via `std.debug.assert` in emit/emitConst):
+//   out_ops:       >= 2 × orig.ops.len
+//                  (each original op can emit at most 2 ops: one for a
+//                  materialized constant operand, one for the combined op.)
+//   out_constants: >= orig.ops.len
+//                  (each binary-with-one-constant fold emits at most one new
+//                  constant; total ≤ orig op count.)
+//   values:        >= orig.ops.len
+//   live:          >= out_ops.len (== buffer size, not final op count)
+//   new_idx:       >= out_ops.len
 pub fn simplify(
     orig: *const tape_mod.Tape,
     trace: []const interval_mod.Choice,

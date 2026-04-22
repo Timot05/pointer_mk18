@@ -26,7 +26,9 @@ let render
     root.appendChild (TopBar.render dispatch viewerMode onSave onLoad :> Node) |> ignore
 
     let layout = Dom.el "div" "layout"
-    layout.appendChild (ActionList.render dispatch doc :> Node) |> ignore
+    let leftHost = Dom.el "div" "panel-host panel-host-actions"
+    leftHost.appendChild (ActionList.render dispatch doc :> Node) |> ignore
+    layout.appendChild (leftHost :> Node) |> ignore
 
     let center = Dom.el "div" "panel panel-center"
     center.appendChild (viewerHost :> Node) |> ignore
@@ -39,7 +41,9 @@ let render
     let rightHeader = Dom.el "div" "panel-header"
     rightHeader.appendChild (Dom.elText "h2" "" "Properties" :> Node) |> ignore
     right.appendChild (rightHeader :> Node) |> ignore
-    right.appendChild (ParamsPanel.render dispatch doc :> Node) |> ignore
+    let rightHost = Dom.el "div" "panel-host panel-host-properties"
+    rightHost.appendChild (ParamsPanel.render dispatch doc :> Node) |> ignore
+    right.appendChild (rightHost :> Node) |> ignore
     layout.appendChild (right :> Node) |> ignore
 
     root.appendChild (layout :> Node) |> ignore

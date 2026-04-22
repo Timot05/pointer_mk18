@@ -70,10 +70,19 @@ let renderFrame
     let pickView = scene.PickTex.createView()
     let encoder = scene.Device.createCommandEncoder()
 
+    let state = AppStore.store.State
+
+    // Raymarch needs its per-block probe + analysis compute passes to
+    // run BEFORE the render pass begins — the fragment reads the
+    // storage buffers those passes write.
+    match state.ViewerMode, raymarch with
+    | Raymarch, Some rm ->
+        Raymarch.update rm state
+        Raymarch.encodeCompute rm encoder
+    | _ -> ()
+
     let colorPass =
         WebGPU.beginRenderPassClearColor encoder colorView 0.996 0.988 0.953 depthView
-
-    let state = AppStore.store.State
 
     // Field background — drawn first so every sketch/overlay paints on
     // top. Either the Zig-WASM voxel kernel or the GPU sphere-marcher,
@@ -83,7 +92,6 @@ let renderFrame
         Kernel.Background.update bg
         Kernel.Background.draw bg colorPass
     | Raymarch, _, Some rm ->
-        Raymarch.update rm state
         Raymarch.draw rm colorPass
     | _ -> ()
     let model = ViewerPipeline.viewerModel state

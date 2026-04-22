@@ -100,10 +100,73 @@ let private renderInto (root: Browser.Types.HTMLElement) =
     root.innerHTML <- ""
     root.appendChild shell |> ignore
 
+let private actionListSignature (doc: DocumentView) =
+    let actionErrors =
+        doc.Errors
+        |> List.map (fun e -> e.ActionId)
+        |> Set.ofList
+    doc.Actions
+    |> List.map (fun a ->
+        a.Id,
+        a.Name,
+        a.Visible,
+        Set.contains a.Id actionErrors)
+    |> sprintf "%A"
+
+let private kindPanelSignature (kind: ActionKind) =
+    match kind with
+    | Origin -> "Origin"
+    | Cylinder _ -> "Cylinder"
+    | Sphere _ -> "Sphere"
+    | Box _ -> "Box"
+    | HalfPlane(axis, _, flip) -> sprintf "HalfPlane|%s|%b" axis flip
+    | Translate(child, _, _, _) -> sprintf "Translate|%A" child
+    | Rotate(child, ax, ay, az, _) -> sprintf "Rotate|%A|%.6f|%.6f|%.6f" child ax ay az
+    | Move(child, frame) -> sprintf "Move|%A|%A" child frame
+    | Union(a, b, _) -> sprintf "Union|%A|%A" a b
+    | Subtract(a, b, _) -> sprintf "Subtract|%A|%A" a b
+    | Intersect(a, b, _) -> sprintf "Intersect|%A|%A" a b
+    | Sketch(origin, plane, sketch) ->
+        sprintf "Sketch|%A|%A|%d|%d" origin plane sketch.Entities.Length sketch.Constraints.Length
+    | FromSketch(child, flip, selection) -> sprintf "FromSketch|%A|%b|%A" child flip selection
+    | Thicken(child, _) -> sprintf "Thicken|%A" child
+    | Shell(child, _) -> sprintf "Shell|%A" child
+    | Mesh(child, _, _) -> sprintf "Mesh|%A" child
+
+let private paramsPanelSignature (doc: DocumentView) =
+    let selectedErrors =
+        doc.SelectedId
+        |> Option.map (fun id ->
+            doc.Errors
+            |> List.filter (fun e -> e.ActionId = id)
+            |> List.map (fun e -> e.Key, e.Error))
+    match doc.SelectedId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
+    | None ->
+        sprintf "none|%A" selectedErrors
+    | Some selected ->
+        let displaySig =
+            selected.Display
+            |> Option.map (fun d -> d.Enabled, selected.Visible)
+        let fieldSliceSig =
+            selected.FieldSlice
+            |> Option.map (fun fs -> fs.Enabled, fs.Plane)
+        let refOptionsSig = doc.RefOptions |> Map.toList
+        let sketchLoopsSig = doc.SketchLoops |> Map.toList
+        sprintf
+            "%s|%A|%A|%A|%b|%A|%A|%A|%A"
+            selected.Id
+            selected.Name
+            (kindPanelSignature selected.Kind)
+            displaySig
+            doc.SketchUi.EditMode
+            fieldSliceSig
+            selectedErrors
+            refOptionsSig
+            sketchLoopsSig
+
 let private uiSignature (state: EditorState) =
     sprintf
-        "%A|%A|%A|%A|%A|%A|%A|%A|%A|%A"
-        state.Doc.SelectedId
+        "%A|%A|%A|%A|%A|%A|%A|%A|%A"
         state.SketchEditMode
         state.SketchTool
         state.SelectedTargets
@@ -117,20 +180,36 @@ let private uiSignature (state: EditorState) =
 let mutable private lastCompiled = store.State.Compiled
 let mutable private lastSlotValues = store.State.SlotValues
 let mutable private lastUiSignature = uiSignature store.State
+let initialDocView = DocumentPipeline.documentView store.State
+let mutable private lastActionListSignature = actionListSignature initialDocView
+let mutable private lastParamsPanelSignature = paramsPanelSignature initialDocView
+let mutable private lastSelectedId = store.State.Doc.SelectedId
 
 let private onStateChange (root: Browser.Types.HTMLElement) () =
     let state = store.State
     let compiledChanged = not (obj.ReferenceEquals(lastCompiled, state.Compiled))
     let slotValuesChanged = not (obj.ReferenceEquals(lastSlotValues, state.SlotValues))
+    let selectionChanged = state.Doc.SelectedId <> lastSelectedId
     let nextUiSignature = uiSignature state
     let uiChanged = nextUiSignature <> lastUiSignature
+    let doc = DocumentPipeline.documentView state
+    let nextActionListSignature = actionListSignature doc
+    let nextParamsPanelSignature = paramsPanelSignature doc
+    let actionListChanged = nextActionListSignature <> lastActionListSignature
+    let paramsPanelChanged = nextParamsPanelSignature <> lastParamsPanelSignature
 
     if compiledChanged || uiChanged then
         renderInto root
-    elif slotValuesChanged then
-        let doc = DocumentPipeline.documentView state
-        ParamsPanel.syncSlotValues root state
-        ActionList.syncSubtitles root doc
+    else
+        if actionListChanged || selectionChanged then
+            ActionList.syncPanel root dispatch doc
+        if paramsPanelChanged || selectionChanged then
+            ParamsPanel.syncPanel root dispatch doc
+        if selectionChanged then
+            SketchAuthoringPanel.syncOverlay root dispatch doc
+        if slotValuesChanged then
+            ParamsPanel.syncSlotValues root state
+            ActionList.syncSubtitles root doc
 
     // The palette is mounted outside the shell, so it must track its own
     // state transitions independently of whether the shell rerendered.
@@ -139,6 +218,9 @@ let private onStateChange (root: Browser.Types.HTMLElement) () =
     lastCompiled <- state.Compiled
     lastSlotValues <- state.SlotValues
     lastUiSignature <- nextUiSignature
+    lastActionListSignature <- nextActionListSignature
+    lastParamsPanelSignature <- nextParamsPanelSignature
+    lastSelectedId <- state.Doc.SelectedId
 
 // --------------------------------------------------------------------------
 // Bootstrap.

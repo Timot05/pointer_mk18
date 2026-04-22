@@ -308,3 +308,169 @@ fn rotate_axis_angle_inv(p: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32>
             sb.AppendLine($"  return {expr};") |> ignore
             sb.AppendLine("}") |> ignore
         sb.ToString()
+
+    // ── Interval-arithmetic WGSL codegen ────────────────────────────────────
+    //
+    // Mirrors `FieldInterval.fs` in WGSL. Produces per-surface
+    // `interval_sdf_{i}(box) -> Intv` — a conservative [lo, hi] bound on the
+    // surface's SDF over an axis-aligned box of input intervals.
+    //
+    // Block-probe raymarching calls this per screen-block to determine which
+    // surfaces are alive in the block (isovalue ∈ [lo, hi]); dead surfaces
+    // are skipped in the per-pixel sphere-trace.
+    //
+    // Soundness: unsupported constructs (FRotate, FSketch) return the
+    // "unknown" interval [-INF, +INF], which keeps masking sound but gives
+    // up any pruning for blocks containing them.
+    [<Literal>]
+    let WGSL_INTERVAL_HELPERS = """
+struct Intv { lo: f32, hi: f32 };
+struct IntvBox { xi: Intv, yi: Intv, zi: Intv };
+
+const IV_BIG: f32 = 1.0e30;
+
+fn iv_single(v: f32) -> Intv { return Intv(v, v); }
+fn iv_unknown() -> Intv { return Intv(-IV_BIG, IV_BIG); }
+
+fn iv_add(a: Intv, b: Intv) -> Intv { return Intv(a.lo + b.lo, a.hi + b.hi); }
+fn iv_sub(a: Intv, b: Intv) -> Intv { return Intv(a.lo - b.hi, a.hi - b.lo); }
+fn iv_neg(a: Intv) -> Intv { return Intv(-a.hi, -a.lo); }
+fn iv_sub_scalar(a: Intv, s: f32) -> Intv { return Intv(a.lo - s, a.hi - s); }
+
+fn iv_abs(a: Intv) -> Intv {
+  if (a.lo >= 0.0) { return a; }
+  if (a.hi <= 0.0) { return Intv(-a.hi, -a.lo); }
+  return Intv(0.0, max(-a.lo, a.hi));
+}
+
+fn iv_square(a: Intv) -> Intv {
+  if (a.lo >= 0.0) { return Intv(a.lo * a.lo, a.hi * a.hi); }
+  if (a.hi <= 0.0) { return Intv(a.hi * a.hi, a.lo * a.lo); }
+  return Intv(0.0, max(a.lo * a.lo, a.hi * a.hi));
+}
+
+fn iv_sqrt(a: Intv) -> Intv {
+  return Intv(sqrt(max(a.lo, 0.0)), sqrt(max(a.hi, 0.0)));
+}
+
+fn iv_imin(a: Intv, b: Intv) -> Intv { return Intv(min(a.lo, b.lo), min(a.hi, b.hi)); }
+fn iv_imax(a: Intv, b: Intv) -> Intv { return Intv(max(a.lo, b.lo), max(a.hi, b.hi)); }
+
+// smooth_min widening: smooth_min(a,b,k) ∈ [min(a,b) - k/6, min(a,b)].
+fn iv_smooth_min(a: Intv, b: Intv, k: f32) -> Intv {
+  let sharp = iv_imin(a, b);
+  if (k <= 0.0) { return sharp; }
+  return Intv(sharp.lo - k / 6.0, sharp.hi);
+}
+
+fn ivbox_sub(b: IntvBox, d: vec3<f32>) -> IntvBox {
+  return IntvBox(
+    Intv(b.xi.lo - d.x, b.xi.hi - d.x),
+    Intv(b.yi.lo - d.y, b.yi.hi - d.y),
+    Intv(b.zi.lo - d.z, b.zi.hi - d.z)
+  );
+}
+
+// ── Per-primitive interval bounds ──────────────────────────────────────
+
+fn interval_sphere(b: IntvBox, r: f32) -> Intv {
+  let sum_sq = iv_add(iv_add(iv_square(b.xi), iv_square(b.yi)), iv_square(b.zi));
+  return iv_sub_scalar(iv_sqrt(sum_sq), r);
+}
+
+fn interval_box(b: IntvBox, hx: f32, hy: f32, hz: f32) -> Intv {
+  let qx = iv_sub_scalar(iv_abs(b.xi), hx);
+  let qy = iv_sub_scalar(iv_abs(b.yi), hy);
+  let qz = iv_sub_scalar(iv_abs(b.zi), hz);
+  let zero = iv_single(0.0);
+  let mx = iv_imax(qx, zero);
+  let my = iv_imax(qy, zero);
+  let mz = iv_imax(qz, zero);
+  let outside = iv_sqrt(iv_add(iv_add(iv_square(mx), iv_square(my)), iv_square(mz)));
+  let inside = iv_imin(iv_imax(qx, iv_imax(qy, qz)), zero);
+  return iv_add(outside, inside);
+}
+
+fn interval_cylinder(b: IntvBox, r: f32, half_h: f32) -> Intv {
+  // Axial along Z; radial = length(p.xy). Matches sdf_cylinder.
+  let d_radial = iv_sub_scalar(iv_sqrt(iv_add(iv_square(b.xi), iv_square(b.yi))), r);
+  let d_axial = iv_sub_scalar(iv_abs(b.zi), half_h);
+  let branch_out = iv_sqrt(iv_add(iv_square(d_radial), iv_square(d_axial)));
+  let branch_in = iv_imax(d_radial, d_axial);
+  // Definitely outside → branch_out; definitely on an axis → branch_in;
+  // ambiguous → hull of both (loose but sound).
+  if (d_radial.lo > 0.0 && d_axial.lo > 0.0) { return branch_out; }
+  if (d_radial.hi <= 0.0 || d_axial.hi <= 0.0) { return branch_in; }
+  return Intv(min(branch_out.lo, branch_in.lo), max(branch_out.hi, branch_in.hi));
+}
+
+fn interval_halfplane_x(b: IntvBox, off: f32, flip: i32) -> Intv {
+  let raw = iv_sub_scalar(b.xi, off);
+  if (flip != 0) { return iv_neg(raw); }
+  return raw;
+}
+fn interval_halfplane_y(b: IntvBox, off: f32, flip: i32) -> Intv {
+  let raw = iv_sub_scalar(b.yi, off);
+  if (flip != 0) { return iv_neg(raw); }
+  return raw;
+}
+fn interval_halfplane_z(b: IntvBox, off: f32, flip: i32) -> Intv {
+  let raw = iv_sub_scalar(b.zi, off);
+  if (flip != 0) { return iv_neg(raw); }
+  return raw;
+}
+"""
+
+    // Emits a WGSL expression that computes the interval bound of `node`
+    // over the input box expression `boxExpr`. Rotations and sketches punt
+    // to `iv_unknown()` — same as the CPU evaluator.
+    let rec private codegenIntervalNode (node: FieldNode) (boxExpr: string) : string =
+        match node with
+        | FPrimitive prim ->
+            match prim with
+            | PrimSphere radius ->
+                $"interval_sphere({boxExpr}, {slotExpr radius})"
+            | PrimCylinder(radius, height) ->
+                $"interval_cylinder({boxExpr}, {slotExpr radius}, {slotExpr height} * 0.5)"
+            | PrimBox(width, height, depth) ->
+                $"interval_box({boxExpr}, {slotExpr width} * 0.5, {slotExpr height} * 0.5, {slotExpr depth} * 0.5)"
+            | PrimHalfPlane(axis, offset, flip) ->
+                let fn =
+                    match axis with
+                    | "X" -> "interval_halfplane_x"
+                    | "Y" -> "interval_halfplane_y"
+                    | _ -> "interval_halfplane_z"
+                let flipI = if flip then "1" else "0"
+                $"{fn}({boxExpr}, {slotExpr offset}, {flipI})"
+        | FTranslate(x, y, z, child) ->
+            let childBox =
+                $"ivbox_sub({boxExpr}, vec3<f32>({slotExpr x}, {slotExpr y}, {slotExpr z}))"
+            codegenIntervalNode child childBox
+        | FRotate _ -> "iv_unknown()"
+        | FBoolean(op, radius, a, b) ->
+            let ea = codegenIntervalNode a boxExpr
+            let eb = codegenIntervalNode b boxExpr
+            let k = slotExpr radius
+            match op with
+            | BoolUnion -> $"iv_smooth_min({ea}, {eb}, {k})"
+            | BoolIntersect -> $"iv_neg(iv_smooth_min(iv_neg({ea}), iv_neg({eb}), {k}))"
+            | BoolSubtract -> $"iv_neg(iv_smooth_min(iv_neg({ea}), {eb}, {k}))"
+        | FFieldOp(op, value, child) ->
+            let ec = codegenIntervalNode child boxExpr
+            match op with
+            | OpThicken -> $"iv_sub_scalar({ec}, {slotExpr value})"
+            | OpShell ->
+                // max(child, -(child + v)) — child is duplicated in WGSL.
+                $"iv_imax({ec}, iv_neg(iv_add({ec}, iv_single({slotExpr value}))))"
+        | FSketch _ -> "iv_unknown()"
+
+    let generateIntervalFunctions (surfaces: FieldSurface list) =
+        let sb = StringBuilder()
+        sb.AppendLine(WGSL_INTERVAL_HELPERS) |> ignore
+        surfaces
+        |> List.iteri (fun i surface ->
+            let expr = codegenIntervalNode surface.Field "box"
+            sb.AppendLine($"fn interval_sdf_{i}(box: IntvBox) -> Intv {{") |> ignore
+            sb.AppendLine($"  return {expr};") |> ignore
+            sb.AppendLine("}") |> ignore)
+        sb.ToString()

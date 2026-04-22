@@ -504,3 +504,18 @@ let syncSlotValues (root: HTMLElement) (state: EditorState) : unit =
                 ()
         | _ ->
             ()
+
+let syncPanel (root: HTMLElement) (dispatch: Message -> unit) (doc: DocumentView) : unit =
+    match root.querySelector ".panel-host-properties" with
+    | :? HTMLElement as host ->
+        let prevScroll =
+            match host.querySelector ".selection-panel" with
+            | :? HTMLElement as panel -> panel.scrollTop
+            | _ -> host.scrollTop
+        host.innerHTML <- ""
+        host.appendChild (render dispatch doc :> Node) |> ignore
+        match host.querySelector ".selection-panel" with
+        | :? HTMLElement as panel -> panel.scrollTop <- prevScroll
+        | _ -> host.scrollTop <- prevScroll
+    | _ ->
+        ()

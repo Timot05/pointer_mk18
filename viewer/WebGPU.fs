@@ -302,6 +302,10 @@ let requestAnimationFrame (callback: float -> unit) : int = jsNative
 [<Emit("window.cancelAnimationFrame($0)")>]
 let cancelAnimationFrame (handle: int) : unit = jsNative
 
+/// High-resolution monotonic timestamp (ms, sub-millisecond precision).
+[<Emit("performance.now()")>]
+let performanceNow () : float = jsNative
+
 /// Copy an ImageBitmap into a GPU texture. Used for the MSDF atlas.
 [<Emit("$0.queue.copyExternalImageToTexture({ source: $1 }, { texture: $2 }, [$3, $4])")>]
 let copyImageBitmapToTexture

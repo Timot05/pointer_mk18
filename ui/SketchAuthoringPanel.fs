@@ -271,3 +271,15 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement option 
             overlay.appendChild (panel :> Node) |> ignore
             Some overlay
         | _ -> None
+
+let syncOverlay (root: HTMLElement) (dispatch: Message -> unit) (doc: DocumentView) : unit =
+    match root.querySelector ".panel-center" with
+    | :? HTMLElement as center ->
+        match center.querySelector ".sketch-authoring-overlay" with
+        | null -> ()
+        | overlay -> overlay.remove ()
+        match render dispatch doc with
+        | Some overlay -> center.appendChild (overlay :> Node) |> ignore
+        | None -> ()
+    | _ ->
+        ()

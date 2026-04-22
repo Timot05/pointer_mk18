@@ -317,3 +317,18 @@ let syncSubtitles (root: HTMLElement) (doc: DocumentView) : unit =
                         info.appendChild (subtitle :> Node) |> ignore
                 | existingSubtitle ->
                     existingSubtitle.textContent <- subtitleText
+
+let syncPanel (root: HTMLElement) (dispatch: Message -> unit) (doc: DocumentView) : unit =
+    match root.querySelector ".panel-host-actions" with
+    | :? HTMLElement as host ->
+        let prevScroll =
+            match host.querySelector ".actions-list" with
+            | :? HTMLElement as list -> list.scrollTop
+            | _ -> 0.0
+        host.innerHTML <- ""
+        host.appendChild (render dispatch doc :> Node) |> ignore
+        match host.querySelector ".actions-list" with
+        | :? HTMLElement as list -> list.scrollTop <- prevScroll
+        | _ -> ()
+    | _ ->
+        ()

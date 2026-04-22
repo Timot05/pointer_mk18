@@ -17,7 +17,7 @@ let private makeResizeObserver (cb: obj -> unit) : obj = jsNative
 [<Emit("$0.observe($1)")>]
 let private observe (observer: obj) (target: obj) : unit = jsNative
 
-let private mountCanvas (root: HTMLElement) : HTMLElement * HTMLCanvasElement =
+let private mountCanvas (root: HTMLElement) : HTMLElement * HTMLCanvasElement * HTMLElement =
     let shadow =
         if isNull root.shadowRoot then root?attachShadow({| mode = "open" |})
         else root.shadowRoot
@@ -37,11 +37,30 @@ let private mountCanvas (root: HTMLElement) : HTMLElement * HTMLCanvasElement =
     canvas?style?cursor <- "default"
     container.appendChild canvas |> ignore
 
-    container, canvas
+    // FPS HUD — absolute-positioned overlay in the top-right of the
+    // viewer. Updated from the RAF callback; pointer-events: none so it
+    // never intercepts mouse interaction.
+    let fps : HTMLElement = unbox (document.createElement "div")
+    fps?style?position <- "absolute"
+    fps?style?top <- "8px"
+    fps?style?right <- "8px"
+    fps?style?padding <- "4px 8px"
+    fps?style?fontFamily <- "ui-monospace, SFMono-Regular, Menlo, monospace"
+    fps?style?fontSize <- "11px"
+    fps?style?lineHeight <- "1.4"
+    fps?style?color <- "#1a1a1a"
+    fps?style?background <- "rgba(255, 255, 255, 0.75)"
+    fps?style?borderRadius <- "4px"
+    fps?style?pointerEvents <- "none"
+    fps?style?zIndex <- "10"
+    fps?textContent <- "— FPS"
+    container.appendChild fps |> ignore
+
+    container, canvas, fps
 
 let mount (root: HTMLElement) : JS.Promise<obj> =
     promise {
-        let container, canvas = mountCanvas root
+        let container, canvas, fpsEl = mountCanvas root
 
         match WebGPU.gpu () with
         | None ->
@@ -106,10 +125,22 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                     background.Value <- Some bg
                     pushIr bg)
 
+                // Adaptive render-resolution scale. Dropped to
+                // `LOW_RES_SCALE` while the camera's moving so the heavy
+                // raymarch fragment runs on a quarter as many pixels; the
+                // CSS `width: 100%` on the canvas element upscales in the
+                // browser for free. Returned to 1.0 once the camera has
+                // been idle for `HIGH_RES_DELAY_MS`.
+                let LOW_RES_SCALE = 0.5
+                let HIGH_RES_DELAY_MS = 150.0
+                let mutable renderScale = 1.0
+
                 // Resize: update canvas size + recreate depth/pick textures.
+                // `renderScale` multiplies the device-pixel target so the
+                // motion path reuses this exact reallocation code.
                 let resize () =
-                    let w = int (canvas.clientWidth * dpr)
-                    let h = int (canvas.clientHeight * dpr)
+                    let w = int (canvas.clientWidth * dpr * renderScale)
+                    let h = int (canvas.clientHeight * dpr * renderScale)
                     if w > 0 && h > 0 then
                         canvas?width <- w
                         canvas?height <- h
@@ -117,6 +148,12 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                         match background.Value with
                         | Some bg -> Kernel.Background.resize bg w h
                         | None -> ()
+
+                let setRenderScale (s: float) =
+                    if s <> renderScale then
+                        renderScale <- s
+                        resize ()
+
                 resize ()
                 let observer = makeResizeObserver (fun _ -> resize ())
                 observe observer canvas
@@ -192,10 +229,112 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 // grow on demand.
                 let fieldSlice = FieldSlice.create scene
 
-                // Render loop.
-                let rec frame (_: float) =
-                    Render.renderFrame scene toolCursor.Value
-                        background.Value (Some raymarch) (Some fieldSlice)
+                // Render loop. Two separate concerns:
+                //   1. Dirty-check — skip the render call entirely when
+                //      nothing visible has changed. rAF stays ticking
+                //      (microsecond-cheap when idle), but no GPU work
+                //      runs.
+                //   2. 60 FPS cap — even on high-refresh displays, space
+                //      renders at least MIN_FRAME_MS apart.
+                // Dirty signals: camera fields, store state ref,
+                // tool-cursor value, background transition None→Some.
+                // Everything else the viewer reads goes through the
+                // store, so a new state ref covers it.
+                //
+                // Motion detection (for the adaptive scale) runs only
+                // when we actually render; that's fine because the low-
+                // res mode kicks in *on the first moving frame* and no
+                // motion happens during skipped frames anyway.
+                let MIN_FRAME_MS = 16.0
+                let mutable emaMs = 0.0
+                let mutable lastHudTs = 0.0
+                let mutable lastRenderTs = 0.0
+                let mutable lastCamAz = System.Double.NaN
+                let mutable lastCamEl = 0.0
+                let mutable lastCamDist = 0.0
+                let mutable lastCamTx = 0.0
+                let mutable lastCamTy = 0.0
+                let mutable lastCamTz = 0.0
+                let mutable lastMotionTs = 0.0
+                let mutable lastStateRef : obj = null
+                let mutable lastToolCursor : (ActionId * float * float) option = None
+                let mutable lastBackgroundSome = false
+                let rec frame (now: float) =
+                    let cam = scene.Camera
+                    let state = AppStore.store.State
+                    let toolCursorNow = toolCursor.Value
+                    let backgroundSome = Option.isSome background.Value
+
+                    let camChanged =
+                        not (System.Double.IsNaN lastCamAz) && (
+                            cam.Azimuth <> lastCamAz
+                            || cam.Elevation <> lastCamEl
+                            || cam.Distance <> lastCamDist
+                            || cam.Target.X <> lastCamTx
+                            || cam.Target.Y <> lastCamTy
+                            || cam.Target.Z <> lastCamTz)
+                    let stateChanged =
+                        not (System.Object.ReferenceEquals(state, lastStateRef))
+                    // Structural equality — the value is a small tuple,
+                    // not a reference-tracked object.
+                    let toolChanged = toolCursorNow <> lastToolCursor
+                    let bgChanged = backgroundSome <> lastBackgroundSome
+                    let firstFrame = System.Double.IsNaN lastCamAz
+
+                    // If the camera just stopped moving, the scale needs
+                    // to transition LOW_RES → 1.0 one more time — but
+                    // nothing else is dirty. Treat the pending scale
+                    // change itself as a dirty signal so we always fire
+                    // exactly one high-res render after motion ends.
+                    let moving =
+                        lastMotionTs > 0.0 && now - lastMotionTs < HIGH_RES_DELAY_MS
+                    let desiredScale = if moving then LOW_RES_SCALE else 1.0
+                    let scalePending = desiredScale <> renderScale
+
+                    let dirty =
+                        firstFrame || camChanged || stateChanged
+                        || toolChanged || bgChanged || scalePending
+
+                    let throttled = now - lastRenderTs < MIN_FRAME_MS
+
+                    if dirty && not throttled then
+                        // Refresh tracking before rendering so any
+                        // store mutation during render is caught next
+                        // frame (not silently absorbed).
+                        lastCamAz <- cam.Azimuth
+                        lastCamEl <- cam.Elevation
+                        lastCamDist <- cam.Distance
+                        lastCamTx <- cam.Target.X
+                        lastCamTy <- cam.Target.Y
+                        lastCamTz <- cam.Target.Z
+                        lastStateRef <- state
+                        lastToolCursor <- toolCursorNow
+                        lastBackgroundSome <- backgroundSome
+                        if camChanged then lastMotionTs <- now
+
+                        setRenderScale desiredScale
+
+                        // Measure the CPU-side cost of building + submitting
+                        // this frame's command buffer. GPU execution is
+                        // asynchronous so this understates total GPU cost,
+                        // but it's the cost that blocks the main thread —
+                        // which is what the user sees as "frame cost".
+                        let renderStart = WebGPU.performanceNow ()
+                        Render.renderFrame scene toolCursor.Value
+                            background.Value (Some raymarch) (Some fieldSlice)
+                        let renderEnd = WebGPU.performanceNow ()
+                        let renderMs = renderEnd - renderStart
+                        let alpha = 0.2
+                        emaMs <-
+                            if emaMs = 0.0 then renderMs
+                            else (1.0 - alpha) * emaMs + alpha * renderMs
+                        lastRenderTs <- now
+
+                        if now - lastHudTs > 250.0 && emaMs > 0.0 then
+                            let suffix = if moving then " · LOW" else ""
+                            fpsEl?textContent <- sprintf "%.1f ms%s" emaMs suffix
+                            lastHudTs <- now
+
                     WebGPU.requestAnimationFrame frame |> ignore
                 WebGPU.requestAnimationFrame frame |> ignore
 

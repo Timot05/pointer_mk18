@@ -652,14 +652,19 @@ module Document =
                 Display = None
                 FieldSlice = None } ] }
 
-    // Stress document — extends the default doc with a small CSG blob so the
-    // viewer renders something non-trivial on fresh load. Tunable via the
-    // `gridN` constant. Keep `defaultDocument` untouched so the existing
-    // pipeline/typecheck tests continue to compare against the small reference.
+    // Stress document — extends the default doc with three distinct
+    // display-enabled surfaces so the viewer exercises both:
+    //   * per-block alive-mask pruning (each block typically covers only
+    //     one of the three surfaces),
+    //   * tight per-block tStart / tEnd from the raymarch probes (the
+    //     three surfaces are spatially separated so most blocks start
+    //     deep into the scene).
     //
     // NOTE: the Zig voxel kernel has `MAX_TAPE = 1024` and `simplify`'s
     // out-buffer is sized to MAX_TAPE, so the lowered tape must stay well
-    // under that limit (transient constants can briefly double the op count).
+    // under that limit (transient constants can briefly double the op
+    // count). Each surface here ends with its own final action — the
+    // kernel lowers each independently so they don't share a tape budget.
     let stressDocument () : Document =
         let baseDoc = defaultDocument ()
 
@@ -671,30 +676,9 @@ module Document =
               Display = None
               FieldSlice = None }
 
-        let gridN = 2
-        let spacing = 6.0
-        let sphereR = 2.6
-        let smoothR = 0.8
-        let centerOffset = float (gridN - 1) * spacing * 0.5
-
-        let gridCells =
-            [ for i in 0 .. gridN - 1 do
-                for j in 0 .. gridN - 1 do
-                    for k in 0 .. gridN - 1 do
-                        yield i, j, k ]
-
-        let translatedSphereId (i, j, k) = sprintf "tsph_%d_%d_%d" i j k
-
-        let sphereActions =
-            gridCells
-            |> List.collect (fun (i, j, k) ->
-                let sid = sprintf "ssrc_%d_%d_%d" i j k
-                let x = float i * spacing - centerOffset
-                let y = float j * spacing - centerOffset
-                let z = float k * spacing - centerOffset
-                [ mk sid "sph" (Sphere(radius = sphereR))
-                  mk (translatedSphereId (i, j, k)) "tsph" (Translate(child = Some sid, x = x, y = y, z = z)) ])
-
+        // Fold a list of IDs into a binary chain of smooth unions. Returns
+        // the created union actions plus the last union's ID (= the root
+        // of the chain). Shared by all three surfaces below.
         let chainUnions (prefix: string) (radius: float) (ids: string list) : DocAction list * string option =
             match ids with
             | [] -> [], None
@@ -706,30 +690,121 @@ module Document =
                 let actions, lastId, _ = List.fold folder ([], first, 0) rest
                 actions, Some lastId
 
-        let sphereUnionActions, gridRootId =
-            gridCells |> List.map translatedSphereId |> chainUnions "usph" smoothR
+        // ── Surface 1: 3×3×3 grid of spheres (warm), centered left ─────
+        let gridN = 3
+        let gridSpacing = 4.5
+        let gridSphereR = 1.8
+        let gridSmoothR = 0.8
+        let gridCenterOff = float (gridN - 1) * gridSpacing * 0.5
 
-        let displayOn = { DisplaySettings.defaults with Enabled = true }
+        let gridCells =
+            [ for i in 0 .. gridN - 1 do
+                for j in 0 .. gridN - 1 do
+                    for k in 0 .. gridN - 1 do
+                        yield i, j, k ]
 
-        let finalId, finalAction =
-            match gridRootId with
-            | Some rootId ->
-                // Display lives on a dedicated final action so the root id is
-                // stable regardless of how many spheres/unions were emitted.
-                let finalId = "stressFinal"
-                let kind = Translate(child = Some rootId, x = 0.0, y = 0.0, z = 0.0)
-                finalId,
-                { Id = finalId
-                  Name = Some "stress root"
-                  Kind = kind
-                  Visible = true
-                  Display = Some displayOn
-                  FieldSlice = None }
-            | None ->
-                "origin", baseDoc.Actions |> List.head
+        let gridSphereId (i, j, k) = sprintf "gsph_%d_%d_%d" i j k
 
-        let extras = sphereActions @ sphereUnionActions @ [ finalAction ]
+        let gridSphereActions =
+            gridCells
+            |> List.collect (fun (i, j, k) ->
+                let sid = sprintf "gsrc_%d_%d_%d" i j k
+                let x = float i * gridSpacing - gridCenterOff
+                let y = float j * gridSpacing - gridCenterOff
+                let z = float k * gridSpacing - gridCenterOff
+                [ mk sid "sph" (Sphere(radius = gridSphereR))
+                  mk (gridSphereId (i, j, k)) "tsph" (Translate(child = Some sid, x = x, y = y, z = z)) ])
+
+        let gridUnionActions, gridRootId =
+            gridCells |> List.map gridSphereId |> chainUnions "gu" gridSmoothR
+
+        let gridDisplay =
+            { DisplaySettings.defaults with Enabled = true; Color = [| 0.85; 0.55; 0.40 |] }
+        let gridFinal =
+            gridRootId
+            |> Option.map (fun rid ->
+                { mk "s1_final" "sphere grid"
+                    (Translate(child = Some rid, x = -14.0, y = 0.0, z = 0.0))
+                    with Display = Some gridDisplay })
+
+        // ── Surface 2: ring of cylinders (cool), center ────────────────
+        let ringN = 8
+        let ringRadius = 6.0
+        let ringCylR = 0.9
+        let ringCylH = 5.0
+        let ringCylId i = sprintf "rcyl_%d" i
+
+        let ringActions =
+            [ 0 .. ringN - 1 ]
+            |> List.collect (fun i ->
+                let a = 2.0 * System.Math.PI * float i / float ringN
+                let x = cos a * ringRadius
+                let z = sin a * ringRadius
+                let srcId = sprintf "rcyl_src_%d" i
+                [ mk srcId "cyl" (Cylinder(radius = ringCylR, height = ringCylH))
+                  mk (ringCylId i) "tcyl" (Translate(child = Some srcId, x = x, y = 0.0, z = z)) ])
+
+        let ringUnionActions, ringRootId =
+            [ 0 .. ringN - 1 ] |> List.map ringCylId |> chainUnions "ru" 0.6
+
+        let ringDisplay =
+            { DisplaySettings.defaults with Enabled = true; Color = [| 0.35; 0.55; 0.85 |] }
+        let ringFinal =
+            ringRootId
+            |> Option.map (fun rid ->
+                { mk "s2_final" "ring"
+                    (Translate(child = Some rid, x = 0.0, y = -8.0, z = 0.0))
+                    with Display = Some ringDisplay })
+
+        // ── Surface 3: perforated slab (green), centered right ─────────
+        // Big box with 4 cylindrical holes drilled through — exercises
+        // interval evaluation for Subtract + Box + Cylinder and gives the
+        // alive-mask a spatial reason to turn this bit off outside the
+        // slab's screen region.
+        let slabAction = mk "slab_box" "slab" (Box(width = 7.0, height = 4.0, depth = 7.0))
+        let holeActions =
+            [ -2.0, -2.0; 2.0, -2.0; -2.0, 2.0; 2.0, 2.0 ]
+            |> List.mapi (fun i (x, z) ->
+                let srcId = sprintf "slab_hole_src_%d" i
+                let tId = sprintf "slab_hole_%d" i
+                [ mk srcId "hole" (Cylinder(radius = 1.0, height = 6.0))
+                  mk tId "thole" (Translate(child = Some srcId, x = x, y = 0.0, z = z)) ])
+            |> List.concat
+
+        let holeIds = [ for i in 0 .. 3 -> sprintf "slab_hole_%d" i ]
+        let holeUnionActions, holeUnionRootId = chainUnions "slab_hu" 0.2 holeIds
+
+        let slabSubtractActions =
+            match holeUnionRootId with
+            | Some hRoot ->
+                [ mk "slab_sub" "slab - holes"
+                    (Subtract(a = Some "slab_box", b = Some hRoot, radius = 0.3)) ]
+            | None -> []
+
+        let slabRootId =
+            match holeUnionRootId with
+            | Some _ -> Some "slab_sub"
+            | None -> Some "slab_box"
+
+        let slabDisplay =
+            { DisplaySettings.defaults with Enabled = true; Color = [| 0.45; 0.75; 0.50 |] }
+        let slabFinal =
+            slabRootId
+            |> Option.map (fun rid ->
+                { mk "s3_final" "slab"
+                    (Translate(child = Some rid, x = 14.0, y = 0.0, z = 0.0))
+                    with Display = Some slabDisplay })
+
+        // ── Assemble ───────────────────────────────────────────────────
+        let finals = List.choose id [ gridFinal; ringFinal; slabFinal ]
+        let selectedId =
+            finals |> List.tryHead |> Option.map (fun a -> a.Id) |> Option.defaultValue "origin"
+
+        let extras =
+            gridSphereActions @ gridUnionActions @ (Option.toList gridFinal)
+            @ ringActions @ ringUnionActions @ (Option.toList ringFinal)
+            @ [ slabAction ] @ holeActions @ holeUnionActions @ slabSubtractActions @ (Option.toList slabFinal)
 
         { baseDoc with
             Actions = baseDoc.Actions @ extras
-            SelectedId = Some finalId }
+            SelectedId = Some selectedId }

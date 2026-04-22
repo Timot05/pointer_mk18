@@ -605,6 +605,14 @@ let buildSketchConstraintLinesBuffer
 let private PREVIEW_LINE : float32[]  = [| 0.502f; 0.745f; 0.549f; 0.72f |]
 let private PREVIEW_POINT : float32[] = [| 0.502f; 0.745f; 0.549f; 0.92f |]
 
+let private roundedRectPreviewRadius (minX: float) (maxX: float) (minY: float) (maxY: float) =
+    let width = maxX - minX
+    let height = maxY - minY
+    (min width height * 0.2)
+        |> max 0.002
+        |> min (width * 0.5 - 1e-6)
+        |> min (height * 0.5 - 1e-6)
+
 /// Line-list preview buffer for the currently-active tool.
 let buildToolPreviewLineBuffer
     (tool: string)
@@ -623,6 +631,31 @@ let buildToolPreviewLineBuffer
         |> List.iteri (fun i a ->
             let b = corners.[(i + 1) % 4]
             pushSegment out a b PREVIEW_LINE)
+    | "roundedRectangle", p0 :: _, Some c ->
+        let (x0, y0), (x1, y1) = p0, c
+        let minX = min x0 x1
+        let maxX = max x0 x1
+        let minY = min y0 y1
+        let maxY = max y0 y1
+        let width = maxX - minX
+        let height = maxY - minY
+        if abs width >= 1e-9 && abs height >= 1e-9 then
+            let radius = roundedRectPreviewRadius minX maxX minY maxY
+            if radius <= 1e-6 then
+                let corners = [ (minX, minY); (maxX, minY); (maxX, maxY); (minX, maxY) ]
+                corners
+                |> List.iteri (fun i a ->
+                    let b = corners.[(i + 1) % 4]
+                    pushSegment out a b PREVIEW_LINE)
+            else
+                pushSegment out (minX + radius, maxY) (maxX - radius, maxY) PREVIEW_LINE
+                pushSegment out (maxX, maxY - radius) (maxX, minY + radius) PREVIEW_LINE
+                pushSegment out (maxX - radius, minY) (minX + radius, minY) PREVIEW_LINE
+                pushSegment out (minX, minY + radius) (minX, maxY - radius) PREVIEW_LINE
+                pushArc out (maxX - radius, maxY) (maxX, maxY - radius) (maxX - radius, maxY - radius) true PREVIEW_LINE
+                pushArc out (maxX, minY + radius) (maxX - radius, minY) (maxX - radius, minY + radius) true PREVIEW_LINE
+                pushArc out (minX + radius, minY) (minX, minY + radius) (minX + radius, minY + radius) true PREVIEW_LINE
+                pushArc out (minX, maxY - radius) (minX + radius, maxY) (minX + radius, maxY - radius) true PREVIEW_LINE
     | "circle", p0 :: _, Some c ->
         let (cx, cy), (mx, my) = p0, c
         let dx, dy = mx - cx, my - cy
@@ -1379,4 +1412,3 @@ let buildFramesGizmoBuffer
         pushAxis (rot.Rotate({ X = 0.0; Y = 1.0; Z = 0.0 })) (colourFor axisColourY)
         pushAxis (rot.Rotate({ X = 0.0; Y = 0.0; Z = 1.0 })) (colourFor axisColourZ)
     out.ToArray()
-

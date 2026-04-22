@@ -28,10 +28,15 @@ type PaletteChip =
     { Label: string
       Value: string }
 
+type NumericFieldMode =
+    | Default
+    | SignedUnit
+
 type PaletteScalarField =
     { Key: string
       Label: string
-      Value: float }
+      Value: float
+      Mode: NumericFieldMode }
 
 type PaletteState =
     { IsOpen: bool
@@ -54,6 +59,11 @@ type PaletteSession =
       Query: string }
 
 module Palette =
+
+    let private scalarMode (kind: string) (key: string) =
+        match kind, key with
+        | "Rotate", ("ax" | "ay" | "az") -> SignedUnit
+        | _ -> Default
 
     // ── Step definitions per action kind ──────────────────────────────
 
@@ -230,7 +240,10 @@ module Palette =
                                 |> Map.tryFind f.Key
                                 |> Option.bind (fun s -> match System.Double.TryParse(s) with true, x -> Some x | _ -> None)
                                 |> Option.defaultValue f.Default
-                            { Key = f.Key; Label = f.Label; Value = v })
+                            { Key = f.Key
+                              Label = f.Label
+                              Value = v
+                              Mode = scalarMode kind f.Key })
                     { IsOpen = true; Mode = "scalars"; PickedKind = Some kind; Chips = chips
                       Prompt = ""
                       Query = ""
@@ -318,4 +331,4 @@ module Palette =
                 | "Mesh" -> Mesh(str "child", flt "size" 0.2, int "resolution" 96)
                 | _ -> Origin
 
-            Some { Id = actionId; Name = None; Kind = actionKind; Visible = true; Display = None; FieldSlice = None }
+            Some { Id = actionId; Name = None; Kind = actionKind }

@@ -68,6 +68,7 @@ type ViewerState =
       Visible: Map<string, bool>
       ConstraintLabelPositions: ConstraintLabelPositionView list
       Display: Map<string, DisplayStateView>
+      Eyes: Eye list
       Errors: ActionErrorView list }
 
 module ViewerPipeline =
@@ -132,22 +133,22 @@ module ViewerPipeline =
         | FFieldOp(_, _, child) -> leadingFieldTransform state child acc
         | _ -> acc
 
-    /// Per-surface field-slice placement (origin + basis) for every visible
-    /// surface with a slice enabled.
+    /// Per-eye field-slice placement (origin + basis). An eye contributes
+    /// a slice iff its FieldSlice is Some + Enabled + its target action
+    /// produces a surface.
     let private activeFieldSlices (state: EditorState) : FieldSliceView list =
         let surfaceIndexByAction =
             state.Compiled.Surfaces
             |> List.mapi (fun index surface -> surface.ActionId, (index, surface.Field))
             |> Map.ofList
 
-        state.Doc.Actions
-        |> List.choose (fun action ->
-            let fs = action.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
-
-            if not action.Visible || not fs.Enabled then
-                None
-            else
-                match Map.tryFind action.Id surfaceIndexByAction with
+        state.Doc.Eyes
+        |> List.choose (fun eye ->
+            match eye.FieldSlice with
+            | None -> None
+            | Some fs when not fs.Enabled -> None
+            | Some fs ->
+                match Map.tryFind eye.TargetActionId surfaceIndexByAction with
                 | None -> None
                 | Some(surfaceIndex, field) ->
                     let frame = leadingFieldTransform state field RigidTransform.Identity
@@ -262,14 +263,16 @@ module ViewerPipeline =
                 | _ -> []
             | _ -> []
 
+        // Display info keyed by target action. An action shows up here
+        // iff it has an eye pinned to it. FieldSlice defaults if the
+        // eye doesn't carry one.
         let displayByAction =
-            state.Doc.Actions
-            |> List.choose (fun a ->
-                match Map.tryFind a.Id state.Compiled.TypeMap with
+            state.Doc.Eyes
+            |> List.choose (fun eye ->
+                match Map.tryFind eye.TargetActionId state.Compiled.TypeMap with
                 | Some FieldType.Field ->
-                    let d = a.Display |> Option.defaultValue DisplaySettings.defaults
-                    let fs = a.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
-                    Some(a.Id, { Display = d; FieldSlice = fs })
+                    let fs = eye.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
+                    Some(eye.TargetActionId, { Display = eye.Display; FieldSlice = fs })
                 | _ -> None)
             |> Map.ofList
 
@@ -293,8 +296,13 @@ module ViewerPipeline =
                           Transform = Editor.resolveSketchTransform state origin plane }
                 | _ -> None)
 
+        // An action is "visible" iff it has an eye attached. This maps
+        // every action id to that bool so consumers don't re-scan eyes.
         let visibleByAction =
-            state.Doc.Actions |> List.map (fun a -> a.Id, a.Visible) |> Map.ofList
+            let eyeTargets = state.Doc.Eyes |> List.map (fun e -> e.TargetActionId) |> Set.ofList
+            state.Doc.Actions
+            |> List.map (fun a -> a.Id, Set.contains a.Id eyeTargets)
+            |> Map.ofList
 
         let constraintLabelPositions =
             state.Doc.Actions
@@ -328,4 +336,5 @@ module ViewerPipeline =
           Visible = visibleByAction
           ConstraintLabelPositions = constraintLabelPositions
           Display = displayByAction
+          Eyes = state.Doc.Eyes
           Errors = Editor.formatErrors state.Compiled.Errors }

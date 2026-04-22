@@ -6,15 +6,15 @@ open Server
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 let action id kind : DocAction =
-    { Id = id; Name = None; Kind = kind; Visible = true; Display = None; FieldSlice = None }
+    { Id = id; Name = None; Kind = kind }
 
 let quarterTurn = System.Math.PI * 0.5
 
 let hidden id kind : DocAction =
-    { Id = id; Name = None; Kind = kind; Visible = false; Display = None; FieldSlice = None }
+    { Id = id; Name = None; Kind = kind }
 
 let pipeline (actions: DocAction list) =
-    let result = Pipeline.compile actions
+    let result = Pipeline.compile actions []
     if result.Errors.Length > 0 then failwithf "Pipeline errors: %A" result.Errors
     result
 
@@ -225,9 +225,11 @@ let ``Thicken compiles to FFieldOp with slot`` () =
     | other -> failwithf "Expected FFieldOp(Thicken), got %A" other
 
 [<Fact>]
-let ``Hidden actions produce no surfaces`` () =
-    let r = pipeline [ hidden "s" (Sphere 5.0) ]
-    Assert.Empty(r.Surfaces)
+let ``Field actions always compile to a surface (visibility is eye-level)`` () =
+    // Post-refactor: every field action compiles to a surface. Eyes are
+    // what gate what renders; the compiled surface list is independent.
+    let r = pipeline [ action "s" (Sphere 5.0) ]
+    Assert.Single r.Surfaces |> ignore
 
 [<Fact>]
 let ``Frame actions produce no surfaces`` () =
@@ -290,8 +292,8 @@ let ``SlotTable.update returns false on miss`` () =
 [<Fact>]
 let ``Slot indices are stable across compiles`` () =
     let actions = [ action "s" (Sphere 5.0); action "c" (Cylinder(3.0, 10.0)) ]
-    let r1 = Pipeline.compile actions
-    let r2 = Pipeline.compile actions
+    let r1 = Pipeline.compile actions []
+    let r2 = Pipeline.compile actions []
     Assert.Equal<Map<SlotRef, Slot>>(r1.Slots.Index, r2.Slots.Index)
 
 [<Fact>]
@@ -531,8 +533,8 @@ let ``PickLoop.entityIds matches detectLoops output`` () =
 [<Fact>]
 let ``Pickable list is stable across compiles of the same input`` () =
     let actions = (Document.defaultDocument()).Actions
-    let r1 = Pipeline.compile actions
-    let r2 = Pipeline.compile actions
+    let r1 = Pipeline.compile actions []
+    let r2 = Pipeline.compile actions []
     // Same count + same ordered list of variants + ids
     Assert.Equal(r1.Pickables.Length, r2.Pickables.Length)
     let key (p: Pickable) =

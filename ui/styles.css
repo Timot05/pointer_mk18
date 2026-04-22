@@ -665,6 +665,26 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: text;
+}
+
+.action-title-edit {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 3px;
+  margin: -2px -3px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.action-title-edit:focus {
+  border-color: var(--accent);
 }
 
 .action-subtitle {
@@ -897,7 +917,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 0 12px 10px;
+  padding: 12px 12px 10px;
 }
 
 .display-controls.is-disabled {
@@ -1154,6 +1174,130 @@ body {
   font-size: 9px;
   line-height: 1;
   margin: 0 1px;
+}
+
+/* ── Eye source (panel header) ─────────────────────────────────────── */
+
+.header-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eye-source {
+  height: 17px;
+  min-width: 30px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(74, 144, 200, 0.35);
+  border-radius: 999px;
+  background: rgba(74, 144, 200, 0.08);
+  color: #4A90C8;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.eye-source:hover {
+  background: rgba(74, 144, 200, 0.16);
+  border-color: rgba(74, 144, 200, 0.6);
+}
+
+.eye-source:active { cursor: grabbing; }
+
+.eye-source svg {
+  width: 11px;
+  height: 11px;
+  pointer-events: none;
+}
+
+/* Palette button no longer needs `margin-left: auto` — the
+   .header-right wrapper handles positioning. */
+.header-right .palette-hint-btn { margin-left: 0; }
+
+/* ── Per-row eye slot ──────────────────────────────────────────────── */
+/* The slot is purely a position holder for the eye badge — the whole
+   action row is the drop target for eye drags (see .is-eye-drop). */
+
+.eye-slot {
+  flex-shrink: 0;
+  margin: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.action-row.is-eye-drop {
+  background: rgba(74, 144, 200, 0.1);
+  outline: 1px dashed #4A90C8;
+  outline-offset: -1px;
+}
+
+/* Eye badge — a pill shape with a washed-blue outline. Turns solid
+   blue when the eye is the currently selected entity. */
+.eye-badge {
+  height: 15px;
+  min-width: 28px;
+  padding: 0 7px;
+  border: 1px solid rgba(74, 144, 200, 0.35);
+  border-radius: 999px;
+  background: rgba(74, 144, 200, 0.08);
+  color: #4A90C8;
+  cursor: grab;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.eye-badge svg {
+  width: 11px;
+  height: 11px;
+  pointer-events: none;
+}
+
+.eye-badge:hover {
+  background: rgba(74, 144, 200, 0.16);
+  border-color: rgba(74, 144, 200, 0.6);
+}
+
+/* Dashed border communicates "this eye follows the tail action". */
+.eye-badge.is-tail {
+  border-style: dashed;
+}
+
+.eye-badge.is-selected {
+  background: #4A90C8;
+  border-color: #4A90C8;
+  color: #FFFFFF;
+}
+
+.eye-badge.is-selected:hover {
+  background: #3E7FB3;
+  border-color: #3E7FB3;
+}
+
+.eye-badge:active { cursor: grabbing; }
+
+/* Eye-only right panel header back button */
+.eye-back {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-page);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.eye-back:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border-color: var(--text-faint);
 }
 
 /* ── Command palette ───────────────────────────────────────────────── */

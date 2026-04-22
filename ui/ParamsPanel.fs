@@ -22,6 +22,13 @@ let private vColor (rgb: float[]) : ParamValue =
 
 // ── Control builders — each takes a typed field, not a string key ─────
 
+let private numericModeForParamField =
+    function
+    | RotateAxisX
+    | RotateAxisY
+    | RotateAxisZ -> SignedUnit
+    | _ -> Default
+
 let private controlDrag
         (dispatch: Message -> unit)
         (label: string)
@@ -31,12 +38,13 @@ let private controlDrag
         : HTMLElement =
     let row = Dom.el "div" "control-row"
     row.appendChild (Dom.elText "span" "control-name" label :> Node) |> ignore
-    let valSpan = Dom.elText "span" "control-value" (sprintf "%.1f" value)
+    let valSpan = Dom.elText "span" "control-value" (Dom.formatControlValue value)
     valSpan.dataset?slotActionId <- actionId
     valSpan.dataset?slotPath <- Server.Document.pathOfParamField field
     let dispatchValue nextValue =
         dispatch (Editor.setActionParamValue actionId field (vFloat nextValue))
-    Dom.setupDraggable
+    Dom.setupDraggableWithOptions
+        (Dom.draggableOptionsForMode (numericModeForParamField field))
         valSpan
         value
         dispatchValue
@@ -299,125 +307,159 @@ let private colorsMatch (a: float[]) (b: float[]) =
     && abs (a.[1] - b.[1]) < 0.01
     && abs (a.[2] - b.[2]) < 0.01
 
-let private renderDisplaySection
+/// Controls for one attached eye — reused inside the eye-only panel.
+let private renderEyeControls
         (dispatch: Message -> unit)
-        (selected: DocAction)
-        : HTMLElement option =
+        (eye: Eye)
+        : HTMLElement =
+    let controls = Dom.el "div" "display-controls"
+    let d = eye.Display
 
-    match selected.Display with
-    | None -> None
-    | Some d ->
-        let nodeVisible = selected.Visible
-        let section = Dom.el "div" "display-section"
+    // Tail-following toggle
+    let tail = Dom.el "label" "display-check"
+    let tailCheckbox = document.createElement "input" :?> HTMLInputElement
+    tailCheckbox.``type`` <- "checkbox"
+    tailCheckbox.``checked`` <- eye.TailFollowing
+    tailCheckbox.addEventListener ("change", fun _ ->
+        dispatch (SetEyeTailFollowing(eye.Id, tailCheckbox.``checked``)))
+    tail.appendChild (tailCheckbox :> Node) |> ignore
+    tail.appendChild (Dom.elText "span" "" "Follow tail" :> Node) |> ignore
+    controls.appendChild (tail :> Node) |> ignore
 
-        let title = Dom.el "div" "section-title"
-        title.appendChild (Dom.elText "span" "" "field display" :> Node) |> ignore
-        if not nodeVisible then
-            let note = Dom.el "span" "field-disabled-note"
-            note.appendChild (Dom.kbdHintTitled "v" "Press v to toggle" :> Node) |> ignore
-            note.appendChild (Dom.elText "span" "" "to enable" :> Node) |> ignore
-            title.appendChild (note :> Node) |> ignore
-        section.appendChild (title :> Node) |> ignore
+    // Isosurface toggle
+    let check = Dom.el "label" "display-check"
+    let checkbox = document.createElement "input" :?> HTMLInputElement
+    checkbox.``type`` <- "checkbox"
+    checkbox.``checked`` <- d.Enabled
+    checkbox.addEventListener ("change", fun _ -> dispatch (ToggleEyeDisplay eye.Id))
+    check.appendChild (checkbox :> Node) |> ignore
+    check.appendChild (Dom.kbdHintTitled "s" "Press s to toggle" :> Node) |> ignore
+    check.appendChild (Dom.elText "span" "" "Show field iso-surface" :> Node) |> ignore
+    controls.appendChild (check :> Node) |> ignore
 
-        let controls = Dom.el "div" "display-controls"
-        if not nodeVisible then controls.classList.add "is-disabled"
+    if d.Enabled then
+        // Color swatches
+        let colorRow = Dom.el "div" "control-row color-row"
+        colorRow.appendChild (Dom.elText "span" "control-name" "color" :> Node) |> ignore
+        let swatches = Dom.el "div" "color-swatches"
+        for (hex, rgb) in roadrunnerPalette do
+            let swatch = Dom.el "button" "color-swatch"
+            swatch?style?background <- hex
+            if colorsMatch d.Color rgb then swatch.classList.add "is-active"
+            swatch.addEventListener (
+                "click",
+                fun _ ->
+                    dispatch (Editor.setEyeDisplayValue eye.Id DisplayColor (vColor rgb))
+            )
+            swatches.appendChild (swatch :> Node) |> ignore
+        colorRow.appendChild (swatches :> Node) |> ignore
+        controls.appendChild (colorRow :> Node) |> ignore
 
-        // Isosurface toggle
-        let check = Dom.el "label" "display-check"
-        let checkbox = document.createElement "input" :?> HTMLInputElement
-        checkbox.``type`` <- "checkbox"
-        checkbox.``checked`` <- d.Enabled
-        checkbox.disabled <- not nodeVisible
-        checkbox.addEventListener ("change", fun _ -> dispatch (ToggleDisplay selected.Id))
-        check.appendChild (checkbox :> Node) |> ignore
-        check.appendChild (Dom.kbdHintTitled "s" "Press s to toggle" :> Node) |> ignore
-        check.appendChild (Dom.elText "span" "" "Show field iso-surface" :> Node) |> ignore
-        controls.appendChild (check :> Node) |> ignore
+        // Iso offset
+        let offsetRow = Dom.el "div" "control-row"
+        offsetRow.appendChild (Dom.elText "span" "control-name" "offset" :> Node) |> ignore
+        let offsetVal = Dom.elText "span" "control-value" (Dom.formatControlValue d.IsoValue)
+        let isoPath = Server.Document.pathOfDisplayField DisplayIsoValue |> List.head
+        offsetVal.dataset?slotActionId <- eye.TargetActionId
+        offsetVal.dataset?slotPath <- isoPath
+        let dispatchIsoValue nextValue =
+            dispatch (Editor.setEyeDisplayValue eye.Id DisplayIsoValue (vFloat nextValue))
+        Dom.setupDraggable
+            offsetVal
+            d.IsoValue
+            dispatchIsoValue
+            dispatchIsoValue
+        offsetRow.appendChild (offsetVal :> Node) |> ignore
+        controls.appendChild (offsetRow :> Node) |> ignore
 
-        if d.Enabled then
-            // Color swatches
-            let colorRow = Dom.el "div" "control-row color-row"
-            colorRow.appendChild (Dom.elText "span" "control-name" "color" :> Node) |> ignore
-            let swatches = Dom.el "div" "color-swatches"
-            for (hex, rgb) in roadrunnerPalette do
-                let swatch = Dom.el "button" "color-swatch"
-                swatch?style?background <- hex
-                if colorsMatch d.Color rgb then swatch.classList.add "is-active"
-                swatch.addEventListener (
-                    "click",
-                    fun _ ->
-                        dispatch (Editor.setDisplayValue selected.Id DisplayColor (vColor rgb))
-                )
-                swatches.appendChild (swatch :> Node) |> ignore
-            colorRow.appendChild (swatches :> Node) |> ignore
-            controls.appendChild (colorRow :> Node) |> ignore
+    // Field slice
+    let sliceCheck = Dom.el "label" "display-check"
+    let sliceCheckbox = document.createElement "input" :?> HTMLInputElement
+    sliceCheckbox.``type`` <- "checkbox"
+    let sliceEnabled =
+        eye.FieldSlice |> Option.map (fun fs -> fs.Enabled) |> Option.defaultValue false
+    sliceCheckbox.``checked`` <- sliceEnabled
+    sliceCheckbox.addEventListener ("change", fun _ -> dispatch (ToggleEyeFieldSlice eye.Id))
+    sliceCheck.appendChild (sliceCheckbox :> Node) |> ignore
+    sliceCheck.appendChild (Dom.kbdHintTitled "f" "Press f to toggle" :> Node) |> ignore
+    sliceCheck.appendChild (Dom.elText "span" "" "Show field iso-lines" :> Node) |> ignore
+    controls.appendChild (sliceCheck :> Node) |> ignore
 
-            // Iso offset
-            let offsetRow = Dom.el "div" "control-row"
-            offsetRow.appendChild (Dom.elText "span" "control-name" "offset" :> Node) |> ignore
-            let offsetVal = Dom.elText "span" "control-value" (sprintf "%.1f" d.IsoValue)
-            let isoPath = Server.Document.pathOfDisplayField DisplayIsoValue |> List.head
-            offsetVal.dataset?slotActionId <- selected.Id
-            offsetVal.dataset?slotPath <- isoPath
-            let dispatchIsoValue nextValue =
-                dispatch (Editor.setDisplayValue selected.Id DisplayIsoValue (vFloat nextValue))
-            Dom.setupDraggable
-                offsetVal
-                d.IsoValue
-                dispatchIsoValue
-                dispatchIsoValue
-            offsetRow.appendChild (offsetVal :> Node) |> ignore
-            controls.appendChild (offsetRow :> Node) |> ignore
+    match eye.FieldSlice with
+    | Some fs when fs.Enabled ->
+        // Plane
+        let planeRow = Dom.el "div" "control-row"
+        planeRow.appendChild (Dom.elText "span" "control-name" "plane" :> Node) |> ignore
+        let planeSelect = document.createElement "select" :?> HTMLSelectElement
+        planeSelect.className <- "control-select"
+        for (value, label) in [ "Z", "xy"; "Y", "xz"; "X", "yz" ] do
+            planeSelect.appendChild (option value label (fs.Plane = value) :> Node) |> ignore
+        planeSelect.addEventListener (
+            "change",
+            fun _ -> dispatch (Editor.setEyeFieldSliceValue eye.Id SlicePlane (vString planeSelect.value))
+        )
+        planeRow.appendChild (planeSelect :> Node) |> ignore
+        controls.appendChild (planeRow :> Node) |> ignore
 
-        // Field slice
-        match selected.FieldSlice with
-        | None -> ()
-        | Some fs ->
-            let sliceCheck = Dom.el "label" "display-check"
-            let sliceCheckbox = document.createElement "input" :?> HTMLInputElement
-            sliceCheckbox.``type`` <- "checkbox"
-            sliceCheckbox.``checked`` <- fs.Enabled
-            sliceCheckbox.disabled <- not nodeVisible
-            sliceCheckbox.addEventListener ("change", fun _ -> dispatch (ToggleFieldSlice selected.Id))
-            sliceCheck.appendChild (sliceCheckbox :> Node) |> ignore
-            sliceCheck.appendChild (Dom.kbdHintTitled "f" "Press f to toggle" :> Node) |> ignore
-            sliceCheck.appendChild (Dom.elText "span" "" "Show field iso-lines" :> Node) |> ignore
-            controls.appendChild (sliceCheck :> Node) |> ignore
+        // Offset
+        let sOffsetRow = Dom.el "div" "control-row"
+        sOffsetRow.appendChild (Dom.elText "span" "control-name" "offset" :> Node) |> ignore
+        let sOffsetVal = Dom.elText "span" "control-value" (Dom.formatControlValue fs.Offset)
+        let offsetPath = Server.Document.pathOfFieldSliceField SliceOffset |> List.head
+        sOffsetVal.dataset?slotActionId <- eye.TargetActionId
+        sOffsetVal.dataset?slotPath <- offsetPath
+        let dispatchSliceOffset nextValue =
+            dispatch (Editor.setEyeFieldSliceValue eye.Id SliceOffset (vFloat nextValue))
+        Dom.setupDraggable
+            sOffsetVal
+            fs.Offset
+            dispatchSliceOffset
+            dispatchSliceOffset
+        sOffsetRow.appendChild (sOffsetVal :> Node) |> ignore
+        controls.appendChild (sOffsetRow :> Node) |> ignore
+    | _ -> ()
 
-            if fs.Enabled then
-                // Plane
-                let planeRow = Dom.el "div" "control-row"
-                planeRow.appendChild (Dom.elText "span" "control-name" "plane" :> Node) |> ignore
-                let planeSelect = document.createElement "select" :?> HTMLSelectElement
-                planeSelect.className <- "control-select"
-                for (value, label) in [ "Z", "xy"; "Y", "xz"; "X", "yz" ] do
-                    planeSelect.appendChild (option value label (fs.Plane = value) :> Node) |> ignore
-                planeSelect.addEventListener (
-                    "change",
-                    fun _ -> dispatch (Editor.setFieldSliceValue selected.Id SlicePlane (vString planeSelect.value))
-                )
-                planeRow.appendChild (planeSelect :> Node) |> ignore
-                controls.appendChild (planeRow :> Node) |> ignore
+    controls
 
-                // Offset
-                let sOffsetRow = Dom.el "div" "control-row"
-                sOffsetRow.appendChild (Dom.elText "span" "control-name" "offset" :> Node) |> ignore
-                let sOffsetVal = Dom.elText "span" "control-value" (sprintf "%.1f" fs.Offset)
-                let offsetPath = Server.Document.pathOfFieldSliceField SliceOffset |> List.head
-                sOffsetVal.dataset?slotActionId <- selected.Id
-                sOffsetVal.dataset?slotPath <- offsetPath
-                let dispatchSliceOffset nextValue =
-                    dispatch (Editor.setFieldSliceValue selected.Id SliceOffset (vFloat nextValue))
-                Dom.setupDraggable
-                    sOffsetVal
-                    fs.Offset
-                    dispatchSliceOffset
-                    dispatchSliceOffset
-                sOffsetRow.appendChild (sOffsetVal :> Node) |> ignore
-                controls.appendChild (sOffsetRow :> Node) |> ignore
+/// Eye-only panel — rendered when the user clicked an eye badge. Shows
+/// which action the eye is pinned to, then its settings. No action
+/// params are visible; the user is editing the eye, not the action.
+let private renderEyePanel
+        (dispatch: Message -> unit)
+        (doc: DocumentView)
+        (eye: Eye)
+        : HTMLElement =
+    let container = Dom.el "div" "selection-panel eye-panel"
 
-        section.appendChild (controls :> Node) |> ignore
-        Some section
+    let header = Dom.el "div" "selection-header"
+    let headerIcon = Dom.el "span" "action-icon"
+    headerIcon.classList.add "large"
+    headerIcon.appendChild (Icons.eye () :> Node) |> ignore
+    header.appendChild (headerIcon :> Node) |> ignore
+    let headerInfo = Dom.el "div" "header-info"
+    headerInfo.appendChild (Dom.elText "div" "header-kind" "eye" :> Node) |> ignore
+    let targetLabel =
+        doc.Actions
+        |> List.tryFind (fun a -> a.Id = eye.TargetActionId)
+        |> Option.map (fun a ->
+            a.Name |> Option.defaultValue (ActionList.kindLabel a.Kind))
+        |> Option.defaultValue eye.TargetActionId
+    headerInfo.appendChild (Dom.elText "div" "header-name" (sprintf "on %s" targetLabel) :> Node) |> ignore
+    header.appendChild (headerInfo :> Node) |> ignore
+
+    // Back-to-action button (selects the targeted action, clearing eye).
+    let backBtn = Dom.el "button" "eye-back"
+    backBtn.textContent <- "\u2190 action"
+    backBtn.title <- "Back to the action this eye is attached to"
+    backBtn.addEventListener ("click", fun _ ->
+        dispatch (SelectAction eye.TargetActionId))
+    header.appendChild (backBtn :> Node) |> ignore
+    container.appendChild (header :> Node) |> ignore
+
+    let section = Dom.el "div" "display-section"
+    section.appendChild (renderEyeControls dispatch eye :> Node) |> ignore
+    container.appendChild (section :> Node) |> ignore
+    container
 
 // ── Sketch edit toggle (Sketch kind only) ──────────────────────────────
 
@@ -445,6 +487,11 @@ let private renderSketchEditToggle
 // ── Top-level render ───────────────────────────────────────────────────
 
 let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
+    // Eye-only mode: user clicked an eye badge in the action list.
+    match doc.SelectedEyeId |> Option.bind (fun id -> doc.Eyes |> List.tryFind (fun e -> e.Id = id)) with
+    | Some eye -> renderEyePanel dispatch doc eye
+    | None ->
+
     let container = Dom.el "div" "selection-panel"
 
     match doc.SelectedId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
@@ -477,7 +524,6 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
 
         // Controls
         let section = Dom.el "div" "param-section"
-        section.appendChild (Dom.elText "div" "controls-hint" "drag values to adjust:" :> Node) |> ignore
         section.appendChild (renderKindControls dispatch doc selected :> Node) |> ignore
         container.appendChild (section :> Node) |> ignore
 
@@ -486,10 +532,8 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
         | Some s -> container.appendChild (s :> Node) |> ignore
         | None -> ()
 
-        // Field display
-        match renderDisplaySection dispatch selected with
-        | Some s -> container.appendChild (s :> Node) |> ignore
-        | None -> ()
+        // Eye settings live in their own panel (click the eye badge on
+        // the action row to open it). Nothing eye-related here.
 
     container
 
@@ -505,7 +549,7 @@ let syncSlotValues (root: HTMLElement) (state: EditorState) : unit =
 
             match Map.tryFind slotRef state.Compiled.Slots.Index with
             | Some slot ->
-                elem.textContent <- sprintf "%.1f" state.SlotValues.[slot]
+                elem.textContent <- Dom.formatControlValue state.SlotValues.[slot]
             | None ->
                 ()
         | _ ->

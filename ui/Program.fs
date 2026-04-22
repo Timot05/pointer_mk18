@@ -105,11 +105,20 @@ let private actionListSignature (doc: DocumentView) =
         doc.Errors
         |> List.map (fun e -> e.ActionId)
         |> Set.ofList
+    // Map each action to its eye (if any) so the signature picks up
+    // attachment, tail-following, and selection changes — all of which
+    // change the badge's rendered class list.
+    let eyeByTarget =
+        doc.Eyes
+        |> List.map (fun e ->
+            e.TargetActionId,
+            (e.Id, e.TailFollowing, doc.SelectedEyeId = Some e.Id))
+        |> Map.ofList
     doc.Actions
     |> List.map (fun a ->
         a.Id,
         a.Name,
-        a.Visible,
+        Map.tryFind a.Id eyeByTarget,
         Set.contains a.Id actionErrors)
     |> sprintf "%A"
 
@@ -121,7 +130,7 @@ let private kindPanelSignature (kind: ActionKind) =
     | Box _ -> "Box"
     | HalfPlane(axis, _, flip) -> sprintf "HalfPlane|%s|%b" axis flip
     | Translate(child, _, _, _) -> sprintf "Translate|%A" child
-    | Rotate(child, ax, ay, az, _) -> sprintf "Rotate|%A|%.6f|%.6f|%.6f" child ax ay az
+    | Rotate(child, _, _, _, _) -> sprintf "Rotate|%A" child
     | Move(child, frame) -> sprintf "Move|%A|%A" child frame
     | Union(a, b, _) -> sprintf "Union|%A|%A" a b
     | Subtract(a, b, _) -> sprintf "Subtract|%A|%A" a b
@@ -140,26 +149,31 @@ let private paramsPanelSignature (doc: DocumentView) =
             doc.Errors
             |> List.filter (fun e -> e.ActionId = id)
             |> List.map (fun e -> e.Key, e.Error))
+    // If an eye is currently selected, the params panel is rendering
+    // the eye-only view — its signature depends on the eye's fields.
+    match doc.SelectedEyeId |> Option.bind (fun id -> doc.Eyes |> List.tryFind (fun e -> e.Id = id)) with
+    | Some eye ->
+        sprintf
+            "eye|%s|%s|%b|%b|%A"
+            eye.Id
+            eye.TargetActionId
+            eye.TailFollowing
+            eye.Display.Enabled
+            (eye.FieldSlice |> Option.map (fun fs -> fs.Enabled, fs.Plane))
+    | None ->
+
     match doc.SelectedId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
     | None ->
         sprintf "none|%A" selectedErrors
     | Some selected ->
-        let displaySig =
-            selected.Display
-            |> Option.map (fun d -> d.Enabled, selected.Visible)
-        let fieldSliceSig =
-            selected.FieldSlice
-            |> Option.map (fun fs -> fs.Enabled, fs.Plane)
         let refOptionsSig = doc.RefOptions |> Map.toList
         let sketchLoopsSig = doc.SketchLoops |> Map.toList
         sprintf
-            "%s|%A|%A|%A|%b|%A|%A|%A|%A"
+            "%s|%A|%A|%b|%A|%A|%A"
             selected.Id
             selected.Name
             (kindPanelSignature selected.Kind)
-            displaySig
             doc.SketchUi.EditMode
-            fieldSliceSig
             selectedErrors
             refOptionsSig
             sketchLoopsSig

@@ -33,6 +33,7 @@ let private containerImage  : obj = importDefault "@carbon/icons/es/container-im
 let private circleDash      : obj = importDefault "@carbon/icons/es/circle-dash/16"
 let private triangleOutline : obj = importDefault "@carbon/icons/es/triangle--outline/16"
 let private layers          : obj = importDefault "@carbon/icons/es/layers/16"
+let private view            : obj = importDefault "@carbon/icons/es/view/16"
 
 // --- Descriptor walkers --------------------------------------------------
 
@@ -111,6 +112,11 @@ let forTemplate (t: ActionTemplate) : Element =
 //Fallback icon when no specific kind/template is known.
 let fallback () : Element =
     buildSvg layers
+
+//Eye icon used for the eye badge in the action list and the "new eye"
+//drag source in the panel header.
+let eye () : Element =
+    buildSvg view
 
 // Map a string kind name (as seen in PaletteItem.Kind) to an icon.
 // The command palette carries string case names for historical reasons.

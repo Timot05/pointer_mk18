@@ -8,11 +8,14 @@ namespace Server
 type DocumentView =
     { Name: string
       Actions: DocAction list
+      Eyes: Eye list
       SelectedId: string option
+      SelectedEyeId: string option
       SelectedTargets: SelectionTarget list
       SketchUi: SketchUiState
       RefOptions: Map<string, string list>
       SketchLoops: Map<string, SketchLoopView list>
+      TypeMap: Map<ActionId, FieldType>
       Errors: ActionErrorView list }
 
 module DocumentPipeline =
@@ -38,19 +41,8 @@ module DocumentPipeline =
                             | Some t when List.contains t types -> Some a.Id
                             | _ -> None))
 
-        let actions =
-            state.Doc.Actions
-            |> List.map (fun a ->
-                match Map.tryFind a.Id tm with
-                | Some FieldType.Field ->
-                    { a with
-                        Display = Some(a.Display |> Option.defaultValue DisplaySettings.defaults)
-                        FieldSlice = Some(a.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults) }
-                | _ ->
-                    { a with Display = None; FieldSlice = None })
-
         let sketchLoops =
-            actions
+            state.Doc.Actions
             |> List.choose (fun a ->
                 match a.Kind with
                 | Sketch(_, _, sketch) ->
@@ -62,12 +54,15 @@ module DocumentPipeline =
             |> Map.ofList
 
         { Name = state.Doc.Name
-          Actions = actions
+          Actions = state.Doc.Actions
+          Eyes = state.Doc.Eyes
           SelectedId = state.Doc.SelectedId
+          SelectedEyeId = state.SelectedEyeId
           SelectedTargets = state.SelectedTargets
           SketchUi = Editor.sketchUiState state
           RefOptions = refOptions
           SketchLoops = sketchLoops
+          TypeMap = tm
           Errors = errors }
 
     let paletteView (state: EditorState) =

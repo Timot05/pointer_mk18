@@ -29,16 +29,10 @@ let private getKernel () =
         kernelPromise <- Some promise
         promise
 
-let private exportCompiledState (state: EditorState) (childId: string) =
-    let actions =
-        state.Doc.Actions
-        |> List.map (fun action ->
-            if action.Id = childId then
-                { action with Visible = true }
-            else
-                action)
-
-    Pipeline.compile actions
+let private exportCompiledState (state: EditorState) (_childId: string) =
+    // Visibility / eye state is irrelevant for mesh export — the
+    // compiled surfaces are generated from the raw action graph.
+    Pipeline.compile state.Doc.Actions state.Doc.Eyes
 
 let private overlayLiveSlotValues (source: SlotTable) (liveValues: float array) (target: SlotTable) =
     let values = Array.copy target.Values

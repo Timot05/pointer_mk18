@@ -100,16 +100,13 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 let mutable lastDoc : obj = null
                 let pushIr (bg: Kernel.Background.Background) =
                     let state = AppStore.store.State
-                    // Include only surfaces whose action has the "show
-                    // iso-surface" display toggle on *and* is visible.
-                    // Default `DisplaySettings.Enabled` is `false`, so a
-                    // freshly loaded doc renders nothing until the user
-                    // opts in — matching the toggle state in the UI.
+                    // A surface renders iff an eye is attached to its
+                    // action *and* the eye has Display.Enabled. No eye
+                    // → nothing rendered for that action.
                     let enabledActionIds =
-                        state.Doc.Actions
-                        |> List.choose (fun a ->
-                            let d = a.Display |> Option.defaultValue DisplaySettings.defaults
-                            if a.Visible && d.Enabled then Some a.Id else None)
+                        state.Doc.Eyes
+                        |> List.choose (fun e ->
+                            if e.Display.Enabled then Some e.TargetActionId else None)
                         |> Set.ofList
                     let surfaces =
                         state.Compiled.Surfaces

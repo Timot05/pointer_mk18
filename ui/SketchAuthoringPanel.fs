@@ -138,44 +138,24 @@ let private constraintSummary (c: SketchConstraint) : string =
     | CircleCircleDistance(circleA, _, circleB, _, _, _, _) -> sprintf "%s \u00B7 %s" circleA circleB
     | _ -> ""
 
-let private isDimensionConstraint (c: SketchConstraint) : bool =
-    match c with
-    | Distance _ | FrameDistance _ | LineDistance _ | FrameLineDistance _
-    | PointLineDistance _ | PointCircleDistance _ | LineCircleDistance _
-    | CircleCircleDistance _ | Angle _ | CircleDiameter _ -> true
-    | _ -> false
-
-let private constraintValueText (c: SketchConstraint) : string option =
-    match c with
-    | Distance(_, _, distance, _)
-    | FrameDistance(_, _, _, distance, _)
-    | LineDistance(_, _, _, _, _, _, distance, _)
-    | FrameLineDistance(_, _, _, _, _, distance, _)
-    | PointLineDistance(_, _, _, _, distance, _)
-    | PointCircleDistance(_, _, _, distance, _)
-    | LineCircleDistance(_, _, _, _, _, distance, _)
-    | CircleCircleDistance(_, _, _, _, distance, _, _) -> Some(sprintf "%.2f" distance)
-    | CircleDiameter(_, _, diameter, _) -> Some(sprintf "%.2f" diameter)
-    | Angle(_, _, _, _, _, _, angle, _, _, _, _) -> Some(sprintf "%.2f" angle)
-    | _ -> None
-
 // ── Sections ───────────────────────────────────────────────────────────
 
-let private renderExistingConstraints
+let private renderExistingGeometricConstraints
         (dispatch: Message -> unit)
         (sketch: ActionSketch)
-        (isDimensionSection: bool)
         (section: HTMLElement)
         : unit =
     let items =
         sketch.Constraints
         |> List.mapi (fun i c -> c, i)
-        |> List.filter (fun (c, _) -> isDimensionConstraint c = isDimensionSection)
+        |> List.filter (fun (c, _) ->
+            match c with
+            | Distance _ | FrameDistance _ | LineDistance _ | FrameLineDistance _
+            | PointLineDistance _ | PointCircleDistance _ | LineCircleDistance _
+            | CircleCircleDistance _ | Angle _ | CircleDiameter _ -> false
+            | _ -> true)
     if items.IsEmpty then
-        let msg =
-            if isDimensionSection then "Use the viewer to place a dimension label."
-            else "Select entities in the viewer to enable constraints."
-        section.appendChild (Dom.elText "div" "constraint-empty" msg :> Node) |> ignore
+        section.appendChild (Dom.elText "div" "constraint-empty" "Select entities in the viewer to enable constraints." :> Node) |> ignore
     else
         let list = Dom.el "div" "constraint-list"
         for (c, index) in items do
@@ -183,10 +163,6 @@ let private renderExistingConstraints
             row.appendChild (Dom.elText "span" "sym" (constraintSymbol c) :> Node) |> ignore
             row.appendChild (Dom.elText "span" "constraint-kind" (constraintLabel c) :> Node) |> ignore
             row.appendChild (Dom.elText "span" "constraint-summary" (constraintSummary c) :> Node) |> ignore
-            match constraintValueText c with
-            | Some value ->
-                row.appendChild (Dom.elText "span" "constraint-value" value :> Node) |> ignore
-            | None -> ()
             let del = Dom.elText "button" "constraint-delete" "\u00D7" :?> HTMLButtonElement
             del.``type`` <- "button"
             del.addEventListener ("click", fun _ -> dispatch (DeleteSketchConstraint index))
@@ -221,13 +197,12 @@ let private renderGeometricSection
         row.appendChild (button :> Node) |> ignore
     section.appendChild (row :> Node) |> ignore
 
-    renderExistingConstraints dispatch sketch false section
+    renderExistingGeometricConstraints dispatch sketch section
     section
 
 let private renderDimensionSection
         (dispatch: Message -> unit)
         (doc: DocumentView)
-        (sketch: ActionSketch)
         : HTMLElement =
     let section = Dom.el "div" "constraint-section"
     let header = Dom.el "div" "constraint-section-header"
@@ -252,7 +227,6 @@ let private renderDimensionSection
         button.addEventListener ("click", fun _ -> dispatch (ToggleConstraintPlacement b.Kind))
         row.appendChild (button :> Node) |> ignore
     section.appendChild (row :> Node) |> ignore
-    renderExistingConstraints dispatch sketch true section
     section
 
 // ── Top-level overlay ──────────────────────────────────────────────────
@@ -267,7 +241,7 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement option 
 
             let panel = Dom.el "div" "constraints-panel"
             panel.appendChild (renderGeometricSection dispatch doc sketch :> Node) |> ignore
-            panel.appendChild (renderDimensionSection dispatch doc sketch :> Node) |> ignore
+            panel.appendChild (renderDimensionSection dispatch doc :> Node) |> ignore
             overlay.appendChild (panel :> Node) |> ignore
             Some overlay
         | _ -> None

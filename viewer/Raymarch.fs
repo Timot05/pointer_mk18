@@ -367,19 +367,17 @@ let private ensureBlockCapacity (rm: Raymarch) (blocksX: int) (blocksY: int) =
 /// simply drops them from its branch list, so they won't render.
 let private MAX_SURFACES = 32
 
-/// `state.Compiled.Surfaces` lists one FieldSurface per visible DocAction
-/// that compiles to a field — often 100+. Only surfaces marked
-/// Display.Enabled actually render. Filter to the enabled set up front so
-/// both the WGSL codegen and the surfaceStates buffer stay tight (and
-/// the mask bit index per surface stays under 32).
+/// `state.Compiled.Surfaces` lists one FieldSurface per DocAction that
+/// compiles to a field. Only surfaces whose action is targeted by an
+/// eye with Display.Enabled render; those get their colour / opacity /
+/// iso-value from the eye. Filter up front so the WGSL codegen and the
+/// surfaceStates buffer stay tight.
 let private enabledSurfacesAndState (state: EditorState)
         : FieldSurface list * float32[] =
     let displayById =
-        state.Doc.Actions
-        |> List.choose (fun a ->
-            match a.Display with
-            | Some d when a.Visible && d.Enabled -> Some (a.Id, d)
-            | _ -> None)
+        state.Doc.Eyes
+        |> List.choose (fun e ->
+            if e.Display.Enabled then Some (e.TargetActionId, e.Display) else None)
         |> Map.ofList
     let enabled =
         state.Compiled.Surfaces

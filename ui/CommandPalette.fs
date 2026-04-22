@@ -116,7 +116,7 @@ let private patchScalarValues (fields: PaletteScalarField list) =
         for field in fields do
             match bd.querySelector($".control-value[data-field-key=\"{field.Key}\"]") with
             | :? HTMLElement as elem ->
-                elem.textContent <- sprintf "%.1f" field.Value
+                elem.textContent <- Dom.formatControlValue field.Value
             | _ ->
                 ()
         lastScalarSignature <- Some(scalarSignature fields)
@@ -176,9 +176,10 @@ let private mount (dispatch: Message -> unit)
         for field in state.ScalarFields do
             let cell = Dom.el "div" "value-cell"
             cell.appendChild (Dom.elText "span" "value-axis" field.Label :> Node) |> ignore
-            let valSpan = Dom.elText "span" "control-value" (sprintf "%.1f" field.Value)
+            let valSpan = Dom.elText "span" "control-value" (Dom.formatControlValue field.Value)
             valSpan.dataset?fieldKey <- field.Key
-            Dom.setupDraggable
+            Dom.setupDraggableWithOptions
+                (Dom.draggableOptionsForMode field.Mode)
                 valSpan
                 field.Value
                 (fun v -> dispatch (PaletteSetScalarField(field.Key, v)))

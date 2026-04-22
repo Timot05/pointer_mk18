@@ -185,20 +185,24 @@ let register
                         if next <> idx then
                             dispatch (SelectAction actions.[next].Id)
                 | "v" ->
+                    // Toggle the eye on the selected action — creates
+                    // one if missing, deletes it if already attached.
                     match selectedAction doc with
                     | Some sel ->
-                        match sel.Kind with
-                        | Origin -> ()
-                        | _ ->
-                            e.preventDefault ()
-                            dispatch (ToggleActionVisible sel.Id)
+                        e.preventDefault ()
+                        match doc.Eyes |> List.tryFind (fun eye -> eye.TargetActionId = sel.Id) with
+                        | Some eye -> dispatch (DeleteEye eye.Id)
+                        | None -> dispatch (CreateEyeFor sel.Id)
                     | None -> ()
                 | "s" ->
+                    // Ensure an eye is attached and toggle its
+                    // iso-surface display. The reducer handles the
+                    // create-if-missing case.
                     match selectedAction doc with
-                    | Some sel when sel.Display.IsSome ->
+                    | Some sel ->
                         e.preventDefault ()
-                        dispatch (ToggleDisplay sel.Id)
-                    | _ -> ()
+                        dispatch (ToggleActionSurface sel.Id)
+                    | None -> ()
                 | "e" | "E" ->
                     match selectedAction doc with
                     | Some { Kind = Sketch _; Id = id } ->
@@ -208,10 +212,12 @@ let register
                         ignore id
                     | _ -> ()
                 | "f" ->
+                    // Ensure an eye is attached and toggle its
+                    // field-slice overlay.
                     match selectedAction doc with
-                    | Some sel when sel.FieldSlice.IsSome ->
+                    | Some sel ->
                         e.preventDefault ()
-                        dispatch (ToggleFieldSlice sel.Id)
-                    | _ -> ()
+                        dispatch (ToggleActionFieldSlice sel.Id)
+                    | None -> ()
                 | _ -> ()
     )

@@ -74,8 +74,9 @@ let private renderRow
     main.appendChild (icon :> Node) |> ignore
 
     let info = Dom.el "div" "action-info"
-    let title = action.Name |> Option.defaultValue (kindLabel action.Kind)
-    info.appendChild (Dom.elText "span" "action-title" title :> Node) |> ignore
+    let titleText = action.Name |> Option.defaultValue (kindLabel action.Kind)
+    let titleSpan = Dom.elText "span" "action-title" titleText
+    info.appendChild (titleSpan :> Node) |> ignore
     let sub = kindSubtitle action.Kind
     if sub <> "" then
         let subtitle = Dom.elText "span" "action-subtitle" sub
@@ -83,23 +84,148 @@ let private renderRow
         info.appendChild (subtitle :> Node) |> ignore
     main.appendChild (info :> Node) |> ignore
 
+    // Double-click the title to rename. Swaps the <span> for an
+    // <input>; Enter commits via UpdateAction, Escape cancels, blur
+    // commits (matches the behaviour of similar inline-edit fields
+    // across the app).
+    let beginRename () =
+        let current = action.Name |> Option.defaultValue ""
+        let input = document.createElement "input" :?> HTMLInputElement
+        input.``type`` <- "text"
+        input.className <- "action-title-edit"
+        input.value <- current
+        titleSpan.parentNode.replaceChild(input, titleSpan) |> ignore
+        input.focus ()
+        input.select ()
+        let mutable finished = false
+        let commit () =
+            if not finished then
+                finished <- true
+                let trimmed = input.value.Trim()
+                let nextName =
+                    if trimmed = "" || trimmed = kindLabel action.Kind then None
+                    else Some trimmed
+                if nextName <> action.Name then
+                    dispatch (UpdateAction(action.Id, { action with Name = nextName }))
+        let cancel () =
+            if not finished then
+                finished <- true
+                // Let the store-driven re-render put the original span
+                // back. Swap locally as a fallback if there's no redraw.
+                if not (isNull input.parentNode) then
+                    input.parentNode.replaceChild(titleSpan, input) |> ignore
+        input.addEventListener ("blur", fun _ -> commit ())
+        input.addEventListener (
+            "keydown",
+            fun ev ->
+                let ke = ev :?> KeyboardEvent
+                match ke.key with
+                | "Enter" ->
+                    ev.preventDefault ()
+                    ev.stopPropagation ()
+                    commit ()
+                    input.blur ()
+                | "Escape" ->
+                    ev.preventDefault ()
+                    ev.stopPropagation ()
+                    cancel ()
+                | _ -> ev.stopPropagation ())
+        input.addEventListener ("click", fun ev -> ev.stopPropagation ())
+        input.addEventListener ("mousedown", fun ev -> ev.stopPropagation ())
+
+    titleSpan.addEventListener (
+        "dblclick",
+        fun ev ->
+            ev.preventDefault ()
+            ev.stopPropagation ()
+            beginRename ())
+
     row.appendChild (main :> Node) |> ignore
 
-    // Visibility toggle + kbd hint — Origin is always visible and has neither.
-    if not (isOrigin action.Kind) then
-        if selected then
-            row.appendChild (Dom.kbdHintTitled "v" "Press v to toggle" :> Node) |> ignore
+    // Eye slot on the right of the row — purely visual placement for
+    // the attached eye's badge. The whole row is the drop target for
+    // eye drags (see row-level listeners below); this div just keeps
+    // the badge sized consistently at the far right of the row.
+    let eye = doc.Eyes |> List.tryFind (fun e -> e.TargetActionId = action.Id)
+    let slot = Dom.el "div" "eye-slot"
 
-        let vis = Dom.el "button" "toggle-btn"
-        vis.textContent <- "\u25CF"
-        if action.Visible then vis.classList.add "is-active"
-        vis.addEventListener (
+    match eye with
+    | Some e ->
+        let badge = Dom.el "button" "eye-badge"
+        if e.TailFollowing then badge.classList.add "is-tail"
+        if doc.SelectedEyeId = Some e.Id then badge.classList.add "is-selected"
+        badge?draggable <- true
+        badge.dataset?eyeId <- e.Id
+        badge.appendChild (Icons.eye () :> Node) |> ignore
+        badge.addEventListener (
+            "dragstart",
+            fun ev ->
+                let de = ev :?> DragEvent
+                de.dataTransfer.effectAllowed <- "move"
+                de.dataTransfer.setData ("application/x-eye", e.Id) |> ignore
+                ev.stopPropagation ())
+        badge.addEventListener (
             "click",
-            fun e ->
-                e.stopPropagation ()
-                dispatch (ToggleActionVisible action.Id)
-        )
-        row.appendChild (vis :> Node) |> ignore
+            fun ev ->
+                ev.stopPropagation ()
+                let next =
+                    if doc.SelectedEyeId = Some e.Id then None else Some e.Id
+                dispatch (SelectEye next))
+        slot.appendChild (badge :> Node) |> ignore
+    | None ->
+        slot.classList.add "is-empty"
+
+    row.appendChild (slot :> Node) |> ignore
+
+    // ── Eye drop target: the entire row ────────────────────────────
+    //
+    // Classify the drag by the MIME types advertised on the transfer.
+    // During dragover `getData` returns "" for security, so the types
+    // list is the only reliable signal. Returns "move" for an
+    // existing-eye drag, "copy" for a fresh eye from the header.
+    let dragKind (de: DragEvent) : string option =
+        let types = de.dataTransfer.types
+        let mutable kind : string option = None
+        for i in 0 .. types.length - 1 do
+            let t = types.[i]
+            if t = "application/x-eye" then kind <- Some "move"
+            elif t = "application/x-new-eye" && kind = None then kind <- Some "copy"
+        kind
+
+    row.addEventListener (
+        "dragover",
+        fun ev ->
+            let de = ev :?> DragEvent
+            match dragKind de with
+            | Some "copy" when Option.isSome eye ->
+                // Occupied row rejects new-eye drops (one eye per action).
+                ()
+            | Some effect ->
+                ev.preventDefault ()
+                // Short-circuit the row's action-reorder dragover path
+                // below — eye drags must not leave reorder indicators.
+                ev.stopPropagation ()
+                de.dataTransfer.dropEffect <- effect
+                row.classList.add "is-eye-drop"
+            | None -> ())
+    row.addEventListener (
+        "dragleave",
+        fun _ -> row.classList.remove "is-eye-drop")
+    row.addEventListener (
+        "drop",
+        fun ev ->
+            let de = ev :?> DragEvent
+            row.classList.remove "is-eye-drop"
+            let existingEyeId = de.dataTransfer.getData "application/x-eye"
+            let newEye = de.dataTransfer.getData "application/x-new-eye"
+            if not (System.String.IsNullOrEmpty existingEyeId) then
+                ev.preventDefault ()
+                ev.stopPropagation ()
+                dispatch (MoveEye(existingEyeId, action.Id))
+            elif not (System.String.IsNullOrEmpty newEye) && Option.isNone eye then
+                ev.preventDefault ()
+                ev.stopPropagation ()
+                dispatch (CreateEyeFor action.Id))
 
     row
 
@@ -110,8 +236,25 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     let header = Dom.el "div" "panel-header"
     header.appendChild (Dom.elText "h2" "" "Actions" :> Node) |> ignore
 
-    // Palette hint button (phase 5 will wire it; for now it dispatches
-    // PaletteOpen so early testing works).
+    // Right side of the header: eye source + palette button, kept
+    // grouped so the eye doesn't float into the middle.
+    let rightGroup = Dom.el "div" "header-right"
+
+    // Eye source — draggable widget. Drop onto any action row to create
+    // a new eye attached to that action.
+    let eyeSource = Dom.el "div" "eye-source"
+    eyeSource.title <- "Drag onto an action to attach an eye"
+    eyeSource?draggable <- true
+    eyeSource.appendChild (Icons.eye () :> Node) |> ignore
+    eyeSource.addEventListener (
+        "dragstart",
+        fun ev ->
+            let de = ev :?> DragEvent
+            de.dataTransfer.effectAllowed <- "copy"
+            de.dataTransfer.setData ("application/x-new-eye", "new") |> ignore)
+    rightGroup.appendChild (eyeSource :> Node) |> ignore
+
+    // Palette hint button.
     let paletteBtn = Dom.el "button" "palette-hint-btn"
     paletteBtn.appendChild (Dom.elText "kbd" "" "\u2318" :> Node) |> ignore
     paletteBtn.appendChild (Dom.elText "span" "palette-hint-plus" "+" :> Node) |> ignore
@@ -119,7 +262,9 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     paletteBtn.appendChild (document.createTextNode " " :> Node) |> ignore
     paletteBtn.appendChild (Dom.elText "span" "" "palette" :> Node) |> ignore
     paletteBtn.addEventListener ("click", fun _ -> dispatch PaletteOpen)
-    header.appendChild (paletteBtn :> Node) |> ignore
+    rightGroup.appendChild (paletteBtn :> Node) |> ignore
+
+    header.appendChild (rightGroup :> Node) |> ignore
 
     left.appendChild (header :> Node) |> ignore
 

@@ -76,6 +76,9 @@ type EditorState =
       ConstraintPlacementMode: ConstraintPlacementKind option
       ConstraintPlacementDraft: ConstraintPlacementDraft option
       ConstraintPlacementCursor: (string * LabelPos) option
+      /// Which eye (if any) the right panel should show. Mutually
+      /// exclusive with showing the selected action's params.
+      SelectedEyeId: string option
       ViewerMode: ViewerMode }
 
 type SerializedModel =
@@ -98,6 +101,7 @@ type Effect =
 
 type Message =
     | SelectAction of string
+    | SelectEye of string option
     | SetHoveredTarget of SelectionTarget option
     | SetSelectedTargets of SelectionTarget list
     | AddDefaultAction of ActionTemplate * string
@@ -105,11 +109,20 @@ type Message =
     | UpdateAction of string * DocAction
     | RemoveAction of string
     | ReorderActions of string list
-    | ToggleActionVisible of string
-    | ToggleDisplay of string
-    | SetDisplayValue of string * DisplayField * ParamValue
-    | ToggleFieldSlice of string
-    | SetFieldSliceValue of string * FieldSliceField * ParamValue
+    | CreateEyeFor of ActionId
+    | DeleteEye of string
+    | MoveEye of string * ActionId
+    | SetEyeTailFollowing of string * bool
+    | ToggleEyeDisplay of string
+    | SetEyeDisplayValue of string * DisplayField * ParamValue
+    | ToggleEyeFieldSlice of string
+    | SetEyeFieldSliceValue of string * FieldSliceField * ParamValue
+    /// Keyboard shortcut: ensure an eye is attached to the action and
+    /// toggle its iso-surface display. Creates the eye with Display.Enabled
+    /// = true if none exists; otherwise toggles the existing eye's flag.
+    | ToggleActionSurface of ActionId
+    /// Same for the field-slice overlay.
+    | ToggleActionFieldSlice of ActionId
     | SetActionSlotValue of string * ActionParamField * ParamValue
     | SetActionStructureValue of string * ActionParamField * ParamValue
     | DeleteIntent
@@ -210,7 +223,7 @@ module Editor =
 
     let initState () =
         let doc = Document.emptyDocument ()
-        let compiled = Pipeline.compile doc.Actions
+        let compiled = Pipeline.compile doc.Actions doc.Eyes
         { Doc = doc
           Compiled = compiled
           SlotValues = Array.copy compiled.Slots.Values
@@ -229,6 +242,7 @@ module Editor =
           ConstraintPlacementMode = None
           ConstraintPlacementDraft = None
           ConstraintPlacementCursor = None
+          SelectedEyeId = None
           ViewerMode = Raymarch }
 
     let isSlotBackedActionParamField =
@@ -283,8 +297,8 @@ module Editor =
         else
             SetActionStructureValue(id, field, value)
 
-    let setDisplayValue id field value = SetDisplayValue(id, field, value)
-    let setFieldSliceValue id field value = SetFieldSliceValue(id, field, value)
+    let setEyeDisplayValue eyeId field value = SetEyeDisplayValue(eyeId, field, value)
+    let setEyeFieldSliceValue eyeId field value = SetEyeFieldSliceValue(eyeId, field, value)
 
     let sketchPlaneTransform (originFrame: RigidTransform) (plane: SketchPlane) =
         let localRotation =
@@ -443,6 +457,12 @@ module Editor =
             match state.ActiveSketchDrag, state.Doc.SelectedId with
             | Some drag, Some selectedId when next.EditMode && selectedId = drag.SketchId -> Some drag
             | _ -> None
+        // If the currently-selected eye was deleted (e.g. because its
+        // target action was removed and cascade-deleted it), drop the
+        // selection so the right panel doesn't dangle.
+        let selectedEyeId =
+            state.SelectedEyeId
+            |> Option.filter (fun id -> state.Doc.Eyes |> List.exists (fun e -> e.Id = id))
         { state with
             SketchEditMode = next.EditMode
             SketchTool = next.Tool
@@ -454,10 +474,11 @@ module Editor =
             PendingSketchDragCommit = if activeSketchDrag.IsSome then state.PendingSketchDragCommit else false
             ConstraintPlacementMode = next.ConstraintPlacementMode |> Option.bind tryConstraintPlacementKind
             ConstraintPlacementCursor = constraintPlacementCursor
-            ConstraintPlacementDraft = constraintPlacementDraft }
+            ConstraintPlacementDraft = constraintPlacementDraft
+            SelectedEyeId = selectedEyeId }
 
     let recompileState (state: EditorState) =
-        let compiled = Pipeline.compile state.Doc.Actions
+        let compiled = Pipeline.compile state.Doc.Actions state.Doc.Eyes
         let next =
             { state with
                 Compiled = compiled
@@ -496,47 +517,57 @@ module Editor =
         | None ->
             failwithf "Expected numeric slot value for %A, got %A" field value
 
-    let private patchDisplaySlotValues (state: EditorState) (actionId: string) (field: DisplayField) (value: ParamValue) =
-        let updates =
-            match field with
-            | DisplayColor ->
-                match ParamValue.asFloatArray value with
-                | Some color when color.Length = 3 ->
-                    (Document.pathOfDisplayField field, color |> Array.toList)
-                    ||> List.zip
-                    |> List.map (fun (path, colorValue) ->
-                        { ActionId = actionId; Path = path }, colorValue)
-                | Some color ->
-                    failwithf "Expected RGB display color, got %d components" color.Length
-                | None ->
-                    failwithf "Expected display color array, got %A" value
-            | DisplayOpacity
-            | DisplayIsoValue ->
-                match ParamValue.asFloat value with
-                | Some number ->
-                    Document.pathOfDisplayField field
-                    |> List.map (fun path -> { ActionId = actionId; Path = path }, number)
-                | None ->
-                    failwithf "Expected numeric display value for %A, got %A" field value
+    /// Slots for Display/FieldSlice are keyed by the ActionId the eye
+    /// targets — not the eye id — so the shader code path is unchanged.
+    let private patchEyeDisplaySlotValues (state: EditorState) (eyeId: string) (field: DisplayField) (value: ParamValue) =
+        match state.Doc.Eyes |> List.tryFind (fun e -> e.Id = eyeId) with
+        | None -> state.SlotValues
+        | Some eye ->
+            let actionId = eye.TargetActionId
+            let updates =
+                match field with
+                | DisplayColor ->
+                    match ParamValue.asFloatArray value with
+                    | Some color when color.Length = 3 ->
+                        (Document.pathOfDisplayField field, color |> Array.toList)
+                        ||> List.zip
+                        |> List.map (fun (path, colorValue) ->
+                            { ActionId = actionId; Path = path }, colorValue)
+                    | Some color ->
+                        failwithf "Expected RGB display color, got %d components" color.Length
+                    | None ->
+                        failwithf "Expected display color array, got %A" value
+                | DisplayOpacity
+                | DisplayIsoValue ->
+                    match ParamValue.asFloat value with
+                    | Some number ->
+                        Document.pathOfDisplayField field
+                        |> List.map (fun path -> { ActionId = actionId; Path = path }, number)
+                    | None ->
+                        failwithf "Expected numeric display value for %A, got %A" field value
 
-        patchSlotValues state.SlotValues state.Compiled updates
-
-    let private patchFieldSliceSlotValues (state: EditorState) (actionId: string) (field: FieldSliceField) (value: ParamValue) =
-        let updates =
-            match field with
-            | SlicePlane -> []
-            | SliceOffset ->
-                match ParamValue.asFloat value with
-                | Some number ->
-                    Document.pathOfFieldSliceField field
-                    |> List.map (fun path -> { ActionId = actionId; Path = path }, number)
-                | None ->
-                    failwithf "Expected numeric field-slice value for %A, got %A" field value
-
-        if updates.IsEmpty then
-            state.SlotValues
-        else
             patchSlotValues state.SlotValues state.Compiled updates
+
+    let private patchEyeFieldSliceSlotValues (state: EditorState) (eyeId: string) (field: FieldSliceField) (value: ParamValue) =
+        match state.Doc.Eyes |> List.tryFind (fun e -> e.Id = eyeId) with
+        | None -> state.SlotValues
+        | Some eye ->
+            let actionId = eye.TargetActionId
+            let updates =
+                match field with
+                | SlicePlane -> []
+                | SliceOffset ->
+                    match ParamValue.asFloat value with
+                    | Some number ->
+                        Document.pathOfFieldSliceField field
+                        |> List.map (fun path -> { ActionId = actionId; Path = path }, number)
+                    | None ->
+                        failwithf "Expected numeric field-slice value for %A, got %A" field value
+
+            if updates.IsEmpty then
+                state.SlotValues
+            else
+                patchSlotValues state.SlotValues state.Compiled updates
 
     /// Clear only the "in-progress placement" scratch state — dimension
     /// being edited and the constraint-placement draft/cursor. Used when
@@ -604,7 +635,8 @@ module Editor =
             SolvedSketchParams = Map.empty
             ConstraintPlacementMode = None
             ConstraintPlacementDraft = None
-            ConstraintPlacementCursor = None }
+            ConstraintPlacementCursor = None
+            SelectedEyeId = None }
         |> recompileState
 
     let applySelectionIntent intent target current =
@@ -629,24 +661,33 @@ module Editor =
         |> List.tryHead
 
     let applyDeleteIntent (state: EditorState) =
-        if state.SketchEditMode then
-            match SketchAuthoring.trySelectedSketch state.Doc with
-            | Some ctx when not state.SelectedTargets.IsEmpty ->
-                let nextDoc =
-                    SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.deleteTargets state.SelectedTargets ctx.Sketch)
-                { state with Doc = nextDoc }
-                |> clearTransient
-                |> recompileState
-            | _ ->
-                state
-        else
-            match state.Doc.SelectedId with
-            | Some id when id <> "origin" ->
-                { state with Doc = Document.removeAction id state.Doc }
-                |> clearTransient
-                |> recompileState
-            | _ ->
-                state
+        // Eye selection takes priority — the right panel is in eye-edit
+        // mode, so Delete removes the eye (not the underlying action).
+        match state.SelectedEyeId with
+        | Some eyeId ->
+            { state with
+                Doc = Document.deleteEye eyeId state.Doc
+                SelectedEyeId = None }
+            |> normalizeState
+        | None ->
+            if state.SketchEditMode then
+                match SketchAuthoring.trySelectedSketch state.Doc with
+                | Some ctx when not state.SelectedTargets.IsEmpty ->
+                    let nextDoc =
+                        SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.deleteTargets state.SelectedTargets ctx.Sketch)
+                    { state with Doc = nextDoc }
+                    |> clearTransient
+                    |> recompileState
+                | _ ->
+                    state
+            else
+                match state.Doc.SelectedId with
+                | Some id when id <> "origin" ->
+                    { state with Doc = Document.removeAction id state.Doc |> Document.rebalanceEyes }
+                    |> clearTransient
+                    |> recompileState
+                | _ ->
+                    state
 
     let paletteMaybeBuild (state: EditorState) =
         let paletteState = Palette.toState state.PaletteSession state.Compiled.TypeMap state.Doc
@@ -664,7 +705,7 @@ module Editor =
                         | Sketch _ -> true
                         | _ -> false
                     { state with
-                        Doc = Document.addAction action state.Doc
+                        Doc = Document.addAction action state.Doc |> Document.rebalanceEyes
                         PaletteSession = Palette.empty
                         SketchEditMode =
                             if enterSketchEdit then true else state.SketchEditMode }
@@ -775,20 +816,21 @@ module Editor =
             let next =
                 match message with
                 | SelectAction id ->
-                    { state with Doc = Document.select id state.Doc }
+                    // Selecting an action exits eye-edit mode so the
+                    // right panel shows action params again.
+                    { state with Doc = Document.select id state.Doc; SelectedEyeId = None }
+                | SelectEye eyeId ->
+                    { state with SelectedEyeId = eyeId }
                 | SetHoveredTarget hoveredTarget ->
                     { state with HoveredTarget = hoveredTarget }
                 | SetSelectedTargets selectedTargets ->
                     { state with SelectedTargets = selectedTargets }
                 | AddDefaultAction(template, id) ->
-                    let action =
+                    let action : DocAction =
                         { Id = id
                           Name = None
-                          Kind = actionTemplateKind template
-                          Visible = true
-                          Display = None
-                          FieldSlice = None }
-                    let next = { state with Doc = Document.addAction action state.Doc }
+                          Kind = actionTemplateKind template }
+                    let next = { state with Doc = Document.addAction action state.Doc |> Document.rebalanceEyes }
                     // Drop straight into sketch-edit mode on a fresh
                     // Sketch action — the user otherwise has to click
                     // the edit toggle as their first action every time.
@@ -798,29 +840,61 @@ module Editor =
                         | _ -> next
                     next |> recompileState
                 | AddAction action ->
-                    { state with Doc = Document.addAction action state.Doc } |> recompileState
+                    { state with Doc = Document.addAction action state.Doc |> Document.rebalanceEyes } |> recompileState
                 | UpdateAction(id, action) ->
                     { state with Doc = Document.updateAction id action state.Doc } |> recompileState
                 | RemoveAction id ->
-                    { state with Doc = Document.removeAction id state.Doc } |> recompileState
+                    { state with Doc = Document.removeAction id state.Doc |> Document.rebalanceEyes } |> recompileState
                 | ReorderActions ids ->
-                    { state with Doc = Document.reorder ids state.Doc } |> recompileState
-                | ToggleActionVisible id ->
-                    { state with Doc = Document.toggleVisible id state.Doc } |> normalizeState
-                | ToggleDisplay id ->
-                    { state with Doc = Document.toggleDisplay id state.Doc } |> normalizeState
-                | SetDisplayValue(id, key, value) ->
+                    { state with Doc = Document.reorder ids state.Doc |> Document.rebalanceEyes } |> recompileState
+                | CreateEyeFor actionId ->
+                    { state with Doc = Document.createEye actionId state.Doc } |> normalizeState
+                | DeleteEye eyeId ->
                     { state with
-                        Doc = Document.patchDisplayValue id key value state.Doc
-                        SlotValues = patchDisplaySlotValues state id key value }
+                        Doc = Document.deleteEye eyeId state.Doc
+                        SelectedEyeId = if state.SelectedEyeId = Some eyeId then None else state.SelectedEyeId }
                     |> normalizeState
-                | ToggleFieldSlice id ->
-                    { state with Doc = Document.toggleFieldSlice id state.Doc } |> normalizeState
-                | SetFieldSliceValue(id, key, value) ->
+                | MoveEye(eyeId, targetActionId) ->
+                    { state with Doc = Document.moveEye eyeId targetActionId state.Doc } |> normalizeState
+                | SetEyeTailFollowing(eyeId, value) ->
+                    { state with Doc = Document.setEyeTailFollowing eyeId value state.Doc } |> normalizeState
+                | ToggleEyeDisplay eyeId ->
+                    { state with Doc = Document.toggleEyeDisplayEnabled eyeId state.Doc } |> normalizeState
+                | SetEyeDisplayValue(eyeId, key, value) ->
                     { state with
-                        Doc = Document.patchFieldSliceValue id key value state.Doc
-                        SlotValues = patchFieldSliceSlotValues state id key value }
+                        Doc = Document.patchEyeDisplayValue eyeId key value state.Doc
+                        SlotValues = patchEyeDisplaySlotValues state eyeId key value }
                     |> normalizeState
+                | ToggleEyeFieldSlice eyeId ->
+                    { state with Doc = Document.toggleEyeFieldSlice eyeId state.Doc } |> normalizeState
+                | SetEyeFieldSliceValue(eyeId, key, value) ->
+                    { state with
+                        Doc = Document.patchEyeFieldSliceValue eyeId key value state.Doc
+                        SlotValues = patchEyeFieldSliceSlotValues state eyeId key value }
+                    |> normalizeState
+                | ToggleActionSurface actionId ->
+                    // If the action already has an eye, toggle its
+                    // Display.Enabled. Otherwise create one with the
+                    // display already on.
+                    let docAfter =
+                        match state.Doc.Eyes |> List.tryFind (fun e -> e.TargetActionId = actionId) with
+                        | Some eye -> Document.toggleEyeDisplayEnabled eye.Id state.Doc
+                        | None ->
+                            let created = Document.createEye actionId state.Doc
+                            match created.Eyes |> List.tryFind (fun e -> e.TargetActionId = actionId) with
+                            | Some eye -> Document.toggleEyeDisplayEnabled eye.Id created
+                            | None -> created
+                    { state with Doc = docAfter } |> normalizeState
+                | ToggleActionFieldSlice actionId ->
+                    let docAfter =
+                        match state.Doc.Eyes |> List.tryFind (fun e -> e.TargetActionId = actionId) with
+                        | Some eye -> Document.toggleEyeFieldSlice eye.Id state.Doc
+                        | None ->
+                            let created = Document.createEye actionId state.Doc
+                            match created.Eyes |> List.tryFind (fun e -> e.TargetActionId = actionId) with
+                            | Some eye -> Document.toggleEyeFieldSlice eye.Id created
+                            | None -> created
+                    { state with Doc = docAfter } |> normalizeState
                 | SetActionSlotValue(id, key, value) ->
                     { state with
                         Doc = Document.patchParamValue id key value state.Doc
@@ -1039,15 +1113,15 @@ module Editor =
                         |> List.tryFind (fun a -> a.Id = "origin")
                         |> Option.orElseWith (fun () -> model.Actions |> List.tryHead)
                         |> Option.map (fun a -> a.Id)
-                    loadDoc { Name = model.Name; Actions = model.Actions; SelectedId = selectedId } state
+                    loadDoc { Name = model.Name; Actions = model.Actions; Eyes = []; SelectedId = selectedId } state
                 | ClearModel ->
                     loadDoc (Document.emptyDocument ()) state
                 | SetViewerMode mode ->
                     { state with ViewerMode = mode }
             let effects =
                 match message with
-                | SetDisplayValue _
-                | SetFieldSliceValue _
+                | SetEyeDisplayValue _
+                | SetEyeFieldSliceValue _
                 | SetActionSlotValue _
                 | CommitEditingDimension _
                 | ViewerPlaceConstraint _

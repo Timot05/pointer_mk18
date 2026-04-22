@@ -220,8 +220,11 @@ module Element =
 
         let mutable state : Map<ActionId, Element> * Map<ActionId, FrameChain> = Map.empty, Map.empty
         for action in actions do
-            // Eagerly build Field-typed visible actions as Elements.
-            if action.Visible && isField action.Id then
+            // Eagerly build Field-typed actions as Elements. Eye-based
+            // visibility is applied downstream (render + filter); the
+            // compiled surface list is always complete so eyes can be
+            // attached / detached without recompile.
+            if isField action.Id then
                 let _, s = compile action.Id state
                 state <- s
             // Eagerly resolve Frame-typed actions as frame chains (so Move

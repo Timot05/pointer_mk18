@@ -343,6 +343,18 @@ module Document =
 
     let select (id: string) (doc: Document) : Document = { doc with SelectedId = Some id }
 
+    let freshActionId (kind: string) (doc: Document) : ActionId =
+        let prefix = kind.ToLowerInvariant() + "_"
+
+        let rec loop counter =
+            let candidate = prefix + string counter
+            if doc.Actions |> List.exists (fun action -> action.Id = candidate) then
+                loop (counter + 1)
+            else
+                candidate
+
+        loop 1
+
     let addAction (action: DocAction) (doc: Document) : Document =
         { doc with
             Actions = doc.Actions @ [ action ]

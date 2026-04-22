@@ -641,15 +641,20 @@ module Editor =
             | _ ->
                 state
 
-    let paletteMaybeBuild (idSuffix: string) (state: EditorState) =
+    let paletteMaybeBuild (state: EditorState) =
         let paletteState = Palette.toState state.PaletteSession state.Compiled.TypeMap state.Doc
         if paletteState.Mode = "done" then
-            match Palette.buildAction state.PaletteSession idSuffix with
-            | Some action ->
-                { state with
-                    Doc = Document.addAction action state.Doc
-                    PaletteSession = Palette.empty }
-                |> recompileState
+            match state.PaletteSession.PickedKind with
+            | Some kind ->
+                let actionId = Document.freshActionId kind state.Doc
+                match Palette.buildAction state.PaletteSession actionId with
+                | Some action ->
+                    { state with
+                        Doc = Document.addAction action state.Doc
+                        PaletteSession = Palette.empty }
+                    |> recompileState
+                | None ->
+                    { state with PaletteSession = Palette.empty }
             | None ->
                 { state with PaletteSession = Palette.empty }
         else
@@ -989,15 +994,15 @@ module Editor =
                         | None -> Palette.pickCommand id state.PaletteSession
                         | Some _ -> Palette.pickItem id state.PaletteSession
                     { state with PaletteSession = nextPalette }
-                    |> paletteMaybeBuild id
+                    |> paletteMaybeBuild
                 | PaletteSetScalarField(key, value) ->
                     { state with PaletteSession = Palette.setScalarField key value state.PaletteSession }
                 | PaletteCommitScalars ->
                     { state with PaletteSession = Palette.commitScalars state.PaletteSession }
-                    |> paletteMaybeBuild ""
+                    |> paletteMaybeBuild
                 | PaletteFinish idSuffix ->
                     { state with PaletteSession = Palette.skipToEnd state.PaletteSession }
-                    |> paletteMaybeBuild idSuffix
+                    |> paletteMaybeBuild
                 | PaletteBack ->
                     { state with PaletteSession = Palette.back state.PaletteSession }
                 | PaletteClose ->

@@ -425,3 +425,51 @@ let ``Palette commit on final scalar step builds the action`` () =
 
     Assert.Single(spheres) |> ignore
     Assert.False((DocumentPipeline.paletteView after).IsOpen)
+
+[<Fact>]
+let ``Palette-created sketches get fresh ids even when picking the same origin`` () =
+    let before = Editor.initState ()
+
+    let after =
+        before
+        |> updateMany
+            [ PaletteOpen
+              PalettePick "Sketch"
+              PalettePick "origin"
+              PaletteOpen
+              PalettePick "Sketch"
+              PalettePick "origin" ]
+
+    let sketches =
+        after.Doc.Actions
+        |> List.filter (fun action ->
+            match action.Kind with
+            | Sketch(Some "origin", _, _) -> true
+            | _ -> false)
+
+    Assert.Equal(2, sketches.Length)
+    Assert.Equal(2, sketches |> List.map (fun action -> action.Id) |> Set.ofList |> Set.count)
+
+[<Fact>]
+let ``Palette-created scalar actions get fresh ids on repeated commit`` () =
+    let before = Editor.initState ()
+
+    let after =
+        before
+        |> updateMany
+            [ PaletteOpen
+              PalettePick "Sphere"
+              PaletteCommitScalars
+              PaletteOpen
+              PalettePick "Sphere"
+              PaletteCommitScalars ]
+
+    let spheres =
+        after.Doc.Actions
+        |> List.filter (fun action ->
+            match action.Kind with
+            | Sphere _ -> true
+            | _ -> false)
+
+    Assert.Equal(2, spheres.Length)
+    Assert.Equal(2, spheres |> List.map (fun action -> action.Id) |> Set.ofList |> Set.count)

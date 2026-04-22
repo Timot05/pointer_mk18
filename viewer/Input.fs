@@ -79,6 +79,9 @@ let install
         (dpr: float)
         (camera: Camera.CameraState)
         (hooks: Hooks) : unit =
+    let selectionIntent (e: obj) =
+        if e?shiftKey || e?metaKey || e?ctrlKey then "toggle" else "replace"
+
     let mutable dragButton : int option = None
     let mutable dragStart : float * float = 0.0, 0.0
     let mutable dragLast : float * float = 0.0, 0.0
@@ -144,12 +147,12 @@ let install
                     | None -> ()
                 elif id = 0u then
                     dragPickable <- None
-                    Store.dispatch AppStore.store (ViewerPick("replace", []))
+                    Store.dispatch AppStore.store (ViewerPick(selectionIntent e, []))
                 else
                     let pickId = int id - 1
                     dragPickable <- Map.tryFind pickId (pickableById ())
                     Store.dispatch AppStore.store
-                        (ViewerPick("replace", [ { PickId = pickId; Score = 0.0f } ]))))
+                        (ViewerPick(selectionIntent e, [ { PickId = pickId; Score = 0.0f } ]))))
 
     addEvent canvas "dblclick" (fun e ->
         ePreventDefault e

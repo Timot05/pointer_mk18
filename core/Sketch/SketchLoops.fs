@@ -32,9 +32,11 @@ type SketchLoop =
 
 module SketchLoops =
 
-    // Cluster tolerance — loose enough that solver noise and float jitter
-    // don't prevent coincident-via-constraint points from merging.
-    let private CLUSTER_TOL = 1e-3
+    // Cluster tolerance. Kept tight so only points the solver has driven
+    // to coincidence (via shared slots or coincidence constraints) merge
+    // — authored points that just happen to sit close together stay
+    // separate, so open polylines don't get read as closed loops.
+    let private CLUSTER_TOL = 1e-9
     let private CLUSTER_TOL_SQ = CLUSTER_TOL * CLUSTER_TOL
 
     // ── Helpers ────────────────────────────────────────────────────────
@@ -129,6 +131,15 @@ module SketchLoops =
         polygonSignedArea pts
 
     // ── Main detection ─────────────────────────────────────────────────
+
+    // Signed-area threshold below which a face is considered degenerate.
+    // Open polylines trace their boundary twice (forward along each edge,
+    // then backward), so exact shoelace = 0 — but floating-point noise
+    // puts the result around 1e-15 for modestly-sized coords, which used
+    // to cross the old `> 0.0` check and emit phantom loops. 1e-9 is
+    // comfortably above the noise floor and below any real loop a user
+    // would draw in the sketch plane.
+    let private MIN_LOOP_AREA = 1e-9
 
     let detectLoops (entities: RenderEntity list) : SketchLoop list =
         let pointsById = collectPoints entities
@@ -266,7 +277,7 @@ module SketchLoops =
                             | head :: _ -> boundary @ [ head ]
                             | [] -> []
                         let signedArea = polygonSignedArea closed
-                        if signedArea > 0.0 then
+                        if signedArea > MIN_LOOP_AREA then
                             let entityIds =
                                 [ for ei in faceEdges -> edges.[ei].EntityId ]
                             faceLoops.Add(

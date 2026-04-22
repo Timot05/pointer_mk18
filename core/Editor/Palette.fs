@@ -252,7 +252,7 @@ module Palette =
         { session with StepIndex = session.Steps.Length }
 
     /// Build a DocAction from the completed palette session.
-    let buildAction (session: PaletteSession) (idSuffix: string) : DocAction option =
+    let buildAction (session: PaletteSession) (actionId: ActionId) : DocAction option =
         match session.PickedKind with
         | None -> None
         | Some kind ->
@@ -286,5 +286,4 @@ module Palette =
                 | "Mesh" -> Mesh(str "child", flt "size" 0.2, int "resolution" 96)
                 | _ -> Origin
 
-            let id = kind.ToLowerInvariant() + "_" + idSuffix
-            Some { Id = id; Name = None; Kind = actionKind; Visible = true; Display = None; FieldSlice = None }
+            Some { Id = actionId; Name = None; Kind = actionKind; Visible = true; Display = None; FieldSlice = None }

@@ -15,7 +15,7 @@ let private LABEL_COLOUR : float32[] = [| 0.427f; 0.341f; 0.192f; 1.0f |]
 let private LABEL_COLOUR_HOVER : float32[] = [| 0.725f; 0.510f; 0.170f; 1.0f |]
 
 /// Target visual font size (height in pixels on screen).
-let private DISPLAY_PX = 14.0
+let private DISPLAY_PX = 30.0
 
 let private formatDistance (d: float) : string =
     if abs d < 0.001 then "0" else sprintf "%.2f" d

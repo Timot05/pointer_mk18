@@ -166,6 +166,13 @@ body {
   flex-direction: column;
 }
 
+/* Action list isn't wrapped in a .panel (no header), so the .panel
+   border-right doesn't apply — draw the divider here instead so it
+   matches the properties-side divider. */
+.panel-host-actions {
+  border-right: 1px solid var(--border);
+}
+
 .panel-host > .panel {
   flex: 1;
 }

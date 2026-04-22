@@ -27,29 +27,8 @@ let private dropdownItem (label: string) (shortcut: string option) : HTMLButtonE
     | None -> ()
     btn
 
-let private viewerModeLabel (mode: ViewerMode) : string =
-    match mode with
-    | IntervalKernel -> "Interval"
-    | Raymarch -> "Raymarch"
-
-let private viewerModeToggle
-        (dispatch: Message -> unit) (mode: ViewerMode) : HTMLElement =
-    // Two-button segmented control; clicking the inactive mode flips it.
-    let group = Dom.el "div" "topbar-segmented"
-    let makeBtn (target: ViewerMode) =
-        let cls =
-            if mode = target then "topbar-button topbar-button-active"
-            else "topbar-button"
-        let btn = Dom.elText "button" cls (viewerModeLabel target) :?> HTMLButtonElement
-        btn.addEventListener ("click", fun _ -> dispatch (SetViewerMode target))
-        btn
-    group.appendChild (makeBtn IntervalKernel :> Node) |> ignore
-    group.appendChild (makeBtn Raymarch :> Node) |> ignore
-    group
-
 let render
         (dispatch: Message -> unit)
-        (viewerMode: ViewerMode)
         (onSave: unit -> unit)
         (onLoad: unit -> unit) : HTMLElement =
     let topbar = Dom.el "div" "topbar"
@@ -104,5 +83,4 @@ let render
     fileMenu.appendChild (fileDropdown :> Node) |> ignore
     topbar.appendChild (fileMenu :> Node) |> ignore
     topbar.appendChild (Dom.el "span" "topbar-spacer" :> Node) |> ignore
-    topbar.appendChild (viewerModeToggle dispatch viewerMode :> Node) |> ignore
     topbar

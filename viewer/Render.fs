@@ -180,7 +180,7 @@ let renderFrame
                 SketchOverlayRender.buildSketchLoopFillBuffer
                     sketch.Id sketch.Sketch sketchLoops
                     state.Compiled.Slots.Index viewState.Params
-                    viewState.HoveredTarget viewState.SelectedTargets
+                    viewState.HighlightedTarget viewState.HighlightedTargets
             drawTri colorPass slots.LoopFill loopFillData
 
             let sketchGizmoData = SketchOverlayRender.buildSketchGizmoBuffer ()
@@ -190,7 +190,7 @@ let renderFrame
                 SketchOverlayRender.buildSketchLineBuffer
                     sketch.Id sketch.Sketch.Entities
                     state.Compiled.Slots.Index viewState.Params
-                    viewState.HoveredTarget viewState.SelectedTargets
+                    viewState.HighlightedTarget viewState.HighlightedTargets
             drawLine colorPass slots.SketchLine lineData
 
             let showDimensions =
@@ -200,7 +200,7 @@ let renderFrame
                     sketch.Id sketch.Sketch
                     state.Compiled.Slots.Index viewState.Params
                     showDimensions
-                    viewState.HoveredTarget viewState.SelectedTargets
+                    viewState.HighlightedTarget viewState.HighlightedTargets
             drawLine colorPass slots.ConstraintLine constraintLineData
 
             // Placement preview.
@@ -263,7 +263,7 @@ let renderFrame
                 SketchOverlayRender.buildSketchPointBuffer
                     sketch.Id sketch.Sketch.Entities
                     state.Compiled.Slots.Index viewState.Params
-                    viewState.HoveredTarget viewState.SelectedTargets
+                    viewState.HighlightedTarget viewState.HighlightedTargets
             drawPoints colorPass scene.PointPipeline slots.SketchPoint pointData 7
 
             // Labels.
@@ -280,7 +280,7 @@ let renderFrame
                     LabelBuilder.buildSketchLabelBuffer
                         scene.FontMetrics points radiusLookup
                         sketch.Id sketch.Sketch.Constraints
-                        viewState.HoveredTarget viewState.SelectedTargets
+                        viewState.HighlightedTarget viewState.HighlightedTargets
                 else [||]
             drawLabel colorPass slots.Label labelData
 
@@ -290,7 +290,7 @@ let renderFrame
 
     let gizmoData =
         SketchOverlayRender.buildFramesGizmoBuffer
-            visibleFrames viewState.HoveredTarget viewState.SelectedTargets
+            visibleFrames viewState.HighlightedTarget viewState.HighlightedTargets
             state.Doc.SelectedId
     if gizmoData.Length > 0 then
         let buf = upload scene.Pool slots.FrameGizmo gizmoData
@@ -302,7 +302,7 @@ let renderFrame
 
     let frameOriginData =
         SketchOverlayRender.buildFrameOriginsPointBuffer
-            visibleFrames viewState.HoveredTarget viewState.SelectedTargets
+            visibleFrames viewState.HighlightedTarget viewState.HighlightedTargets
     if frameOriginData.Length > 0 then
         let buf = upload scene.Pool slots.FrameOriginPoint frameOriginData
         colorPass.setPipeline scene.WorldPointPipeline

@@ -96,7 +96,7 @@ let private onLoad () =
 
 let private renderInto (root: Browser.Types.HTMLElement) =
     let doc = DocumentPipeline.documentView store.State
-    let shell = Shell.render dispatch doc store.State.ViewerMode viewerHost onSave onLoad
+    let shell = Shell.render dispatch doc viewerHost onSave onLoad
     root.innerHTML <- ""
     root.appendChild shell |> ignore
 

@@ -233,7 +233,7 @@ module Editor =
           ConstraintPlacementMode = None
           ConstraintPlacementDraft = None
           ConstraintPlacementCursor = None
-          ViewerMode = IntervalKernel }
+          ViewerMode = Raymarch }
 
     let isSlotBackedActionParamField =
         function
@@ -355,9 +355,20 @@ module Editor =
             | TargetFrameOrigin f -> Set.contains f (sketchEditFrameIds state)
             | _ -> false
 
+    let private isSketchTarget =
+        function
+        | TargetPoint _
+        | TargetLine _
+        | TargetCircle _
+        | TargetArc _
+        | TargetLoop _
+        | TargetDimension _ -> true
+        | _ -> false
+
     let isValidSelectionTarget (state: EditorState) target =
         match target with
         | TargetFrameOrigin _ -> belongsToActiveSketch state target
+        | _ when isSketchTarget target -> belongsToActiveSketch state target
         | _ -> state.Compiled.Pickables |> List.exists (Pickable.sameTarget target)
 
     /// When clicking a target in sketch-edit mode, keep the active sketch

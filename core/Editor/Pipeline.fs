@@ -16,38 +16,6 @@ type PipelineResult =
 
 module Pipeline =
 
-    // ── Slot allocation for display + field-slice settings ────────────────
-    // Display / FieldSlice values now live on the eye targeting the
-    // action. Slots are still keyed by ActionId so the render pipeline
-    // lookups are unchanged; we just seed the initial values from the
-    // eye's Display / FieldSlice if one exists.
-
-    let private allocDisplaySlots
-            (b: SlotTable.Builder)
-            (eyeByTarget: Map<ActionId, Eye>)
-            (action: DocAction) =
-        let d =
-            Map.tryFind action.Id eyeByTarget
-            |> Option.map (fun e -> e.Display)
-            |> Option.defaultValue DisplaySettings.defaults
-        let id = action.Id
-        let r = { ActionId = id; Path = "display.color.0" }
-        SlotTable.alloc b r d.Color.[0] |> ignore
-        SlotTable.alloc b { ActionId = id; Path = "display.color.1" } d.Color.[1] |> ignore
-        SlotTable.alloc b { ActionId = id; Path = "display.color.2" } d.Color.[2] |> ignore
-        SlotTable.alloc b { ActionId = id; Path = "display.opacity" } d.Opacity |> ignore
-        SlotTable.alloc b { ActionId = id; Path = "display.isoValue" } d.IsoValue |> ignore
-
-    let private allocFieldSliceSlots
-            (b: SlotTable.Builder)
-            (eyeByTarget: Map<ActionId, Eye>)
-            (action: DocAction) =
-        let fs =
-            Map.tryFind action.Id eyeByTarget
-            |> Option.bind (fun e -> e.FieldSlice)
-            |> Option.defaultValue FieldSliceSettings.defaults
-        SlotTable.alloc b { ActionId = action.Id; Path = "fieldSlice.offset" } fs.Offset |> ignore
-
     let private allocFrameSlots (b: SlotTable.Builder) (action: DocAction) =
         match action.Kind with
         | Translate(_, x, y, z) ->
@@ -216,15 +184,10 @@ module Pipeline =
 
     let private allocActionSlots
         (typeMap: Map<ActionId, FieldType>)
-        (eyeByTarget: Map<ActionId, Eye>)
         (b: SlotTable.Builder)
         (action: DocAction)
         : SlotTable.Builder =
         match Map.tryFind action.Id typeMap, action.Kind with
-        | Some FieldType.Field, _ ->
-            allocDisplaySlots b eyeByTarget action
-            allocFieldSliceSlots b eyeByTarget action
-            b
         | Some FieldType.Frame, _ ->
             allocFrameSlots b action
             b
@@ -236,7 +199,7 @@ module Pipeline =
 
     // ── Full pipeline ─────────────────────────────────────────────────────
 
-    let compile (actions: DocAction list) (eyes: Eye list) : PipelineResult =
+    let compile (actions: DocAction list) : PipelineResult =
         let tc = TypeCheck.typecheck actions
         let typeMap = tc.Typed |> List.map (fun t -> t.Id, t.Output) |> Map.ofList
 
@@ -246,12 +209,10 @@ module Pipeline =
         // Compile field surfaces (allocates primitive/transform/boolean slots)
         let surfaces = FieldCompile.compile actions buildResult.Elements b
 
-        // Allocate action-owned runtime slots from the typed action stream:
-        // field actions contribute display/field-slice slots (seeded from
-        // any eye pointing at them), and sketch actions contribute
-        // entity/constraint slots.
-        let eyeByTarget = eyes |> List.map (fun e -> e.TargetActionId, e) |> Map.ofList
-        actions |> List.fold (allocActionSlots typeMap eyeByTarget) b |> ignore
+        // Allocate action-owned runtime slots from the typed action
+        // stream: frames contribute transform slots; sketches
+        // contribute entity/constraint slots.
+        actions |> List.fold (allocActionSlots typeMap) b |> ignore
 
         let pickables = buildPickables b actions typeMap
 

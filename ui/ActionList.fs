@@ -33,6 +33,280 @@ let kindLabel (kind: ActionKind) : string =
     | Shell _ -> "shell"
     | Mesh _ -> "mesh"
 
+// ── Wire-mode helpers ──────────────────────────────────────────────────
+//
+// When an action is in "wire its inputs" mode (Enter on the selected
+// action sets `doc.WiringActionId`), each of its ref slots surfaces as
+// a draggable "bubble":
+//   * If the slot is unassigned, the bubble sits in a tray row below
+//     the wired action.
+//   * If the slot is assigned, the bubble sits on the target action's
+//     drop-zone column.
+// Dragging a bubble onto an earlier action's drop zone sets that slot
+// to the earlier action. Clicking an already-placed bubble detaches it.
+
+type WireSlot =
+    { FullLabel: string          // "tool", "target", "child", ...
+      AcceptedKey: string        // "a" | "b" | "child" | "frame" | "origin" — matches TypeCheck.acceptedInputs
+      Field: ActionParamField    // dispatch target
+      Current: ActionId option } // current ref value (None = unassigned)
+
+let wireSlotsOf (kind: ActionKind) : WireSlot list =
+    let s label accepted field current =
+        { FullLabel = label
+          AcceptedKey = accepted
+          Field = field
+          Current = current }
+    match kind with
+    | Translate(c, _, _, _) -> [ s "child" "child" TranslateChild c ]
+    | Rotate(c, _, _, _, _) -> [ s "child" "child" RotateChild c ]
+    | Move(c, f) ->
+        [ s "child" "child" MoveChild c
+          s "frame" "frame" MoveFrame f ]
+    | Union(a, b, _) ->
+        [ s "tool"   "a" UnionA a
+          s "target" "b" UnionB b ]
+    | Subtract(a, b, _) ->
+        [ s "target" "a" SubtractA a
+          s "tool"   "b" SubtractB b ]
+    | Intersect(a, b, _) ->
+        [ s "tool"   "a" IntersectA a
+          s "target" "b" IntersectB b ]
+    | Sketch(o, _, _) -> [ s "origin" "origin" SketchOrigin o ]
+    | FromSketch(c, _, _) -> [ s "sketch" "child" FromSketchChild c ]
+    | Thicken(c, _) -> [ s "child" "child" ThickenChild c ]
+    | Shell(c, _) -> [ s "child" "child" ShellChild c ]
+    | Mesh(c, _, _) -> [ s "child" "child" MeshChild c ]
+    | _ -> []
+
+let WIRE_MIME = "application/x-wire-bubble"
+
+let dataTransferHasWire (de: DragEvent) : bool =
+    let types = de.dataTransfer.types
+    let mutable found = false
+    for i in 0 .. types.length - 1 do
+        if types.[i] = WIRE_MIME then found <- true
+    found
+
+/// Build one bubble DOM element. `draggable=true`; sets the drag
+/// payload to the slot's accepted key so drop targets can look it up
+/// in the wired action's slot list.
+let makeWireBubble
+        (dispatch: Message -> unit)
+        (wiredId: ActionId)
+        (slot: WireSlot)
+        (assignedBackground: bool)
+        : HTMLElement =
+    let bubble = Dom.el "button" "wire-bubble"
+    if assignedBackground then bubble.classList.add "is-assigned"
+    bubble.textContent <- slot.FullLabel
+    bubble?draggable <- true
+    bubble.addEventListener (
+        "dragstart",
+        fun ev ->
+            let de = ev :?> DragEvent
+            de.dataTransfer.effectAllowed <- "move"
+            de.dataTransfer.setData (WIRE_MIME, slot.AcceptedKey) |> ignore
+            ev.stopPropagation())
+    // Click an already-placed bubble to detach it back into the tray.
+    if assignedBackground then
+        bubble.addEventListener (
+            "click",
+            fun ev ->
+                ev.stopPropagation()
+                dispatch (Editor.setActionParamValue wiredId slot.Field VNull))
+    bubble
+
+// ── Inline input rows (edit mode) ─────────────────────────────────────
+//
+// When `doc.WiringActionId = Some aid`, one row per editable input of
+// that action is rendered directly beneath it. Phase 1: display only
+// (label + current value). Keyboard editing comes in a follow-up.
+
+type InputDisplay =
+    | RefDisplay of slot: WireSlot
+    | ScalarDisplay of label: string * value: float * field: ActionParamField
+    | SelectDisplay of label: string * value: string * choices: string list * field: ActionParamField
+    | CheckDisplay of label: string * value: bool * field: ActionParamField
+
+/// Every editable input of the action, in the same order as the right-
+/// panel's `renderKindControls` (so the two views line up semantically).
+let inputsOf (kind: ActionKind) : InputDisplay list =
+    let ref' label accepted field current : InputDisplay =
+        RefDisplay { FullLabel = label; AcceptedKey = accepted; Field = field; Current = current }
+    let scalar label value field = ScalarDisplay(label, value, field)
+    match kind with
+    | Origin -> []
+    | Sphere r -> [ scalar "radius" r SphereRadius ]
+    | Cylinder(r, h) ->
+        [ scalar "radius" r CylinderRadius
+          scalar "height" h CylinderHeight ]
+    | Box(w, h, d) ->
+        [ scalar "width" w BoxWidth
+          scalar "height" h BoxHeight
+          scalar "depth" d BoxDepth ]
+    | HalfPlane(axis, offset, flip) ->
+        [ SelectDisplay("axis", axis, [ "X"; "Y"; "Z" ], HalfPlaneAxis)
+          scalar "offset" offset HalfPlaneOffset
+          CheckDisplay("flip", flip, HalfPlaneFlip) ]
+    | Translate(c, x, y, z) ->
+        [ ref' "child" "child" TranslateChild c
+          scalar "x" x TranslateX
+          scalar "y" y TranslateY
+          scalar "z" z TranslateZ ]
+    | Rotate(c, ax, ay, az, angle) ->
+        [ ref' "child" "child" RotateChild c
+          scalar "ax" ax RotateAxisX
+          scalar "ay" ay RotateAxisY
+          scalar "az" az RotateAxisZ
+          scalar "angle" angle RotateAngle ]
+    | Move(c, f) ->
+        [ ref' "child" "child" MoveChild c
+          ref' "frame" "frame" MoveFrame f ]
+    | Union(a, b, r) ->
+        [ ref' "tool" "a" UnionA a
+          ref' "target" "b" UnionB b
+          scalar "radius" r UnionRadius ]
+    | Subtract(a, b, r) ->
+        [ ref' "target" "a" SubtractA a
+          ref' "tool" "b" SubtractB b
+          scalar "radius" r SubtractRadius ]
+    | Intersect(a, b, r) ->
+        [ ref' "tool" "a" IntersectA a
+          ref' "target" "b" IntersectB b
+          scalar "radius" r IntersectRadius ]
+    | Sketch(o, plane, _) ->
+        let planeLabel =
+            match plane with
+            | XY -> "XY"
+            | XZ -> "XZ"
+            | YZ -> "YZ"
+        [ ref' "origin" "origin" SketchOrigin o
+          SelectDisplay("plane", planeLabel, [ "XY"; "XZ"; "YZ" ], SketchPlane) ]
+    | FromSketch(c, flip, _) ->
+        [ ref' "sketch" "child" FromSketchChild c
+          CheckDisplay("flip", flip, FromSketchFlip) ]
+    | Thicken(c, amount) ->
+        [ ref' "child" "child" ThickenChild c
+          scalar "amount" amount ThickenAmount ]
+    | Shell(c, t) ->
+        [ ref' "child" "child" ShellChild c
+          scalar "thickness" t ShellThickness ]
+    | Mesh(c, size, res) ->
+        [ ref' "child" "child" MeshChild c
+          scalar "size" size MeshSize
+          scalar "res" (float res) MeshResolution ]
+
+let private formatFloat (v: float) : string =
+    // Compact but still readable: integers show as "5", others as ".1f".
+    if abs (v - round v) < 1e-9 then sprintf "%g" v
+    else sprintf "%.2f" v
+
+let private refDisplayValue (doc: DocumentView) (slot: WireSlot) : string =
+    match slot.Current with
+    | None -> "\u2013"  // en dash — "unassigned"
+    | Some id ->
+        doc.Actions
+        |> List.tryFind (fun a -> a.Id = id)
+        |> Option.map (fun a -> a.Name |> Option.defaultValue (kindLabel a.Kind))
+        |> Option.defaultValue id
+
+let private fieldOfInput (input: InputDisplay) : ActionParamField =
+    match input with
+    | RefDisplay s -> s.Field
+    | ScalarDisplay(_, _, f)
+    | SelectDisplay(_, _, _, f)
+    | CheckDisplay(_, _, f) -> f
+
+let private renderInputRow
+        (dispatch: Message -> unit)
+        (doc: DocumentView)
+        (wiredActionId: ActionId)
+        (input: InputDisplay)
+        : HTMLElement =
+    let row = Dom.el "div" "input-row"
+    let label =
+        match input with
+        | RefDisplay s -> s.FullLabel
+        | ScalarDisplay(l, _, _) -> l
+        | SelectDisplay(l, _, _, _) -> l
+        | CheckDisplay(l, _, _) -> l
+    row.appendChild (Dom.elText "span" "input-row-label" label :> Node) |> ignore
+
+    let field = fieldOfInput input
+    let isEditingThis = doc.EditingInputField = Some field
+
+    match input, isEditingThis with
+    | ScalarDisplay(_, value, scalarField), true ->
+        let inputEl = document.createElement "input" :?> HTMLInputElement
+        inputEl.``type`` <- "number"
+        inputEl.className <- "input-row-edit"
+        // When the user triggered sub-edit by typing a digit/./-,
+        // EditingInputInitial carries that key so we pre-fill the
+        // input with it (instead of the current value) and place the
+        // cursor at the end — the typed character is not lost.
+        let prefilled = doc.EditingInputInitial.IsSome
+        inputEl.value <-
+            match doc.EditingInputInitial with
+            | Some s -> s
+            | None -> formatFloat value
+        // Enter blurs → blur commits (same pattern as Dom.setupDraggable).
+        // Escape flips `cancelled` so the blur handler only dispatches
+        // StopEditingInputField without writing the value back.
+        let mutable cancelled = false
+        let mutable finished = false
+        let finish () =
+            if not finished then
+                finished <- true
+                if not cancelled then
+                    match System.Double.TryParse(inputEl.value) with
+                    | true, v ->
+                        let payload =
+                            match scalarField with
+                            | MeshResolution -> VInt(int v)
+                            | _ -> VFloat v
+                        dispatch (Editor.setActionParamValue wiredActionId scalarField payload)
+                    | _ -> ()
+                dispatch StopEditingInputField
+        inputEl.addEventListener ("keydown", fun ev ->
+            let ke = ev :?> KeyboardEvent
+            match ke.key with
+            | "Enter" ->
+                ev.preventDefault(); ev.stopPropagation()
+                inputEl.blur ()
+            | "Escape" ->
+                ev.preventDefault(); ev.stopPropagation()
+                cancelled <- true
+                inputEl.blur ()
+            | _ -> ev.stopPropagation())
+        inputEl.addEventListener ("blur", fun _ -> finish ())
+        window.requestAnimationFrame (fun _ ->
+            inputEl.focus()
+            // When pre-filled from a direct keystroke, leave the
+            // cursor at its default position (end) so more digits
+            // append; otherwise select all so the first keystroke
+            // replaces the existing value.
+            if not prefilled then inputEl.select()) |> ignore
+        row.appendChild (inputEl :> Node) |> ignore
+    | _ ->
+        let valueText =
+            match input with
+            | RefDisplay s -> refDisplayValue doc s
+            | ScalarDisplay(_, v, _) -> formatFloat v
+            | SelectDisplay(_, v, _, _) -> v
+            | CheckDisplay(_, v, _) -> if v then "yes" else "no"
+        let valueEl = Dom.elText "span" "input-row-value" valueText
+        match input with
+        | RefDisplay s when s.Current.IsNone ->
+            valueEl.classList.add "is-empty"
+        | _ -> ()
+        if isEditingThis then
+            match input with
+            | RefDisplay _ -> valueEl.classList.add "is-picking"
+            | _ -> ()
+        row.appendChild (valueEl :> Node) |> ignore
+    row
+
 let private kindSubtitle (kind: ActionKind) : string =
     match kind with
     | Cylinder(r, h) -> sprintf "r%g h%g" r h
@@ -142,92 +416,145 @@ let private renderRow
 
     row.appendChild (main :> Node) |> ignore
 
-    // Eye slot on the right of the row — purely visual placement for
-    // the attached eye's badge. The whole row is the drop target for
-    // eye drags (see row-level listeners below); this div just keeps
-    // the badge sized consistently at the far right of the row.
-    let eye = doc.Eyes |> List.tryFind (fun e -> e.TargetActionId = action.Id)
-    let slot = Dom.el "div" "eye-slot"
-
-    match eye with
-    | Some e ->
-        let badge = Dom.el "button" "eye-badge"
-        if e.TailFollowing then badge.classList.add "is-tail"
-        if doc.SelectedEyeId = Some e.Id then badge.classList.add "is-selected"
-        badge?draggable <- true
-        badge.dataset?eyeId <- e.Id
-        badge.appendChild (Icons.eye () :> Node) |> ignore
-        badge.addEventListener (
-            "dragstart",
-            fun ev ->
-                let de = ev :?> DragEvent
-                de.dataTransfer.effectAllowed <- "move"
-                de.dataTransfer.setData ("application/x-eye", e.Id) |> ignore
-                ev.stopPropagation ())
-        badge.addEventListener (
-            "click",
-            fun ev ->
-                ev.stopPropagation ()
-                let next =
-                    if doc.SelectedEyeId = Some e.Id then None else Some e.Id
-                dispatch (SelectEye next))
-        slot.appendChild (badge :> Node) |> ignore
-    | None ->
-        slot.classList.add "is-empty"
-
-    row.appendChild (slot :> Node) |> ignore
-
-    // ── Eye drop target: the entire row ────────────────────────────
-    //
-    // Classify the drag by the MIME types advertised on the transfer.
-    // During dragover `getData` returns "" for security, so the types
-    // list is the only reliable signal. Returns "move" for an
-    // existing-eye drag, "copy" for a fresh eye from the header.
-    let dragKind (de: DragEvent) : string option =
-        let types = de.dataTransfer.types
-        let mutable kind : string option = None
-        for i in 0 .. types.length - 1 do
-            let t = types.[i]
-            if t = "application/x-eye" then kind <- Some "move"
-            elif t = "application/x-new-eye" && kind = None then kind <- Some "copy"
-        kind
-
-    row.addEventListener (
-        "dragover",
+    // Visibility badge on the right of the row — shows the current
+    // visibility mode and serves as a click target for cycling.
+    let visibilityBadge = Dom.el "button" "visibility-badge"
+    let badgeText =
+        match action.Visibility with
+        | VHidden -> ""
+        | VVisible -> "\u25CE"       // bullseye dot — "shown"
+        | VFieldLines -> "\u2261"    // ≡ — stacked slice lines
+        | VIsosurface -> "\u25CB"    // ○ — surface outline
+    if action.Visibility = VHidden then
+        visibilityBadge.classList.add "is-hidden"
+    visibilityBadge.textContent <- badgeText
+    visibilityBadge.addEventListener (
+        "click",
         fun ev ->
-            let de = ev :?> DragEvent
-            match dragKind de with
-            | Some "copy" when Option.isSome eye ->
-                // Occupied row rejects new-eye drops (one eye per action).
-                ()
-            | Some effect ->
-                ev.preventDefault ()
-                // Short-circuit the row's action-reorder dragover path
-                // below — eye drags must not leave reorder indicators.
-                ev.stopPropagation ()
-                de.dataTransfer.dropEffect <- effect
-                row.classList.add "is-eye-drop"
-            | None -> ())
-    row.addEventListener (
-        "dragleave",
-        fun _ -> row.classList.remove "is-eye-drop")
-    row.addEventListener (
-        "drop",
-        fun ev ->
-            let de = ev :?> DragEvent
-            row.classList.remove "is-eye-drop"
-            let existingEyeId = de.dataTransfer.getData "application/x-eye"
-            let newEye = de.dataTransfer.getData "application/x-new-eye"
-            if not (System.String.IsNullOrEmpty existingEyeId) then
-                ev.preventDefault ()
-                ev.stopPropagation ()
-                dispatch (MoveEye(existingEyeId, action.Id))
-            elif not (System.String.IsNullOrEmpty newEye) && Option.isNone eye then
-                ev.preventDefault ()
-                ev.stopPropagation ()
-                dispatch (CreateEyeFor action.Id))
+            ev.stopPropagation ()
+            dispatch (CycleActionVisibility action.Id))
+    row.appendChild (visibilityBadge :> Node) |> ignore
 
     row
+
+// ── Inline add-action picker ──────────────────────────────────────────
+//
+// Cmd+K toggles `doc.ActionPickerOpen`. When open we mount a small
+// input + filtered-template list at the bottom of the action list
+// panel. Query state lives in the DOM input so each keystroke only
+// rewrites the filter list (no reducer roundtrip). Enter dispatches
+// `QuickAddAction`, Escape closes.
+
+let private ALL_TEMPLATES : ActionTemplate list =
+    [ SphereTemplate; CylinderTemplate; BoxTemplate; HalfPlaneTemplate
+      TranslateTemplate; RotateTemplate; MoveTemplate
+      UnionTemplate; SubtractTemplate; IntersectTemplate
+      SketchTemplate; FromSketchTemplate
+      ThickenTemplate; ShellTemplate; MeshTemplate ]
+
+let private templateLabel (t: ActionTemplate) : string =
+    Editor.templateKindName t
+
+/// Subsequence fuzzy match — same flavour as the old palette.
+let private fuzzyMatch (query: string) (text: string) : bool =
+    let q = query.ToLowerInvariant()
+    let t = text.ToLowerInvariant()
+    let mutable qi = 0
+    for ti in 0 .. t.Length - 1 do
+        if qi < q.Length && t.[ti] = q.[qi] then
+            qi <- qi + 1
+    qi = q.Length
+
+let private filterTemplates (query: string) : ActionTemplate list =
+    if System.String.IsNullOrEmpty query then ALL_TEMPLATES
+    else ALL_TEMPLATES |> List.filter (fun t -> fuzzyMatch query (templateLabel t))
+
+let private renderActionPicker (dispatch: Message -> unit) : HTMLElement =
+    let picker = Dom.el "div" "action-picker"
+
+    let input = document.createElement "input" :?> HTMLInputElement
+    input.``type`` <- "text"
+    input.className <- "action-picker-input"
+    input.placeholder <- "Add action\u2026"
+    input.autocomplete <- "off"
+    input.spellcheck <- false
+    picker.appendChild (input :> Node) |> ignore
+
+    let resultsEl = Dom.el "div" "action-picker-results"
+    picker.appendChild (resultsEl :> Node) |> ignore
+
+    // Highlight index — scoped to this picker instance via closure.
+    let mutable current : ActionTemplate list = ALL_TEMPLATES
+    let mutable highlighted = 0
+
+    let refreshHighlight () =
+        let items = resultsEl.querySelectorAll ".action-picker-item"
+        for i in 0 .. items.length - 1 do
+            let el = items.[i] :?> HTMLElement
+            if i = highlighted then el.classList.add "is-active"
+            else el.classList.remove "is-active"
+
+    let commit () =
+        if highlighted >= 0 && highlighted < current.Length then
+            dispatch (QuickAddAction current.[highlighted])
+        else
+            dispatch CloseActionPicker
+
+    let rebuildResults () =
+        resultsEl.innerHTML <- ""
+        current
+        |> List.iteri (fun i template ->
+            let item = Dom.el "button" "action-picker-item"
+            item.appendChild (Icons.forTemplate template :> Node) |> ignore
+            item.appendChild
+                (Dom.elText "span" "action-picker-label" (templateLabel template) :> Node)
+            |> ignore
+            item.addEventListener ("mouseenter", fun _ ->
+                highlighted <- i
+                refreshHighlight())
+            item.addEventListener ("click", fun e ->
+                e.stopPropagation()
+                highlighted <- i
+                commit())
+            resultsEl.appendChild (item :> Node) |> ignore)
+        refreshHighlight()
+
+    let applyQuery (q: string) =
+        current <- filterTemplates q
+        if highlighted >= current.Length then
+            highlighted <- max 0 (current.Length - 1)
+        rebuildResults()
+
+    applyQuery ""
+
+    input.addEventListener ("input", fun _ ->
+        highlighted <- 0
+        applyQuery input.value)
+
+    input.addEventListener ("keydown", fun e ->
+        let ke = e :?> KeyboardEvent
+        match ke.key with
+        | "ArrowDown" ->
+            e.preventDefault(); e.stopPropagation()
+            if not current.IsEmpty then
+                highlighted <- (highlighted + 1) % current.Length
+                refreshHighlight()
+        | "ArrowUp" ->
+            e.preventDefault(); e.stopPropagation()
+            if not current.IsEmpty then
+                highlighted <- (highlighted - 1 + current.Length) % current.Length
+                refreshHighlight()
+        | "Enter" ->
+            e.preventDefault(); e.stopPropagation()
+            commit()
+        | "Escape" ->
+            e.preventDefault(); e.stopPropagation()
+            dispatch CloseActionPicker
+        | _ -> ())
+
+    // Auto-focus once the picker lands in the DOM.
+    window.requestAnimationFrame (fun _ -> input.focus()) |> ignore
+    picker
 
 // ── Panel ──────────────────────────────────────────────────────────────
 
@@ -236,23 +563,7 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     let header = Dom.el "div" "panel-header"
     header.appendChild (Dom.elText "h2" "" "Actions" :> Node) |> ignore
 
-    // Right side of the header: eye source + palette button, kept
-    // grouped so the eye doesn't float into the middle.
     let rightGroup = Dom.el "div" "header-right"
-
-    // Eye source — draggable widget. Drop onto any action row to create
-    // a new eye attached to that action.
-    let eyeSource = Dom.el "div" "eye-source"
-    eyeSource.title <- "Drag onto an action to attach an eye"
-    eyeSource?draggable <- true
-    eyeSource.appendChild (Icons.eye () :> Node) |> ignore
-    eyeSource.addEventListener (
-        "dragstart",
-        fun ev ->
-            let de = ev :?> DragEvent
-            de.dataTransfer.effectAllowed <- "copy"
-            de.dataTransfer.setData ("application/x-new-eye", "new") |> ignore)
-    rightGroup.appendChild (eyeSource :> Node) |> ignore
 
     // Palette hint button.
     let paletteBtn = Dom.el "button" "palette-hint-btn"
@@ -261,7 +572,7 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     paletteBtn.appendChild (Dom.elText "kbd" "" "K" :> Node) |> ignore
     paletteBtn.appendChild (document.createTextNode " " :> Node) |> ignore
     paletteBtn.appendChild (Dom.elText "span" "" "palette" :> Node) |> ignore
-    paletteBtn.addEventListener ("click", fun _ -> dispatch PaletteOpen)
+    paletteBtn.addEventListener ("click", fun _ -> dispatch OpenActionPicker)
     rightGroup.appendChild (paletteBtn :> Node) |> ignore
 
     header.appendChild (rightGroup :> Node) |> ignore
@@ -277,6 +588,37 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     let mutable dropIndex : int option = None
     let mutable dropBefore = false
 
+    // Edit-mode snapshot — the action whose inputs are being expanded
+    // below it in the list.
+    let wiredIdx =
+        doc.WiringActionId
+        |> Option.bind (fun id ->
+            actions |> Array.tryFindIndex (fun a -> a.Id = id))
+
+    // When a ref input is being picked, the candidate at RefPickIdx
+    // gets highlighted on its own action row above, so the user sees
+    // which upstream action Enter will assign.
+    let refPickCandidateId : ActionId option =
+        match wiredIdx, doc.EditingInputField with
+        | Some wi, Some field ->
+            let wired = actions.[wi]
+            let input =
+                inputsOf wired.Kind
+                |> List.tryFind (fun i ->
+                    match i with
+                    | RefDisplay s -> s.Field = field
+                    | _ -> false)
+            match input with
+            | Some (RefDisplay s) ->
+                let candidates =
+                    Map.tryFind s.AcceptedKey doc.RefOptions
+                    |> Option.defaultValue []
+                if doc.RefPickIdx >= 0 && doc.RefPickIdx < candidates.Length then
+                    Some candidates.[doc.RefPickIdx]
+                else None
+            | _ -> None
+        | _ -> None
+
     let clearDropIndicators () =
         for r in rows do
             if not (isNull r) then
@@ -287,6 +629,23 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
         let action = actions.[i]
         let row = renderRow dispatch doc action
         rows.[i] <- row
+
+        // Wiring mode's drop zones + bubble tray live in the sibling
+        // `WireColumn` panel; here we only need to render empty spacer
+        // rows below the wired action so the action list stays
+        // vertically aligned with the bubble rows in the wire column.
+        ()
+
+        // In edit mode, highlight whichever row (action or input) has
+        // keyboard focus. EditFocusIdx = 0 means the action row itself;
+        // 1..N means the Nth input row.
+        match wiredIdx with
+        | Some wi when i = wi && doc.EditFocusIdx = 0 ->
+            row.classList.add "is-edit-focused"
+        | _ -> ()
+
+        if refPickCandidateId = Some action.Id then
+            row.classList.add "is-pick-candidate"
 
         if not (isOrigin action.Kind) then
             row?draggable <- true
@@ -326,6 +685,21 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
         )
 
         list.appendChild (row :> Node) |> ignore
+
+        // Input rows — expanded directly below the action being
+        // edited. Shows label + current value for every ref / scalar
+        // / select / check input the action has. Editing comes from
+        // the keyboard handlers (Enter / Arrow keys) in a later pass.
+        match wiredIdx with
+        | Some wi when i = wi ->
+            let inputs = inputsOf action.Kind
+            inputs
+            |> List.iteri (fun ii input ->
+                let inputRow = renderInputRow dispatch doc action.Id input
+                if doc.EditFocusIdx = ii + 1 then
+                    inputRow.classList.add "is-focused"
+                list.appendChild (inputRow :> Node) |> ignore)
+        | _ -> ()
 
     // Drop in empty space → append at end
     list.addEventListener (
@@ -381,6 +755,13 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     )
 
     left.appendChild (list :> Node) |> ignore
+
+    // Inline add-action picker, pinned to the bottom of the panel
+    // when the user hit Cmd+K. Not inside `.actions-list` so it
+    // doesn't scroll with the action list.
+    if doc.ActionPickerOpen then
+        left.appendChild (renderActionPicker dispatch :> Node) |> ignore
+
     left
 
 let syncSubtitles (root: HTMLElement) (doc: DocumentView) : unit =

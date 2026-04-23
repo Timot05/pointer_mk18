@@ -334,10 +334,22 @@ let renderFrame
     let visibleFrames =
         viewState.Frames |> List.filter (fun f -> isVisible f.Id)
 
-    let gizmoData =
+    let frameGizmoData =
         SketchOverlayRender.buildFramesGizmoBuffer
             visibleFrames viewState.HighlightedTarget viewState.HighlightedTargets
             state.Doc.SelectedId
+
+    // Translate gizmo rides on the same vertex format and pipeline as
+    // frame gizmos — both are handled by `Gizmo.wgsl` lines. Appended
+    // after frame gizmos so it draws on top.
+    let translateGizmoData =
+        match TranslateGizmo.contextOf state with
+        | Some ctx ->
+            let worldPerPx = (2.0 * Camera.viewHalfH scene.Camera) / max (float h) 1.0
+            TranslateGizmo.buildVertices ctx worldPerPx
+        | None -> [||]
+
+    let gizmoData = Array.append frameGizmoData translateGizmoData
     if gizmoData.Length > 0 then
         let buf = upload scene.Pool slots.FrameGizmo gizmoData
         colorPass.setPipeline scene.GizmoPipeline

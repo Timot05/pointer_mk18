@@ -5,7 +5,9 @@ open PointerMk18.Ui
 open Browser.Types
 
 // ---------------------------------------------------------------------------
-// Overall layout: top bar + three-panel layout (actions / viewport / params).
+// Overall layout: top bar + two-panel layout (actions / viewport). The old
+// properties panel was removed once every editable field became inline
+// under its action row in edit mode (see ActionList.renderInputRow).
 //
 // The `viewerHost` is created once at app startup and re-parented on every
 // render. WebGPU canvas state persists across detach/reattach, so the
@@ -35,15 +37,6 @@ let render
     | Some overlay -> center.appendChild (overlay :> Node) |> ignore
     | None -> ()
     layout.appendChild (center :> Node) |> ignore
-
-    let right = Dom.el "div" "panel"
-    let rightHeader = Dom.el "div" "panel-header"
-    rightHeader.appendChild (Dom.elText "h2" "" "Properties" :> Node) |> ignore
-    right.appendChild (rightHeader :> Node) |> ignore
-    let rightHost = Dom.el "div" "panel-host panel-host-properties"
-    rightHost.appendChild (ParamsPanel.render dispatch doc :> Node) |> ignore
-    right.appendChild (rightHost :> Node) |> ignore
-    layout.appendChild (right :> Node) |> ignore
 
     root.appendChild (layout :> Node) |> ignore
     root

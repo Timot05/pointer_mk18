@@ -105,82 +105,25 @@ let private actionListSignature (doc: DocumentView) =
         doc.Errors
         |> List.map (fun e -> e.ActionId)
         |> Set.ofList
-    // Map each action to its eye (if any) so the signature picks up
-    // attachment, tail-following, and selection changes — all of which
-    // change the badge's rendered class list.
-    let eyeByTarget =
-        doc.Eyes
-        |> List.map (fun e ->
-            e.TargetActionId,
-            (e.Id, e.TailFollowing, doc.SelectedEyeId = Some e.Id))
-        |> Map.ofList
+    // Wiring state and the inline action-picker flag both reshape
+    // the action list, so fold them into the signature. EditFocusIdx
+    // only changes row classes, but we still need to re-render for it.
+    let wiringSig = doc.WiringActionId
+    let pickerSig = doc.ActionPickerOpen
+    let focusSig = doc.EditFocusIdx
+    let editingSig = doc.EditingInputField
+    let refPickSig = doc.RefPickIdx
     doc.Actions
     |> List.map (fun a ->
         a.Id,
         a.Name,
-        Map.tryFind a.Id eyeByTarget,
+        a.Visibility,
         Set.contains a.Id actionErrors)
-    |> sprintf "%A"
-
-let private kindPanelSignature (kind: ActionKind) =
-    match kind with
-    | Origin -> "Origin"
-    | Cylinder _ -> "Cylinder"
-    | Sphere _ -> "Sphere"
-    | Box _ -> "Box"
-    | HalfPlane(axis, _, flip) -> sprintf "HalfPlane|%s|%b" axis flip
-    | Translate(child, _, _, _) -> sprintf "Translate|%A" child
-    | Rotate(child, _, _, _, _) -> sprintf "Rotate|%A" child
-    | Move(child, frame) -> sprintf "Move|%A|%A" child frame
-    | Union(a, b, _) -> sprintf "Union|%A|%A" a b
-    | Subtract(a, b, _) -> sprintf "Subtract|%A|%A" a b
-    | Intersect(a, b, _) -> sprintf "Intersect|%A|%A" a b
-    | Sketch(origin, plane, sketch) ->
-        sprintf "Sketch|%A|%A|%d|%d" origin plane sketch.Entities.Length sketch.Constraints.Length
-    | FromSketch(child, flip, selection) -> sprintf "FromSketch|%A|%b|%A" child flip selection
-    | Thicken(child, _) -> sprintf "Thicken|%A" child
-    | Shell(child, _) -> sprintf "Shell|%A" child
-    | Mesh(child, _, _) -> sprintf "Mesh|%A" child
-
-let private paramsPanelSignature (doc: DocumentView) =
-    let selectedErrors =
-        doc.SelectedId
-        |> Option.map (fun id ->
-            doc.Errors
-            |> List.filter (fun e -> e.ActionId = id)
-            |> List.map (fun e -> e.Key, e.Error))
-    // If an eye is currently selected, the params panel is rendering
-    // the eye-only view — its signature depends on the eye's fields.
-    match doc.SelectedEyeId |> Option.bind (fun id -> doc.Eyes |> List.tryFind (fun e -> e.Id = id)) with
-    | Some eye ->
-        sprintf
-            "eye|%s|%s|%b|%b|%A"
-            eye.Id
-            eye.TargetActionId
-            eye.TailFollowing
-            eye.Display.Enabled
-            (eye.FieldSlice |> Option.map (fun fs -> fs.Enabled, fs.Plane))
-    | None ->
-
-    match doc.SelectedId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
-    | None ->
-        sprintf "none|%A" selectedErrors
-    | Some selected ->
-        let refOptionsSig = doc.RefOptions |> Map.toList
-        let sketchLoopsSig = doc.SketchLoops |> Map.toList
-        sprintf
-            "%s|%A|%A|%b|%A|%A|%A"
-            selected.Id
-            selected.Name
-            (kindPanelSignature selected.Kind)
-            doc.SketchUi.EditMode
-            selectedErrors
-            refOptionsSig
-            sketchLoopsSig
+    |> fun rows -> sprintf "%A|%b|%d|%A|%d|%A" wiringSig pickerSig focusSig editingSig refPickSig rows
 
 let private uiSignature (state: EditorState) =
     sprintf
-        "%A|%A|%A|%A|%A|%A|%A|%A|%A"
+        "%A|%A|%A|%A|%A|%A|%A|%A|%A|%A"
         state.SketchEditMode
         state.SketchTool
         state.SelectedTargets
@@ -189,6 +132,10 @@ let private uiSignature (state: EditorState) =
         state.ConstraintPlacementMode
         state.ConstraintPlacementDraft
         state.ConstraintPlacementCursor
+        // Wire mode lives at the shell level (Shell.fs owns the
+        // `.panel-host-wire` element + the `.is-wiring` layout class),
+        // so a wiring toggle has to trigger a full shell re-render.
+        state.WiringActionId
         state.ViewerMode
 
 let mutable private lastCompiled = store.State.Compiled
@@ -196,7 +143,6 @@ let mutable private lastSlotValues = store.State.SlotValues
 let mutable private lastUiSignature = uiSignature store.State
 let initialDocView = DocumentPipeline.documentView store.State
 let mutable private lastActionListSignature = actionListSignature initialDocView
-let mutable private lastParamsPanelSignature = paramsPanelSignature initialDocView
 let mutable private lastSelectedId = store.State.Doc.SelectedId
 
 let private onStateChange (root: Browser.Types.HTMLElement) () =
@@ -208,32 +154,22 @@ let private onStateChange (root: Browser.Types.HTMLElement) () =
     let uiChanged = nextUiSignature <> lastUiSignature
     let doc = DocumentPipeline.documentView state
     let nextActionListSignature = actionListSignature doc
-    let nextParamsPanelSignature = paramsPanelSignature doc
     let actionListChanged = nextActionListSignature <> lastActionListSignature
-    let paramsPanelChanged = nextParamsPanelSignature <> lastParamsPanelSignature
 
     if compiledChanged || uiChanged then
         renderInto root
     else
         if actionListChanged || selectionChanged then
             ActionList.syncPanel root dispatch doc
-        if paramsPanelChanged || selectionChanged then
-            ParamsPanel.syncPanel root dispatch doc
         if selectionChanged then
             SketchAuthoringPanel.syncOverlay root dispatch doc
         if slotValuesChanged then
-            ParamsPanel.syncSlotValues root state
             ActionList.syncSubtitles root doc
-
-    // The palette is mounted outside the shell, so it must track its own
-    // state transitions independently of whether the shell rerendered.
-    CommandPalette.sync dispatch getPaletteState getDocActionCount
 
     lastCompiled <- state.Compiled
     lastSlotValues <- state.SlotValues
     lastUiSignature <- nextUiSignature
     lastActionListSignature <- nextActionListSignature
-    lastParamsPanelSignature <- nextParamsPanelSignature
     lastSelectedId <- state.Doc.SelectedId
 
 // --------------------------------------------------------------------------

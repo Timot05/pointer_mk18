@@ -304,8 +304,11 @@ let create
                        entryPoint = "fs"
                        targets = [| {| format = format; blend = alphaBlend () |} |] |}
                    primitive = {| topology = "line-list" |}
+                   // `depthCompare = always` draws gizmos on top of
+                   // the field so the translate handles (and frame
+                   // axes) stay visible even when inside an isosurface.
                    depthStencil =
-                    {| format = "depth24plus"; depthWriteEnabled = false; depthCompare = "less" |} |})
+                    {| format = "depth24plus"; depthWriteEnabled = false; depthCompare = "always" |} |})
 
     // ── World-space point (no frame uniform) + pick variant ──────────
     let worldPointPipeline =

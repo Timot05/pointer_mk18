@@ -57,6 +57,15 @@ type SketchDrag =
       YField: ActionParamField
       Target: LabelPos }
 
+/// In-flight translate-gizmo drag. Values are applied via direct
+/// slot patches (same realtime trick label drags use), and
+/// `Initial*` is kept so Cancel can restore the pre-drag state.
+type GizmoDrag =
+    { ActionId: ActionId
+      InitialX: float
+      InitialY: float
+      InitialZ: float }
+
 type EditorState =
     { Doc: Document
       Compiled: PipelineResult
@@ -73,12 +82,39 @@ type EditorState =
       EditingDimension: EditingDimension option
       ActiveSketchDrag: SketchDrag option
       PendingSketchDragCommit: bool
+      /// In-flight translate gizmo drag (axis or plane handle).
+      /// Slot values are patched in real time while this is Some.
+      ActiveGizmoDrag: GizmoDrag option
       ConstraintPlacementMode: ConstraintPlacementKind option
       ConstraintPlacementDraft: ConstraintPlacementDraft option
       ConstraintPlacementCursor: (string * LabelPos) option
-      /// Which eye (if any) the right panel should show. Mutually
-      /// exclusive with showing the selected action's params.
-      SelectedEyeId: string option
+      /// When Some id, the action list is in "edit this action's
+      /// inputs" mode for that action: one row per editable input is
+      /// expanded directly below it in the list.
+      WiringActionId: ActionId option
+      /// Which row of the edit expansion is currently focused.
+      /// `0` = the action row itself; `1..N` = the N input rows. Only
+      /// meaningful when `WiringActionId` is Some.
+      EditFocusIdx: int
+      /// When Some, an input row is in sub-edit mode:
+      ///   * Scalar → ActionList renders an inline number input.
+      ///   * Ref    → arrow keys cycle upstream candidates via
+      ///              `RefPickIdx`; Enter commits the pick.
+      /// Check / Select toggles are applied immediately on Enter and
+      /// never enter this sub-mode.
+      EditingInputField: ActionParamField option
+      /// If Some, the scalar input renders pre-filled with this string
+      /// (instead of the current value) and places the cursor at the
+      /// end. Set when the user types a digit / '-' / '.' over a
+      /// focused scalar row, so the first keystroke is not lost.
+      EditingInputInitial: string option
+      /// Cursor within the ref-pick candidate list. Meaningful only
+      /// when `EditingInputField` identifies a ref field.
+      RefPickIdx: int
+      /// Toggled by Cmd+K. When true, an inline fuzzy-match picker
+      /// appears at the bottom of the action list for quickly adding
+      /// an action template with its defaults.
+      ActionPickerOpen: bool
       ViewerMode: ViewerMode }
 
 type SerializedModel =
@@ -101,7 +137,28 @@ type Effect =
 
 type Message =
     | SelectAction of string
-    | SelectEye of string option
+    /// Enter "edit this action's inputs" mode: the action list expands
+    /// one row per editable input below the action.
+    | StartWiring of ActionId
+    | StopWiring
+    /// Move the focus cursor within the edit expansion. `0` = action
+    /// row; `1..N` = input rows.
+    | SetEditFocus of int
+    /// Enter the input-field sub-edit mode for the given field. Also
+    /// seeds `RefPickIdx` (caller picks the initial candidate index
+    /// for ref fields; 0 for scalars) and optionally an initial
+    /// string value that overrides the input's current rendering (used
+    /// to forward the first keystroke when typing over a scalar row).
+    | StartEditingInputField of ActionParamField * int * string option
+    /// Leave the input-field sub-edit mode. Discards any pending pick.
+    | StopEditingInputField
+    /// Move the ref-pick cursor while sub-editing a ref field.
+    | SetRefPickIdx of int
+    /// Inline action-picker at the bottom of the action list.
+    | OpenActionPicker
+    | CloseActionPicker
+    /// Add a fresh action from a template with default params.
+    | QuickAddAction of ActionTemplate
     | SetHoveredTarget of SelectionTarget option
     | SetSelectedTargets of SelectionTarget list
     | AddDefaultAction of ActionTemplate * string
@@ -109,20 +166,9 @@ type Message =
     | UpdateAction of string * DocAction
     | RemoveAction of string
     | ReorderActions of string list
-    | CreateEyeFor of ActionId
-    | DeleteEye of string
-    | MoveEye of string * ActionId
-    | SetEyeTailFollowing of string * bool
-    | ToggleEyeDisplay of string
-    | SetEyeDisplayValue of string * DisplayField * ParamValue
-    | ToggleEyeFieldSlice of string
-    | SetEyeFieldSliceValue of string * FieldSliceField * ParamValue
-    /// Keyboard shortcut: ensure an eye is attached to the action and
-    /// toggle its iso-surface display. Creates the eye with Display.Enabled
-    /// = true if none exists; otherwise toggles the existing eye's flag.
-    | ToggleActionSurface of ActionId
-    /// Same for the field-slice overlay.
-    | ToggleActionFieldSlice of ActionId
+    /// `v` shortcut: cycle the selected action's visibility through
+    /// the modes its kind supports (see Document.cycleVisibility).
+    | CycleActionVisibility of ActionId
     | SetActionSlotValue of string * ActionParamField * ParamValue
     | SetActionStructureValue of string * ActionParamField * ParamValue
     | DeleteIntent
@@ -139,6 +185,14 @@ type Message =
     | ApplyResolvedSketchResult of string * float32[]
     | FinishSketchDrag
     | CancelSketchDrag
+    /// Start a translate gizmo drag on the given action. The viewer
+    /// captures initial x/y/z so Cancel can revert.
+    | BeginGizmoDrag of GizmoDrag
+    /// Apply new absolute x/y/z values to the dragging Translate.
+    /// Patches Doc + slot values in place — no recompile.
+    | UpdateGizmoDrag of x: float * y: float * z: float
+    | FinishGizmoDrag
+    | CancelGizmoDrag
     | ViewerToolClick of float * float
     | ViewerPlaceConstraint of float * float
     | ToggleSketchEdit
@@ -167,6 +221,26 @@ module Editor =
         |> List.tryPick (function
             | REPoint(id, x, y) when id = pointId -> Some { X = x; Y = y }
             | _ -> None)
+
+    /// The kind name (case-preserved) used by `freshActionId` to pick a
+    /// filename-safe prefix. Order matches the `ActionTemplate` DU.
+    let templateKindName =
+        function
+        | SphereTemplate -> "Sphere"
+        | CylinderTemplate -> "Cylinder"
+        | BoxTemplate -> "Box"
+        | HalfPlaneTemplate -> "HalfPlane"
+        | TranslateTemplate -> "Translate"
+        | RotateTemplate -> "Rotate"
+        | MoveTemplate -> "Move"
+        | UnionTemplate -> "Union"
+        | SubtractTemplate -> "Subtract"
+        | IntersectTemplate -> "Intersect"
+        | SketchTemplate -> "Sketch"
+        | FromSketchTemplate -> "FromSketch"
+        | ThickenTemplate -> "Thicken"
+        | ShellTemplate -> "Shell"
+        | MeshTemplate -> "Mesh"
 
     let actionTemplateKind =
         function
@@ -223,7 +297,7 @@ module Editor =
 
     let initState () =
         let doc = Document.emptyDocument ()
-        let compiled = Pipeline.compile doc.Actions doc.Eyes
+        let compiled = Pipeline.compile doc.Actions
         { Doc = doc
           Compiled = compiled
           SlotValues = Array.copy compiled.Slots.Values
@@ -239,10 +313,16 @@ module Editor =
           EditingDimension = None
           ActiveSketchDrag = None
           PendingSketchDragCommit = false
+          ActiveGizmoDrag = None
           ConstraintPlacementMode = None
           ConstraintPlacementDraft = None
           ConstraintPlacementCursor = None
-          SelectedEyeId = None
+          WiringActionId = None
+          EditFocusIdx = 0
+          EditingInputField = None
+          EditingInputInitial = None
+          RefPickIdx = 0
+          ActionPickerOpen = false
           ViewerMode = Raymarch }
 
     let isSlotBackedActionParamField =
@@ -296,9 +376,6 @@ module Editor =
             SetActionSlotValue(id, field, value)
         else
             SetActionStructureValue(id, field, value)
-
-    let setEyeDisplayValue eyeId field value = SetEyeDisplayValue(eyeId, field, value)
-    let setEyeFieldSliceValue eyeId field value = SetEyeFieldSliceValue(eyeId, field, value)
 
     let sketchPlaneTransform (originFrame: RigidTransform) (plane: SketchPlane) =
         let localRotation =
@@ -457,12 +534,32 @@ module Editor =
             match state.ActiveSketchDrag, state.Doc.SelectedId with
             | Some drag, Some selectedId when next.EditMode && selectedId = drag.SketchId -> Some drag
             | _ -> None
-        // If the currently-selected eye was deleted (e.g. because its
-        // target action was removed and cascade-deleted it), drop the
-        // selection so the right panel doesn't dangle.
-        let selectedEyeId =
-            state.SelectedEyeId
-            |> Option.filter (fun id -> state.Doc.Eyes |> List.exists (fun e -> e.Id = id))
+        let activeGizmoDrag =
+            state.ActiveGizmoDrag
+            |> Option.filter (fun drag ->
+                state.Doc.Actions |> List.exists (fun a -> a.Id = drag.ActionId))
+        // If the action being wired was
+        // removed, exit wiring mode so the action list doesn't keep
+        // rendering phantom bubbles.
+        let wiringActionId =
+            state.WiringActionId
+            |> Option.filter (fun id -> state.Doc.Actions |> List.exists (fun a -> a.Id = id))
+        let editFocusIdx =
+            match wiringActionId with
+            | Some _ -> max 0 state.EditFocusIdx
+            | None -> 0
+        let editingInputField =
+            match wiringActionId with
+            | Some _ -> state.EditingInputField
+            | None -> None
+        let editingInputInitial =
+            match editingInputField with
+            | Some _ -> state.EditingInputInitial
+            | None -> None
+        let refPickIdx =
+            match editingInputField with
+            | Some _ -> max 0 state.RefPickIdx
+            | None -> 0
         { state with
             SketchEditMode = next.EditMode
             SketchTool = next.Tool
@@ -472,13 +569,18 @@ module Editor =
             EditingDimension = editingDimension
             ActiveSketchDrag = activeSketchDrag
             PendingSketchDragCommit = if activeSketchDrag.IsSome then state.PendingSketchDragCommit else false
+            ActiveGizmoDrag = activeGizmoDrag
             ConstraintPlacementMode = next.ConstraintPlacementMode |> Option.bind tryConstraintPlacementKind
             ConstraintPlacementCursor = constraintPlacementCursor
             ConstraintPlacementDraft = constraintPlacementDraft
-            SelectedEyeId = selectedEyeId }
+            WiringActionId = wiringActionId
+            EditFocusIdx = editFocusIdx
+            EditingInputField = editingInputField
+            EditingInputInitial = editingInputInitial
+            RefPickIdx = refPickIdx }
 
     let recompileState (state: EditorState) =
-        let compiled = Pipeline.compile state.Doc.Actions state.Doc.Eyes
+        let compiled = Pipeline.compile state.Doc.Actions
         let next =
             { state with
                 Compiled = compiled
@@ -516,58 +618,6 @@ module Editor =
             patchSlotValues state.SlotValues state.Compiled [ slotRef, number ]
         | None ->
             failwithf "Expected numeric slot value for %A, got %A" field value
-
-    /// Slots for Display/FieldSlice are keyed by the ActionId the eye
-    /// targets — not the eye id — so the shader code path is unchanged.
-    let private patchEyeDisplaySlotValues (state: EditorState) (eyeId: string) (field: DisplayField) (value: ParamValue) =
-        match state.Doc.Eyes |> List.tryFind (fun e -> e.Id = eyeId) with
-        | None -> state.SlotValues
-        | Some eye ->
-            let actionId = eye.TargetActionId
-            let updates =
-                match field with
-                | DisplayColor ->
-                    match ParamValue.asFloatArray value with
-                    | Some color when color.Length = 3 ->
-                        (Document.pathOfDisplayField field, color |> Array.toList)
-                        ||> List.zip
-                        |> List.map (fun (path, colorValue) ->
-                            { ActionId = actionId; Path = path }, colorValue)
-                    | Some color ->
-                        failwithf "Expected RGB display color, got %d components" color.Length
-                    | None ->
-                        failwithf "Expected display color array, got %A" value
-                | DisplayOpacity
-                | DisplayIsoValue ->
-                    match ParamValue.asFloat value with
-                    | Some number ->
-                        Document.pathOfDisplayField field
-                        |> List.map (fun path -> { ActionId = actionId; Path = path }, number)
-                    | None ->
-                        failwithf "Expected numeric display value for %A, got %A" field value
-
-            patchSlotValues state.SlotValues state.Compiled updates
-
-    let private patchEyeFieldSliceSlotValues (state: EditorState) (eyeId: string) (field: FieldSliceField) (value: ParamValue) =
-        match state.Doc.Eyes |> List.tryFind (fun e -> e.Id = eyeId) with
-        | None -> state.SlotValues
-        | Some eye ->
-            let actionId = eye.TargetActionId
-            let updates =
-                match field with
-                | SlicePlane -> []
-                | SliceOffset ->
-                    match ParamValue.asFloat value with
-                    | Some number ->
-                        Document.pathOfFieldSliceField field
-                        |> List.map (fun path -> { ActionId = actionId; Path = path }, number)
-                    | None ->
-                        failwithf "Expected numeric field-slice value for %A, got %A" field value
-
-            if updates.IsEmpty then
-                state.SlotValues
-            else
-                patchSlotValues state.SlotValues state.Compiled updates
 
     /// Clear only the "in-progress placement" scratch state — dimension
     /// being edited and the constraint-placement draft/cursor. Used when
@@ -632,11 +682,17 @@ module Editor =
             EditingDimension = None
             ActiveSketchDrag = None
             PendingSketchDragCommit = false
+            ActiveGizmoDrag = None
             SolvedSketchParams = Map.empty
             ConstraintPlacementMode = None
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None
-            SelectedEyeId = None }
+            WiringActionId = None
+            EditFocusIdx = 0
+            EditingInputField = None
+            EditingInputInitial = None
+            RefPickIdx = 0
+            ActionPickerOpen = false }
         |> recompileState
 
     let applySelectionIntent intent target current =
@@ -661,33 +717,24 @@ module Editor =
         |> List.tryHead
 
     let applyDeleteIntent (state: EditorState) =
-        // Eye selection takes priority — the right panel is in eye-edit
-        // mode, so Delete removes the eye (not the underlying action).
-        match state.SelectedEyeId with
-        | Some eyeId ->
-            { state with
-                Doc = Document.deleteEye eyeId state.Doc
-                SelectedEyeId = None }
-            |> normalizeState
-        | None ->
-            if state.SketchEditMode then
-                match SketchAuthoring.trySelectedSketch state.Doc with
-                | Some ctx when not state.SelectedTargets.IsEmpty ->
-                    let nextDoc =
-                        SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.deleteTargets state.SelectedTargets ctx.Sketch)
-                    { state with Doc = nextDoc }
-                    |> clearTransient
-                    |> recompileState
-                | _ ->
-                    state
-            else
-                match state.Doc.SelectedId with
-                | Some id when id <> "origin" ->
-                    { state with Doc = Document.removeAction id state.Doc |> Document.rebalanceEyes }
-                    |> clearTransient
-                    |> recompileState
-                | _ ->
-                    state
+        if state.SketchEditMode then
+            match SketchAuthoring.trySelectedSketch state.Doc with
+            | Some ctx when not state.SelectedTargets.IsEmpty ->
+                let nextDoc =
+                    SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.deleteTargets state.SelectedTargets ctx.Sketch)
+                { state with Doc = nextDoc }
+                |> clearTransient
+                |> recompileState
+            | _ ->
+                state
+        else
+            match state.Doc.SelectedId with
+            | Some id when id <> "origin" ->
+                { state with Doc = Document.removeAction id state.Doc }
+                |> clearTransient
+                |> recompileState
+            | _ ->
+                state
 
     let paletteMaybeBuild (state: EditorState) =
         let paletteState = Palette.toState state.PaletteSession state.Compiled.TypeMap state.Doc
@@ -705,7 +752,7 @@ module Editor =
                         | Sketch _ -> true
                         | _ -> false
                     { state with
-                        Doc = Document.addAction action state.Doc |> Document.rebalanceEyes
+                        Doc = Document.addAction action state.Doc
                         PaletteSession = Palette.empty
                         SketchEditMode =
                             if enterSketchEdit then true else state.SketchEditMode }
@@ -812,25 +859,147 @@ module Editor =
                 { state with PendingSketchDragCommit = false; SolvedSketchParams = Map.empty }, noEffects
         | CancelSketchDrag ->
             { state with ActiveSketchDrag = None; PendingSketchDragCommit = false; SolvedSketchParams = Map.empty }, noEffects
+        | BeginGizmoDrag drag ->
+            { state with ActiveGizmoDrag = Some drag }, noEffects
+        | UpdateGizmoDrag(x, y, z) ->
+            match state.ActiveGizmoDrag with
+            | Some drag ->
+                let nextDoc =
+                    state.Doc
+                    |> Document.patchParamValue drag.ActionId TranslateX (VFloat x)
+                    |> Document.patchParamValue drag.ActionId TranslateY (VFloat y)
+                    |> Document.patchParamValue drag.ActionId TranslateZ (VFloat z)
+                let updates =
+                    [ { ActionId = drag.ActionId; Path = "x" }, x
+                      { ActionId = drag.ActionId; Path = "y" }, y
+                      { ActionId = drag.ActionId; Path = "z" }, z ]
+                { state with
+                    Doc = nextDoc
+                    SlotValues = patchSlotValues state.SlotValues state.Compiled updates },
+                noEffects
+            | None -> state, noEffects
+        | FinishGizmoDrag ->
+            { state with ActiveGizmoDrag = None }, noEffects
+        | CancelGizmoDrag ->
+            match state.ActiveGizmoDrag with
+            | Some drag ->
+                let nextDoc =
+                    state.Doc
+                    |> Document.patchParamValue drag.ActionId TranslateX (VFloat drag.InitialX)
+                    |> Document.patchParamValue drag.ActionId TranslateY (VFloat drag.InitialY)
+                    |> Document.patchParamValue drag.ActionId TranslateZ (VFloat drag.InitialZ)
+                let updates =
+                    [ { ActionId = drag.ActionId; Path = "x" }, drag.InitialX
+                      { ActionId = drag.ActionId; Path = "y" }, drag.InitialY
+                      { ActionId = drag.ActionId; Path = "z" }, drag.InitialZ ]
+                { state with
+                    Doc = nextDoc
+                    SlotValues = patchSlotValues state.SlotValues state.Compiled updates
+                    ActiveGizmoDrag = None },
+                noEffects
+            | None -> state, noEffects
         | _ ->
             let next =
                 match message with
                 | SelectAction id ->
-                    // Selecting an action exits eye-edit mode so the
-                    // right panel shows action params again.
-                    { state with Doc = Document.select id state.Doc; SelectedEyeId = None }
-                | SelectEye eyeId ->
-                    { state with SelectedEyeId = eyeId }
+                    // Selecting an action exits wiring mode (which is
+                    // scoped to one action).
+                    { state with
+                        Doc = Document.select id state.Doc
+                        WiringActionId = None
+                        EditFocusIdx = 0
+                        EditingInputField = None
+                        EditingInputInitial = None
+                        RefPickIdx = 0 }
+                | StartWiring actionId ->
+                    match state.Doc.Actions |> List.tryFind (fun a -> a.Id = actionId) with
+                    | Some action ->
+                        // Entering edit mode on a Sketch action also
+                        // drops us into sketch-edit mode so the user
+                        // can start drawing immediately.
+                        let enterSketchEdit =
+                            match action.Kind with
+                            | Sketch _ -> true
+                            | _ -> false
+                        { state with
+                            WiringActionId = Some actionId
+                            EditFocusIdx = 0
+                            EditingInputField = None
+                            EditingInputInitial = None
+                            RefPickIdx = 0
+                            SketchEditMode = if enterSketchEdit then true else state.SketchEditMode }
+                        |> normalizeState
+                    | None -> state
+                | StopWiring ->
+                    { state with
+                        WiringActionId = None
+                        EditFocusIdx = 0
+                        EditingInputField = None
+                        EditingInputInitial = None
+                        RefPickIdx = 0 }
+                | SetEditFocus idx ->
+                    { state with
+                        EditFocusIdx = max 0 idx
+                        EditingInputField = None
+                        EditingInputInitial = None
+                        RefPickIdx = 0 }
+                | StartEditingInputField(field, idx, initial) ->
+                    { state with
+                        EditingInputField = Some field
+                        EditingInputInitial = initial
+                        RefPickIdx = max 0 idx }
+                | StopEditingInputField ->
+                    { state with
+                        EditingInputField = None
+                        EditingInputInitial = None
+                        RefPickIdx = 0 }
+                | SetRefPickIdx idx ->
+                    { state with RefPickIdx = max 0 idx }
+                | OpenActionPicker ->
+                    { state with ActionPickerOpen = true }
+                | CloseActionPicker ->
+                    { state with ActionPickerOpen = false }
+                | QuickAddAction template ->
+                    // Same shape as `AddDefaultAction` but the id is
+                    // generated from the current doc (so the UI doesn't
+                    // have to thread it through). Closes the picker and
+                    // drops straight into edit mode on the new action so
+                    // the user can start tweaking inputs immediately.
+                    let kindName = templateKindName template
+                    let id = Document.freshActionId kindName state.Doc
+                    let kind = actionTemplateKind template
+                    let action : DocAction =
+                        { Id = id
+                          Name = None
+                          Kind = kind
+                          Visibility = Document.defaultVisibility kind }
+                    let enterSketchEdit =
+                        match action.Kind with
+                        | Sketch _ -> true
+                        | _ -> false
+                    { state with
+                        Doc = Document.addAction action state.Doc
+                        ActionPickerOpen = false
+                        WiringActionId = Some id
+                        EditFocusIdx = 0
+                        EditingInputField = None
+                        EditingInputInitial = None
+                        RefPickIdx = 0
+                        SketchEditMode =
+                            if enterSketchEdit then true else state.SketchEditMode }
+                    |> recompileState
                 | SetHoveredTarget hoveredTarget ->
                     { state with HoveredTarget = hoveredTarget }
                 | SetSelectedTargets selectedTargets ->
                     { state with SelectedTargets = selectedTargets }
                 | AddDefaultAction(template, id) ->
+                    let kind = actionTemplateKind template
                     let action : DocAction =
                         { Id = id
                           Name = None
-                          Kind = actionTemplateKind template }
-                    let next = { state with Doc = Document.addAction action state.Doc |> Document.rebalanceEyes }
+                          Kind = kind
+                          Visibility = Document.defaultVisibility kind }
+                    let next = { state with Doc = Document.addAction action state.Doc }
                     // Drop straight into sketch-edit mode on a fresh
                     // Sketch action — the user otherwise has to click
                     // the edit toggle as their first action every time.
@@ -840,61 +1009,20 @@ module Editor =
                         | _ -> next
                     next |> recompileState
                 | AddAction action ->
-                    { state with Doc = Document.addAction action state.Doc |> Document.rebalanceEyes } |> recompileState
+                    { state with Doc = Document.addAction action state.Doc } |> recompileState
                 | UpdateAction(id, action) ->
                     { state with Doc = Document.updateAction id action state.Doc } |> recompileState
                 | RemoveAction id ->
-                    { state with Doc = Document.removeAction id state.Doc |> Document.rebalanceEyes } |> recompileState
+                    { state with Doc = Document.removeAction id state.Doc } |> recompileState
                 | ReorderActions ids ->
-                    { state with Doc = Document.reorder ids state.Doc |> Document.rebalanceEyes } |> recompileState
-                | CreateEyeFor actionId ->
-                    { state with Doc = Document.createEye actionId state.Doc } |> normalizeState
-                | DeleteEye eyeId ->
-                    { state with
-                        Doc = Document.deleteEye eyeId state.Doc
-                        SelectedEyeId = if state.SelectedEyeId = Some eyeId then None else state.SelectedEyeId }
-                    |> normalizeState
-                | MoveEye(eyeId, targetActionId) ->
-                    { state with Doc = Document.moveEye eyeId targetActionId state.Doc } |> normalizeState
-                | SetEyeTailFollowing(eyeId, value) ->
-                    { state with Doc = Document.setEyeTailFollowing eyeId value state.Doc } |> normalizeState
-                | ToggleEyeDisplay eyeId ->
-                    { state with Doc = Document.toggleEyeDisplayEnabled eyeId state.Doc } |> normalizeState
-                | SetEyeDisplayValue(eyeId, key, value) ->
-                    { state with
-                        Doc = Document.patchEyeDisplayValue eyeId key value state.Doc
-                        SlotValues = patchEyeDisplaySlotValues state eyeId key value }
-                    |> normalizeState
-                | ToggleEyeFieldSlice eyeId ->
-                    { state with Doc = Document.toggleEyeFieldSlice eyeId state.Doc } |> normalizeState
-                | SetEyeFieldSliceValue(eyeId, key, value) ->
-                    { state with
-                        Doc = Document.patchEyeFieldSliceValue eyeId key value state.Doc
-                        SlotValues = patchEyeFieldSliceSlotValues state eyeId key value }
-                    |> normalizeState
-                | ToggleActionSurface actionId ->
-                    // If the action already has an eye, toggle its
-                    // Display.Enabled. Otherwise create one with the
-                    // display already on.
-                    let docAfter =
-                        match state.Doc.Eyes |> List.tryFind (fun e -> e.TargetActionId = actionId) with
-                        | Some eye -> Document.toggleEyeDisplayEnabled eye.Id state.Doc
-                        | None ->
-                            let created = Document.createEye actionId state.Doc
-                            match created.Eyes |> List.tryFind (fun e -> e.TargetActionId = actionId) with
-                            | Some eye -> Document.toggleEyeDisplayEnabled eye.Id created
-                            | None -> created
-                    { state with Doc = docAfter } |> normalizeState
-                | ToggleActionFieldSlice actionId ->
-                    let docAfter =
-                        match state.Doc.Eyes |> List.tryFind (fun e -> e.TargetActionId = actionId) with
-                        | Some eye -> Document.toggleEyeFieldSlice eye.Id state.Doc
-                        | None ->
-                            let created = Document.createEye actionId state.Doc
-                            match created.Eyes |> List.tryFind (fun e -> e.TargetActionId = actionId) with
-                            | Some eye -> Document.toggleEyeFieldSlice eye.Id created
-                            | None -> created
-                    { state with Doc = docAfter } |> normalizeState
+                    { state with Doc = Document.reorder ids state.Doc } |> recompileState
+                | CycleActionVisibility actionId ->
+                    match state.Doc.Actions |> List.tryFind (fun a -> a.Id = actionId) with
+                    | Some action ->
+                        let next = Document.cycleVisibility action.Kind action.Visibility
+                        { state with Doc = Document.setVisibility actionId next state.Doc }
+                        |> normalizeState
+                    | None -> state
                 | SetActionSlotValue(id, key, value) ->
                     { state with
                         Doc = Document.patchParamValue id key value state.Doc
@@ -985,7 +1113,11 @@ module Editor =
                 | ApplySketchSolveResult _
                 | ApplyResolvedSketchResult _
                 | FinishSketchDrag
-                | CancelSketchDrag ->
+                | CancelSketchDrag
+                | BeginGizmoDrag _
+                | UpdateGizmoDrag _
+                | FinishGizmoDrag
+                | CancelGizmoDrag ->
                     state
                 | ViewerToolClick(x, y) ->
                     match SketchAuthoring.trySelectedSketch state.Doc with
@@ -1113,15 +1245,13 @@ module Editor =
                         |> List.tryFind (fun a -> a.Id = "origin")
                         |> Option.orElseWith (fun () -> model.Actions |> List.tryHead)
                         |> Option.map (fun a -> a.Id)
-                    loadDoc { Name = model.Name; Actions = model.Actions; Eyes = []; SelectedId = selectedId } state
+                    loadDoc { Name = model.Name; Actions = model.Actions; SelectedId = selectedId } state
                 | ClearModel ->
                     loadDoc (Document.emptyDocument ()) state
                 | SetViewerMode mode ->
                     { state with ViewerMode = mode }
             let effects =
                 match message with
-                | SetEyeDisplayValue _
-                | SetEyeFieldSliceValue _
                 | SetActionSlotValue _
                 | CommitEditingDimension _
                 | ViewerPlaceConstraint _

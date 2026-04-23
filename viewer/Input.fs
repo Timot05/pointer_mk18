@@ -89,6 +89,11 @@ let install
     let mutable dragLast : float * float = 0.0, 0.0
     let mutable dragPickable : Pickable option = None
     let mutable dragActive = false
+    // Translate-gizmo drag: captured on mousedown when the cursor lands
+    // on an axis or plane handle; consumed by mousemove/mouseup in the
+    // same gesture. Using a local mutable keeps the pick/drag math out
+    // of the store — only Begin/Update/Finish messages cross over.
+    let mutable gizmoDrag : TranslateGizmo.DragContext option = None
 
     let pickableById () = hooks.PickableById ()
     let toSketchLocal sid mx my = mouseToSketchLocal canvas dpr camera sid mx my
@@ -102,8 +107,45 @@ let install
         dragLast <- x, y
         dragPickable <- None
         dragActive <- false
+        gizmoDrag <- None
         if button = 0 then
             let state = AppStore.store.State
+
+            // Translate-gizmo pick runs CPU-side before the GPU picker
+            // — if a handle is under the cursor, skip the normal select
+            // flow and begin a gizmo drag instead.
+            let rect = canvas?getBoundingClientRect ()
+            let localX = (x - rect?left) * dpr
+            let localY = (y - rect?top) * dpr
+            let canvasW = canvas.clientWidth * dpr
+            let canvasH = canvas.clientHeight * dpr
+            let gizmoHit =
+                match TranslateGizmo.contextOf state with
+                | Some ctx ->
+                    match TranslateGizmo.pick ctx camera canvasW canvasH localX localY with
+                    | Some handle ->
+                        let ray = Camera.screenToRay canvasW canvasH camera localX localY
+                        TranslateGizmo.beginDrag ctx handle ray
+                        |> Option.map (fun drag -> ctx, drag)
+                    | None -> None
+                | None -> None
+
+            let gizmoClaimed =
+                match gizmoHit with
+                | Some (ctx, drag) ->
+                    gizmoDrag <- Some drag
+                    dragActive <- true
+                    Store.dispatch AppStore.store
+                        (BeginGizmoDrag
+                            { ActionId = ctx.ActionId
+                              InitialX = ctx.CurrentX
+                              InitialY = ctx.CurrentY
+                              InitialZ = ctx.CurrentZ })
+                    true
+                | None -> false
+
+            if gizmoClaimed then () else
+
             let viewState = ViewerPipeline.viewerState state
             let toolActive =
                 viewState.SketchUi.EditMode
@@ -114,9 +156,8 @@ let install
                 viewState.SketchUi.EditMode
                 && viewState.SketchUi.ConstraintPlacementMode.IsSome
 
-            let rect = canvas?getBoundingClientRect ()
-            let px = int ((x - rect?left) * dpr)
-            let py = int ((y - rect?top) * dpr)
+            let px = int localX
+            let py = int localY
             hooks.PickAt px py
             |> Promise.iter (fun candidates ->
                 // Resolve the top pickable locally too, for side-effects
@@ -228,6 +269,24 @@ let install
             let (sx, sy) = dragStart
             let movedPx = sqrt ((x - sx) * (x - sx) + (y - sy) * (y - sy))
 
+            // Translate-gizmo drag: when a handle was grabbed on
+            // mousedown, every mousemove projects the current cursor
+            // ray onto the axis or plane and dispatches UpdateGizmoDrag.
+            let gizmoHandled =
+                if gizmoDrag.IsSome && button = 0 then
+                    let rect = canvas?getBoundingClientRect ()
+                    let localX = (x - rect?left) * dpr
+                    let localY = (y - rect?top) * dpr
+                    let canvasW = canvas.clientWidth * dpr
+                    let canvasH = canvas.clientHeight * dpr
+                    let ray = Camera.screenToRay canvasW canvasH camera localX localY
+                    match TranslateGizmo.applyDrag gizmoDrag.Value ray with
+                    | Some (nx, ny, nz) ->
+                        Store.dispatch AppStore.store (UpdateGizmoDrag(nx, ny, nz))
+                    | None -> ()
+                    true
+                else false
+
             let beginPointDrag sid pid u v =
                 BeginSketchDrag
                     { SketchId = sid
@@ -244,41 +303,45 @@ let install
                       Target = { X = u; Y = v } }
             let updateDragTo u v = UpdateSketchDragTarget { X = u; Y = v }
 
-            match button, dragPickable with
-            | 0, Some (PickPoint(_, sid, pid, _, _)) ->
-                if not dragActive && movedPx > DRAG_THRESHOLD_PX then
-                    match toSketchLocal sid x y with
-                    | Some (u, v) ->
-                        dragActive <- true
-                        Store.dispatch AppStore.store (beginPointDrag sid pid u v)
-                    | None -> ()
-                elif dragActive then
-                    match toSketchLocal sid x y with
-                    | Some (u, v) -> Store.dispatch AppStore.store (updateDragTo u v)
-                    | None -> ()
-            | 0, Some (PickDimension(_, sid, cix, _)) ->
-                if not dragActive && movedPx > DRAG_THRESHOLD_PX then
-                    match toSketchLocal sid x y with
-                    | Some (u, v) ->
-                        dragActive <- true
-                        Store.dispatch AppStore.store (beginConstraintLabelDrag sid cix u v)
-                    | None -> ()
-                elif dragActive then
-                    match toSketchLocal sid x y with
-                    | Some (u, v) -> Store.dispatch AppStore.store (updateDragTo u v)
-                    | None -> ()
-            | 1, _ -> Camera.pan camera dx dy (canvas.clientHeight * dpr)
-            | 2, _ -> Camera.orbit camera dx dy
-            | _ -> ()
+            if not gizmoHandled then
+                match button, dragPickable with
+                | 0, Some (PickPoint(_, sid, pid, _, _)) ->
+                    if not dragActive && movedPx > DRAG_THRESHOLD_PX then
+                        match toSketchLocal sid x y with
+                        | Some (u, v) ->
+                            dragActive <- true
+                            Store.dispatch AppStore.store (beginPointDrag sid pid u v)
+                        | None -> ()
+                    elif dragActive then
+                        match toSketchLocal sid x y with
+                        | Some (u, v) -> Store.dispatch AppStore.store (updateDragTo u v)
+                        | None -> ()
+                | 0, Some (PickDimension(_, sid, cix, _)) ->
+                    if not dragActive && movedPx > DRAG_THRESHOLD_PX then
+                        match toSketchLocal sid x y with
+                        | Some (u, v) ->
+                            dragActive <- true
+                            Store.dispatch AppStore.store (beginConstraintLabelDrag sid cix u v)
+                        | None -> ()
+                    elif dragActive then
+                        match toSketchLocal sid x y with
+                        | Some (u, v) -> Store.dispatch AppStore.store (updateDragTo u v)
+                        | None -> ()
+                | 1, _ -> Camera.pan camera dx dy (canvas.clientHeight * dpr)
+                | 2, _ -> Camera.orbit camera dx dy
+                | _ -> ()
 
             dragLast <- x, y)
 
     addEvent window "mouseup" (fun _ ->
-        if dragActive then
+        if gizmoDrag.IsSome then
+            Store.dispatch AppStore.store FinishGizmoDrag
+        elif dragActive then
             Store.dispatch AppStore.store FinishSketchDrag
         dragButton <- None
         dragPickable <- None
-        dragActive <- false)
+        dragActive <- false
+        gizmoDrag <- None)
 
     addEventPassiveFalse canvas "contextmenu" (fun e -> ePreventDefault e)
 

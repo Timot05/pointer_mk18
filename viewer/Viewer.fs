@@ -95,18 +95,17 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 let mutable lastCompiled : obj = null
                 let mutable lastSlotValues : obj = null
                 // Doc reference changes on every action edit, including
-                // toggles that don't touch Compiled or SlotValues (e.g.
-                // flipping DisplaySettings.Enabled).
+                // visibility toggles that leave Compiled / SlotValues
+                // untouched.
                 let mutable lastDoc : obj = null
                 let pushIr (bg: Kernel.Background.Background) =
                     let state = AppStore.store.State
-                    // A surface renders iff an eye is attached to its
-                    // action *and* the eye has Display.Enabled. No eye
-                    // → nothing rendered for that action.
+                    // A surface renders iff its action has
+                    // `VIsosurface` visibility.
                     let enabledActionIds =
-                        state.Doc.Eyes
-                        |> List.choose (fun e ->
-                            if e.Display.Enabled then Some e.TargetActionId else None)
+                        state.Doc.Actions
+                        |> List.choose (fun a ->
+                            if a.Visibility = VIsosurface then Some a.Id else None)
                         |> Set.ofList
                     let surfaces =
                         state.Compiled.Surfaces

@@ -331,4 +331,8 @@ module Palette =
                 | "Mesh" -> Mesh(str "child", flt "size" 0.2, int "resolution" 96)
                 | _ -> Origin
 
-            Some { Id = actionId; Name = None; Kind = actionKind }
+            Some
+                { Id = actionId
+                  Name = None
+                  Kind = actionKind
+                  Visibility = Document.defaultVisibility actionKind }

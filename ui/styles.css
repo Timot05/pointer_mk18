@@ -176,7 +176,7 @@ body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 260px 1fr 300px;
+  grid-template-columns: 260px 1fr;
 }
 
 .panel-host {
@@ -549,6 +549,9 @@ body {
   display: flex;
   align-items: center;
   gap: 0;
+  /* Matches `--wire-row` so the sibling wire column's cells line up
+     vertically with the action rows on the left. */
+  min-height: var(--wire-row);
   border-radius: 2px;
   background: transparent;
   border: 1px solid transparent;
@@ -1128,6 +1131,145 @@ body {
   line-height: 1.4;
 }
 
+/* ── Inline action picker (Cmd+K) ──────────────────────────────────── */
+
+.action-picker {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.action-picker-input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.action-picker-input:focus {
+  border-color: var(--accent);
+}
+
+.action-picker-results {
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.action-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.action-picker-item.is-active {
+  background: var(--accent-soft);
+}
+
+.action-picker-item .action-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.action-picker-label {
+  flex: 1;
+}
+
+/* ── Inline input rows (edit mode) ─────────────────────────────────── */
+/* When an action is "opened" (Enter on selected), its ref / scalar
+   inputs expand directly below the action row. Each row reads as
+   `label: value`, indented slightly so it clearly nests under the
+   parent action. */
+
+.input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 7px 3px 30px;  /* indent = action-main left padding + icon width */
+  font-size: 11px;
+  color: var(--text-primary);
+  border: 1px solid transparent;
+  border-radius: 2px;
+}
+
+.input-row:hover {
+  background: var(--bg-surface);
+}
+
+.input-row-label {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  min-width: 58px;
+}
+
+.input-row-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.input-row-value.is-empty {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.input-row.is-focused {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.action-row.is-edit-focused {
+  border-color: var(--accent);
+}
+
+.action-row.is-pick-candidate {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.input-row-value.is-picking {
+  color: var(--accent);
+  font-style: italic;
+}
+
+.input-row-edit {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  outline: none;
+}
+
 /* ── Palette hint button ───────────────────────────────────────────── */
 
 .palette-hint-btn {
@@ -1176,7 +1318,7 @@ body {
   margin: 0 1px;
 }
 
-/* ── Eye source (panel header) ─────────────────────────────────────── */
+/* ── Panel header right group ──────────────────────────────────────── */
 
 .header-right {
   display: inline-flex;
@@ -1184,120 +1326,35 @@ body {
   gap: 6px;
 }
 
-.eye-source {
-  height: 17px;
-  min-width: 30px;
-  padding: 0 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(74, 144, 200, 0.35);
-  border-radius: 999px;
-  background: rgba(74, 144, 200, 0.08);
-  color: #4A90C8;
-  cursor: grab;
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.eye-source:hover {
-  background: rgba(74, 144, 200, 0.16);
-  border-color: rgba(74, 144, 200, 0.6);
-}
-
-.eye-source:active { cursor: grabbing; }
-
-.eye-source svg {
-  width: 11px;
-  height: 11px;
-  pointer-events: none;
-}
-
-/* Palette button no longer needs `margin-left: auto` — the
-   .header-right wrapper handles positioning. */
 .header-right .palette-hint-btn { margin-left: 0; }
 
-/* ── Per-row eye slot ──────────────────────────────────────────────── */
-/* The slot is purely a position holder for the eye badge — the whole
-   action row is the drop target for eye drags (see .is-eye-drop). */
+/* ── Per-row visibility badge ──────────────────────────────────────── */
 
-.eye-slot {
+.visibility-badge {
   flex-shrink: 0;
+  width: 18px;
+  height: 18px;
   margin: 0 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.action-row.is-eye-drop {
-  background: rgba(74, 144, 200, 0.1);
-  outline: 1px dashed #4A90C8;
-  outline-offset: -1px;
-}
-
-/* Eye badge — a pill shape with a washed-blue outline. Turns solid
-   blue when the eye is the currently selected entity. */
-.eye-badge {
-  height: 15px;
-  min-width: 28px;
-  padding: 0 7px;
-  border: 1px solid rgba(74, 144, 200, 0.35);
-  border-radius: 999px;
-  background: rgba(74, 144, 200, 0.08);
-  color: #4A90C8;
-  cursor: grab;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.eye-badge svg {
-  width: 11px;
-  height: 11px;
-  pointer-events: none;
-}
-
-.eye-badge:hover {
-  background: rgba(74, 144, 200, 0.16);
-  border-color: rgba(74, 144, 200, 0.6);
-}
-
-/* Dashed border communicates "this eye follows the tail action". */
-.eye-badge.is-tail {
-  border-style: dashed;
-}
-
-.eye-badge.is-selected {
-  background: #4A90C8;
-  border-color: #4A90C8;
-  color: #FFFFFF;
-}
-
-.eye-badge.is-selected:hover {
-  background: #3E7FB3;
-  border-color: #3E7FB3;
-}
-
-.eye-badge:active { cursor: grabbing; }
-
-/* Eye-only right panel header back button */
-.eye-back {
-  flex-shrink: 0;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 3px;
-  background: var(--bg-page);
+  background: transparent;
   color: var(--text-muted);
-  font: inherit;
-  font-size: 10px;
-  letter-spacing: 0.04em;
+  font-size: 11px;
+  line-height: 1;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.eye-back:hover {
-  background: var(--bg-surface);
+.visibility-badge:hover {
+  border-color: var(--border);
   color: var(--text-primary);
-  border-color: var(--text-faint);
+}
+
+.visibility-badge.is-hidden {
+  color: var(--text-faint);
 }
 
 /* ── Command palette ───────────────────────────────────────────────── */

@@ -7,7 +7,10 @@ open Server.Editor
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 let action id kind : DocAction =
-    { Id = id; Name = None; Kind = kind }
+    { Id = id
+      Name = None
+      Kind = kind
+      Visibility = Document.defaultVisibility kind }
 
 let quarterTurn = System.Math.PI * 0.5
 let eighthTurn = System.Math.PI * 0.25

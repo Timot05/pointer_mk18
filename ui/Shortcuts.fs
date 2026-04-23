@@ -146,8 +146,13 @@ let register
             if (ke.metaKey || ke.ctrlKey) && not ke.altKey && not ke.shiftKey then
                 match ke.key.ToLower() with
                 | "k" ->
+                    // Toggle the inline action picker at the bottom of
+                    // the action list.
                     e.preventDefault ()
-                    dispatch PaletteOpen
+                    let doc = getDoc ()
+                    if doc.ActionPickerOpen
+                    then dispatch CloseActionPicker
+                    else dispatch OpenActionPicker
                 | "s" ->
                     e.preventDefault ()
                     onSave ()
@@ -168,40 +173,195 @@ let register
                 if handleSketchShortcut dispatch doc ke then () else
 
                 match ke.key with
+                | "Escape" when doc.EditingInputField.IsSome ->
+                    // Cancel the current input sub-edit, but keep the
+                    // row focused so the user can keep navigating.
+                    e.preventDefault ()
+                    dispatch StopEditingInputField
+                | "Escape" when doc.WiringActionId.IsSome ->
+                    e.preventDefault ()
+                    dispatch StopWiring
+                | "Enter" when doc.WiringActionId.IsNone && doc.SelectedId.IsSome ->
+                    // Enter on a selected action opens edit mode —
+                    // input rows expand directly beneath it. Skipped
+                    // for primitives without any editable inputs so
+                    // users don't see an empty expansion.
+                    match selectedAction doc with
+                    | Some sel ->
+                        if not (List.isEmpty (ActionList.inputsOf sel.Kind)) then
+                            e.preventDefault ()
+                            dispatch (StartWiring sel.Id)
+                    | None -> ()
+                | "Enter" when doc.WiringActionId.IsSome && doc.EditingInputField.IsSome ->
+                    // Ref sub-edit: commit the highlighted upstream pick.
+                    // Scalar sub-edit: the inline <input> normally
+                    // handles Enter itself (and its keydown handler
+                    // stops propagation). This branch is reached only
+                    // when focus never actually landed on the input — a
+                    // fallback that reads value from the DOM so Enter
+                    // still saves reliably.
+                    match doc.WiringActionId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
+                    | Some wired ->
+                        match doc.EditingInputField with
+                        | Some field ->
+                            let input =
+                                ActionList.inputsOf wired.Kind
+                                |> List.tryFind (fun i ->
+                                    match i with
+                                    | ActionList.RefDisplay s -> s.Field = field
+                                    | ActionList.ScalarDisplay(_, _, f)
+                                    | ActionList.SelectDisplay(_, _, _, f)
+                                    | ActionList.CheckDisplay(_, _, f) -> f = field)
+                            match input with
+                            | Some (ActionList.RefDisplay s) ->
+                                e.preventDefault ()
+                                let candidates =
+                                    Map.tryFind s.AcceptedKey doc.RefOptions
+                                    |> Option.defaultValue []
+                                if doc.RefPickIdx >= 0 && doc.RefPickIdx < candidates.Length then
+                                    dispatch (Editor.setActionParamValue wired.Id field (VString candidates.[doc.RefPickIdx]))
+                                dispatch StopEditingInputField
+                            | Some (ActionList.ScalarDisplay(_, _, scalarField)) ->
+                                e.preventDefault ()
+                                let el = document.querySelector ".input-row-edit"
+                                if not (isNull el) then
+                                    let inputEl = el :?> HTMLInputElement
+                                    match System.Double.TryParse(inputEl.value) with
+                                    | true, v ->
+                                        let payload =
+                                            match scalarField with
+                                            | MeshResolution -> VInt(int v)
+                                            | _ -> VFloat v
+                                        dispatch (Editor.setActionParamValue wired.Id scalarField payload)
+                                    | _ -> ()
+                                dispatch StopEditingInputField
+                            | _ -> ()
+                        | None -> ()
+                    | None -> ()
+                | "Enter" when doc.WiringActionId.IsSome ->
+                    // Enter over a row in edit mode:
+                    //   idx = 0 (action row)    → leave edit mode.
+                    //   idx > 0 (input row)     → start / apply sub-edit
+                    //                             based on the input's kind.
+                    e.preventDefault ()
+                    if doc.EditFocusIdx = 0 then
+                        dispatch StopWiring
+                    else
+                        match doc.WiringActionId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
+                        | Some wired ->
+                            let inputs = ActionList.inputsOf wired.Kind
+                            let ii = doc.EditFocusIdx - 1
+                            if ii >= 0 && ii < inputs.Length then
+                                match inputs.[ii] with
+                                | ActionList.CheckDisplay(_, value, field) ->
+                                    dispatch (Editor.setActionParamValue wired.Id field (VBool(not value)))
+                                | ActionList.SelectDisplay(_, value, choices, field) ->
+                                    let nextChoice =
+                                        match List.tryFindIndex ((=) value) choices with
+                                        | Some i -> choices.[(i + 1) % choices.Length]
+                                        | None when not choices.IsEmpty -> choices.[0]
+                                        | None -> value
+                                    if nextChoice <> value then
+                                        dispatch (Editor.setActionParamValue wired.Id field (VString nextChoice))
+                                | ActionList.ScalarDisplay(_, _, field) ->
+                                    // ActionList will render an inline
+                                    // number input for this field and
+                                    // focus it on the next render tick.
+                                    dispatch (StartEditingInputField(field, 0, None))
+                                | ActionList.RefDisplay slot ->
+                                    let candidates =
+                                        Map.tryFind slot.AcceptedKey doc.RefOptions
+                                        |> Option.defaultValue []
+                                    if not candidates.IsEmpty then
+                                        let initial =
+                                            slot.Current
+                                            |> Option.bind (fun cur ->
+                                                candidates |> List.tryFindIndex ((=) cur))
+                                            |> Option.defaultValue 0
+                                        dispatch (StartEditingInputField(slot.Field, initial, None))
+                        | None -> ()
+                | k when doc.WiringActionId.IsSome
+                         && doc.EditingInputField.IsNone
+                         && doc.EditFocusIdx > 0
+                         && k.Length = 1
+                         && (let c = k.[0] in c = '-' || c = '.' || (c >= '0' && c <= '9')) ->
+                    // Typing a digit / '-' / '.' over a focused scalar
+                    // row starts the sub-edit pre-filled with that key,
+                    // so the user doesn't need to press Enter first.
+                    match doc.WiringActionId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
+                    | Some wired ->
+                        let inputs = ActionList.inputsOf wired.Kind
+                        let ii = doc.EditFocusIdx - 1
+                        if ii >= 0 && ii < inputs.Length then
+                            match inputs.[ii] with
+                            | ActionList.ScalarDisplay(_, _, field) ->
+                                e.preventDefault ()
+                                dispatch (StartEditingInputField(field, 0, Some k))
+                            | _ -> ()
+                    | None -> ()
                 | "Delete" | "Backspace" ->
                     e.preventDefault ()
                     dispatch DeleteIntent
                 | "ArrowDown" | "ArrowUp" ->
                     e.preventDefault ()
-                    let actions = doc.Actions
-                    let idx =
-                        actions
-                        |> List.tryFindIndex (fun a -> Some a.Id = doc.SelectedId)
-                        |> Option.defaultValue -1
-                    if idx >= 0 then
+                    // Three arrow-key regimes:
+                    //   1. Ref sub-edit  → cycle candidate picks.
+                    //   2. Edit mode     → move focus across action row
+                    //                      and input rows of the wired action.
+                    //   3. Idle          → change the selected action.
+                    match doc.WiringActionId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
+                    | Some wired when doc.EditingInputField.IsSome ->
+                        match doc.EditingInputField with
+                        | Some field ->
+                            let input =
+                                ActionList.inputsOf wired.Kind
+                                |> List.tryFind (fun i ->
+                                    match i with
+                                    | ActionList.RefDisplay s -> s.Field = field
+                                    | _ -> false)
+                            match input with
+                            | Some (ActionList.RefDisplay s) ->
+                                let candidates =
+                                    Map.tryFind s.AcceptedKey doc.RefOptions
+                                    |> Option.defaultValue []
+                                if not candidates.IsEmpty then
+                                    let cur = doc.RefPickIdx
+                                    let next =
+                                        if ke.key = "ArrowDown" then min (cur + 1) (candidates.Length - 1)
+                                        else max (cur - 1) 0
+                                    if next <> cur then
+                                        dispatch (SetRefPickIdx next)
+                            | _ -> ()
+                        | None -> ()
+                    | Some wired ->
+                        let inputCount = List.length (ActionList.inputsOf wired.Kind)
+                        let cur = doc.EditFocusIdx
                         let next =
-                            if ke.key = "ArrowDown" then min (idx + 1) (actions.Length - 1)
-                            else max (idx - 1) 0
-                        if next <> idx then
-                            dispatch (SelectAction actions.[next].Id)
+                            if ke.key = "ArrowDown" then min (cur + 1) inputCount
+                            else max (cur - 1) 0
+                        if next <> cur then
+                            dispatch (SetEditFocus next)
+                    | None ->
+                        let actions = doc.Actions
+                        let idx =
+                            actions
+                            |> List.tryFindIndex (fun a -> Some a.Id = doc.SelectedId)
+                            |> Option.defaultValue -1
+                        if idx >= 0 then
+                            let next =
+                                if ke.key = "ArrowDown" then min (idx + 1) (actions.Length - 1)
+                                else max (idx - 1) 0
+                            if next <> idx then
+                                dispatch (SelectAction actions.[next].Id)
                 | "v" ->
-                    // Toggle the eye on the selected action — creates
-                    // one if missing, deletes it if already attached.
+                    // Cycle visibility of the selected action through
+                    // the modes its kind supports (Hidden / Visible for
+                    // frames + sketches; Hidden / Isosurface / FieldLines
+                    // for field-producing kinds).
                     match selectedAction doc with
                     | Some sel ->
                         e.preventDefault ()
-                        match doc.Eyes |> List.tryFind (fun eye -> eye.TargetActionId = sel.Id) with
-                        | Some eye -> dispatch (DeleteEye eye.Id)
-                        | None -> dispatch (CreateEyeFor sel.Id)
-                    | None -> ()
-                | "s" ->
-                    // Ensure an eye is attached and toggle its
-                    // iso-surface display. The reducer handles the
-                    // create-if-missing case.
-                    match selectedAction doc with
-                    | Some sel ->
-                        e.preventDefault ()
-                        dispatch (ToggleActionSurface sel.Id)
+                        dispatch (CycleActionVisibility sel.Id)
                     | None -> ()
                 | "e" | "E" ->
                     match selectedAction doc with
@@ -211,13 +371,5 @@ let register
                         // id used only to match; suppress unused warning
                         ignore id
                     | _ -> ()
-                | "f" ->
-                    // Ensure an eye is attached and toggle its
-                    // field-slice overlay.
-                    match selectedAction doc with
-                    | Some sel ->
-                        e.preventDefault ()
-                        dispatch (ToggleActionFieldSlice sel.Id)
-                    | None -> ()
                 | _ -> ()
     )

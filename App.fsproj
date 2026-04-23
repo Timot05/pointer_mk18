@@ -87,13 +87,13 @@
     <Compile Include="viewer\Kernel\FieldToIr.fs" />
     <Compile Include="viewer\Kernel\Wasm.fs" />
     <Compile Include="ui\MeshExport.fs" />
-    <Compile Include="ui\ParamsPanel.fs" />
     <Compile Include="viewer\Kernel\Worker.fs" />
     <Compile Include="viewer\Kernel\Background.fs" />
     <Compile Include="viewer\Raymarch.fs" />
     <Compile Include="viewer\FieldSlice.fs" />
 
     <Compile Include="viewer\PickCompute.fs" />
+    <Compile Include="viewer\TranslateGizmo.fs" />
     <Compile Include="viewer\DimensionEditor.fs" />
     <Compile Include="viewer\Input.fs" />
     <Compile Include="viewer\Render.fs" />

@@ -14,10 +14,9 @@ let angleDoc () =
           Constraints = [] }
     { Name = "angle"
       SelectedId = Some "sketchA"
-      Eyes = []
       Actions =
-        [ { Id = "origin"; Name = None; Kind = Origin }
-          { Id = "sketchA"; Name = None; Kind = Sketch(Some "origin", XY, sketch) } ] }
+        [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
+          { Id = "sketchA"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }
 
 let arcDoc () =
     let sketch =
@@ -29,10 +28,9 @@ let arcDoc () =
           Constraints = [] }
     { Name = "arc"
       SelectedId = Some "sketchArc"
-      Eyes = []
       Actions =
-        [ { Id = "origin"; Name = None; Kind = Origin }
-          { Id = "sketchArc"; Name = None; Kind = Sketch(Some "origin", XY, sketch) } ] }
+        [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
+          { Id = "sketchArc"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }
 
 let tangentArcDoc () =
     let sketch =
@@ -47,10 +45,9 @@ let tangentArcDoc () =
           Constraints = [] }
     { Name = "tangent-arc"
       SelectedId = Some "sketchT"
-      Eyes = []
       Actions =
-        [ { Id = "origin"; Name = None; Kind = Origin }
-          { Id = "sketchT"; Name = None; Kind = Sketch(Some "origin", XY, sketch) } ] }
+        [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
+          { Id = "sketchT"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }
 
 let curveTangentDoc () =
     let sketch =
@@ -64,10 +61,9 @@ let curveTangentDoc () =
           Constraints = [] }
     { Name = "curve-tangent"
       SelectedId = Some "sketchCT"
-      Eyes = []
       Actions =
-        [ { Id = "origin"; Name = None; Kind = Origin }
-          { Id = "sketchCT"; Name = None; Kind = Sketch(Some "origin", XY, sketch) } ] }
+        [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
+          { Id = "sketchCT"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }
 
 let frameConstraintDoc () =
     let sketch =
@@ -78,11 +74,10 @@ let frameConstraintDoc () =
           Constraints = [] }
     { Name = "frame-constraints"
       SelectedId = Some "sketchF"
-      Eyes = []
       Actions =
-        [ { Id = "origin"; Name = None; Kind = Origin }
-          { Id = "f1"; Name = None; Kind = Translate(Some "origin", 5.0, 0.0, 0.0) }
-          { Id = "sketchF"; Name = None; Kind = Sketch(Some "origin", XY, sketch) } ] }
+        [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
+          { Id = "f1"; Name = None; Kind = Translate(Some "origin", 5.0, 0.0, 0.0); Visibility = VVisible }
+          { Id = "sketchF"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }
 
 let pendingPlacementDoc () =
     let sketch =
@@ -92,10 +87,9 @@ let pendingPlacementDoc () =
           Constraints = [] }
     { Name = "pending-placement"
       SelectedId = Some "sketchP"
-      Eyes = []
       Actions =
-        [ { Id = "origin"; Name = None; Kind = Origin }
-          { Id = "sketchP"; Name = None; Kind = Sketch(Some "origin", XY, sketch) } ] }
+        [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
+          { Id = "sketchP"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }
 
 [<Fact>]
 let ``Dimension placement buttons stay enabled in sketch edit mode`` () =

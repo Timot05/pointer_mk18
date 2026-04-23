@@ -24,56 +24,24 @@ type ActionKind =
     | Shell of child: ActionId option * thickness: float
     | Mesh of child: ActionId option * size: float * resolution: int
 
-type DisplaySettings =
-    { Enabled: bool
-      Color: float array // [r, g, b] normalized 0-1
-      Opacity: float
-      IsoValue: float }
-
-module DisplaySettings =
-    let defaults =
-        { Enabled = false
-          Color = [| 0.522; 0.682; 0.784 |] // #85AEC8
-          Opacity = 0.9
-          IsoValue = 0.0 }
-
-type FieldSliceSettings =
-    { Enabled: bool
-      Plane: string // "X" | "Y" | "Z"
-      Offset: float
-      Extent: float }
-
-module FieldSliceSettings =
-    let defaults =
-        { Enabled = false
-          Plane = "Z"
-          Offset = 0.0
-          Extent = 20.0 }
+/// Per-action visibility in the 3D viewer. `v` cycles through the
+/// modes the action's kind actually supports:
+///   * Field-producing (Sphere / Box / Union / …): Hidden → Isosurface
+///     → FieldLines → Hidden.
+///   * Frames + sketches + origin: Hidden → Visible → Hidden. These
+///     kinds use `Visible` only; `FieldLines` / `Isosurface` never
+///     apply and are treated as Hidden at render time.
+type ActionVisibility =
+    | VHidden
+    | VVisible
+    | VFieldLines
+    | VIsosurface
 
 type DocAction =
     { Id: ActionId
       Name: string option
-      Kind: ActionKind }
-
-/// An "eye" attaches to one action and controls how that action is
-/// shown (iso-surface + field slice). At most one eye per action. A
-/// tail-following eye's `TargetActionId` is kept pointing at the last
-/// action in `Document.Actions` whenever that list changes.
-type Eye =
-    { Id: string
-      TargetActionId: ActionId
-      TailFollowing: bool
-      Display: DisplaySettings
-      FieldSlice: FieldSliceSettings option }
-
-type DisplayField =
-    | DisplayColor
-    | DisplayOpacity
-    | DisplayIsoValue
-
-type FieldSliceField =
-    | SlicePlane
-    | SliceOffset
+      Kind: ActionKind
+      Visibility: ActionVisibility }
 
 type SketchEntityField =
     | PointX
@@ -206,21 +174,9 @@ type ViewerMode =
 type Document =
     { Name: string
       Actions: DocAction list
-      Eyes: Eye list
       SelectedId: string option }
 
 module Document =
-
-    let pathOfDisplayField =
-        function
-        | DisplayColor -> [ "display.color.0"; "display.color.1"; "display.color.2" ]
-        | DisplayOpacity -> [ "display.opacity" ]
-        | DisplayIsoValue -> [ "display.isoValue" ]
-
-    let pathOfFieldSliceField =
-        function
-        | SlicePlane -> []
-        | SliceOffset -> [ "fieldSlice.offset" ]
 
     let pathOfParamField =
         function
@@ -378,150 +334,37 @@ module Document =
             Actions = doc.Actions |> List.filter (fun a -> a.Id <> id)
             SelectedId = if doc.SelectedId = Some id then None else doc.SelectedId }
 
-    // ── Eye helpers ────────────────────────────────────────────────
-    //
-    // Invariants maintained across every public mutator:
-    //   * At most one eye per action (enforced on create / move /
-    //     tail rebalance — if a collision would occur, the existing
-    //     eye on the target is swapped onto the source instead).
-    //   * Tail-following eyes' `TargetActionId` always resolves to the
-    //     last action id in `Actions` (rebalanced after any action
-    //     list change via `rebalanceEyes`).
-    //   * Pinned eyes whose target is deleted are removed entirely.
+    // ── Visibility helpers ──────────────────────────────────────────
 
-    let private lastActionId (doc: Document) : ActionId option =
-        doc.Actions |> List.tryLast |> Option.map (fun a -> a.Id)
+    /// Default visibility for a newly-added action. Frames / sketches /
+    /// origin show their gizmo so the user doesn't have to toggle on
+    /// every insert; field-producing kinds show the isosurface so a
+    /// fresh primitive is immediately visible.
+    let defaultVisibility (kind: ActionKind) : ActionVisibility =
+        match kind with
+        | Origin | Translate _ | Rotate _ | Move _ | Sketch _ -> VVisible
+        | _ -> VIsosurface
 
-    let private mapEye (id: string) (f: Eye -> Eye) (eyes: Eye list) : Eye list =
-        eyes |> List.map (fun e -> if e.Id = id then f e else e)
+    /// Cycle order on `v`. Field-producing kinds rotate through three
+    /// modes; everything else is a binary toggle.
+    let cycleVisibility (kind: ActionKind) (current: ActionVisibility) : ActionVisibility =
+        match kind with
+        | Origin | Translate _ | Rotate _ | Move _ | Sketch _ ->
+            match current with
+            | VHidden -> VVisible
+            | _ -> VHidden
+        | _ ->
+            match current with
+            | VHidden -> VIsosurface
+            | VIsosurface -> VFieldLines
+            | VFieldLines | VVisible -> VHidden
 
-    let private nextEyeId (doc: Document) : string =
-        let existing = doc.Eyes |> List.map (fun e -> e.Id) |> Set.ofList
-        let rec find i =
-            let candidate = sprintf "eye-%d" i
-            if Set.contains candidate existing then find (i + 1) else candidate
-        find 1
-
-    /// Rebalance tail-following eyes after the Actions list changes —
-    /// point them at the new last action (or drop them if Actions is
-    /// empty). Also removes pinned eyes whose target no longer exists.
-    /// Enforces one-eye-per-action by keeping the last-added eye and
-    /// dropping earlier duplicates.
-    let rebalanceEyes (doc: Document) : Document =
-        let actionIds = doc.Actions |> List.map (fun a -> a.Id) |> Set.ofList
-        let tail = lastActionId doc
-        let filtered =
-            doc.Eyes
-            |> List.choose (fun e ->
-                if e.TailFollowing then
-                    tail |> Option.map (fun t -> { e with TargetActionId = t })
-                else if Set.contains e.TargetActionId actionIds then Some e
-                else None)
-        // Collapse duplicates per target — last one wins.
-        let deduped =
-            filtered
-            |> List.fold (fun acc e ->
-                let withoutTarget = acc |> List.filter (fun x -> x.TargetActionId <> e.TargetActionId)
-                withoutTarget @ [ e ]) []
-        { doc with Eyes = deduped }
-
-    /// True if this action already has an eye attached.
-    let actionHasEye (actionId: string) (doc: Document) : bool =
-        doc.Eyes |> List.exists (fun e -> e.TargetActionId = actionId)
-
-    /// Create a default eye pinned to the given action. If an eye
-    /// already exists on that action, returns the doc unchanged.
-    let createEye (actionId: string) (doc: Document) : Document =
-        if actionHasEye actionId doc then doc
-        else if not (doc.Actions |> List.exists (fun a -> a.Id = actionId)) then doc
-        else
-            let eye =
-                { Id = nextEyeId doc
-                  TargetActionId = actionId
-                  TailFollowing = false
-                  Display = DisplaySettings.defaults
-                  FieldSlice = None }
-            { doc with Eyes = doc.Eyes @ [ eye ] }
-
-    let deleteEye (eyeId: string) (doc: Document) : Document =
-        { doc with Eyes = doc.Eyes |> List.filter (fun e -> e.Id <> eyeId) }
-
-    /// Move an eye onto a new target action. If the target already has
-    /// an eye, swap — the existing eye moves back to the source's old
-    /// target. Fixes TailFollowing off (an explicit drop breaks the
-    /// tail relationship).
-    let moveEye (eyeId: string) (targetActionId: string) (doc: Document) : Document =
-        match doc.Eyes |> List.tryFind (fun e -> e.Id = eyeId) with
-        | None -> doc
-        | Some eye when eye.TargetActionId = targetActionId -> doc
-        | Some eye ->
-            if not (doc.Actions |> List.exists (fun a -> a.Id = targetActionId)) then doc
-            else
-                let previousTarget = eye.TargetActionId
-                let eyesWithoutMoved = doc.Eyes |> List.filter (fun e -> e.Id <> eyeId)
-                let swappedEyes =
-                    eyesWithoutMoved
-                    |> List.map (fun e ->
-                        if e.TargetActionId = targetActionId then
-                            { e with TargetActionId = previousTarget; TailFollowing = false }
-                        else e)
-                let movedEye =
-                    { eye with TargetActionId = targetActionId; TailFollowing = false }
-                { doc with Eyes = swappedEyes @ [ movedEye ] }
-
-    let setEyeTailFollowing (eyeId: string) (value: bool) (doc: Document) : Document =
-        let tail = lastActionId doc
-        let updatedDoc =
-            { doc with
-                Eyes =
-                    doc.Eyes
-                    |> mapEye eyeId (fun e ->
-                        match value, tail with
-                        | true, Some t -> { e with TailFollowing = true; TargetActionId = t }
-                        | true, None -> e
-                        | false, _ -> { e with TailFollowing = false }) }
-        rebalanceEyes updatedDoc
-
-    let toggleEyeDisplayEnabled (eyeId: string) (doc: Document) : Document =
+    let setVisibility (id: ActionId) (visibility: ActionVisibility) (doc: Document) : Document =
         { doc with
-            Eyes =
-                doc.Eyes
-                |> mapEye eyeId (fun e ->
-                    { e with Display = { e.Display with Enabled = not e.Display.Enabled } }) }
-
-    let patchEyeDisplayValue (eyeId: string) (field: DisplayField) (value: ParamValue) (doc: Document) : Document =
-        { doc with
-            Eyes =
-                doc.Eyes
-                |> mapEye eyeId (fun e ->
-                    let d = e.Display
-                    let nextDisplay =
-                        match field with
-                        | DisplayColor -> applyWhenSome ParamValue.asFloatArray (fun next -> { d with Color = next }) d value
-                        | DisplayOpacity -> applyWhenSome ParamValue.asFloat (fun next -> { d with Opacity = next }) d value
-                        | DisplayIsoValue -> applyWhenSome ParamValue.asFloat (fun next -> { d with IsoValue = next }) d value
-                    { e with Display = nextDisplay }) }
-
-    let toggleEyeFieldSlice (eyeId: string) (doc: Document) : Document =
-        { doc with
-            Eyes =
-                doc.Eyes
-                |> mapEye eyeId (fun e ->
-                    match e.FieldSlice with
-                    | None -> { e with FieldSlice = Some { FieldSliceSettings.defaults with Enabled = true } }
-                    | Some fs -> { e with FieldSlice = Some { fs with Enabled = not fs.Enabled } }) }
-
-    let patchEyeFieldSliceValue (eyeId: string) (field: FieldSliceField) (value: ParamValue) (doc: Document) : Document =
-        { doc with
-            Eyes =
-                doc.Eyes
-                |> mapEye eyeId (fun e ->
-                    let fs = e.FieldSlice |> Option.defaultValue FieldSliceSettings.defaults
-                    let nextFs =
-                        match field with
-                        | SlicePlane -> applyWhenSome ParamValue.asString (fun next -> { fs with Plane = next }) fs value
-                        | SliceOffset -> applyWhenSome ParamValue.asFloat (fun next -> { fs with Offset = next }) fs value
-                    { e with FieldSlice = Some nextFs }) }
+            Actions =
+                doc.Actions
+                |> List.map (fun a ->
+                    if a.Id = id then { a with Visibility = visibility } else a) }
 
     let reorder (ids: string list) (doc: Document) : Document =
         let lookup = doc.Actions |> List.map (fun a -> a.Id, a) |> Map.ofList
@@ -689,36 +532,39 @@ module Document =
                 { action with Kind = nextKind })
             doc
 
-    /// One tail-following eye seeded in fresh documents so the latest
-    /// field-like action is always visible without manual placement.
-    let private defaultTailEye (lastActionId: string) : Eye =
-        { Id = "eye-default"
-          TargetActionId = lastActionId
-          TailFollowing = true
-          Display = { DisplaySettings.defaults with Enabled = true }
-          FieldSlice = None }
+    /// Build an action with default visibility derived from its kind.
+    let private act id name kind =
+        { Id = id
+          Name = Some name
+          Kind = kind
+          Visibility = defaultVisibility kind }
+
+    /// Same but with the Name = None (anonymous action).
+    let private anon id kind =
+        { Id = id
+          Name = None
+          Kind = kind
+          Visibility = defaultVisibility kind }
+
+    /// Same, but forces a specific visibility (used for the stress doc
+    /// where intermediate surfaces stay hidden and only the final three
+    /// show as isosurfaces).
+    let private actWith id name kind visibility =
+        { Id = id
+          Name = Some name
+          Kind = kind
+          Visibility = visibility }
 
     let defaultDocument () : Document =
         { Name = "untitled"
           SelectedId = Some "origin"
-          Eyes = [ defaultTailEye "from1" ]
           Actions =
-            [ { Id = "origin"
-                Name = Some "origin"
-                Kind = Origin }
-              { Id = "cyl1"
-                Name = Some "cylinder"
-                Kind = Cylinder(radius = 10.0, height = 40.0) }
-              { Id = "sph1"
-                Name = Some "sphere"
-                Kind = Sphere(radius = 8.0) }
-              { Id = "sub1"
-                Name = Some "subtract"
-                Kind = Subtract(a = Some "cyl1", b = Some "sph1", radius = 0.0) }
-              { Id = "sketch1"
-                Name = Some "square"
-                Kind =
-                  Sketch(
+            [ act "origin" "origin" Origin
+              actWith "cyl1" "cylinder" (Cylinder(radius = 10.0, height = 40.0)) VHidden
+              actWith "sph1" "sphere" (Sphere(radius = 8.0)) VHidden
+              actWith "sub1" "subtract" (Subtract(a = Some "cyl1", b = Some "sph1", radius = 0.0)) VHidden
+              act "sketch1" "square"
+                  (Sketch(
                       origin = Some "origin",
                       plane = XY,
                       sketch =
@@ -738,23 +584,14 @@ module Document =
                                 Vertical("p_bl", "p_tl")
                                 Vertical("p_br", "p_tr")
                                 Distance("p_bl", "p_br", 10.0, None)
-                                Distance("p_bl", "p_tl", 10.0, None) ] }
-                  ) }
-              { Id = "frame1"
-                Name = Some "frame"
-                Kind = Translate(child = Some "origin", x = 18.0, y = 6.0, z = 12.0) }
-              { Id = "from1"
-                Name = Some "from-sketch"
-                Kind = FromSketch(child = Some "sketch1", flip = false, selection = SelectionLoop None) } ] }
+                                Distance("p_bl", "p_tl", 10.0, None) ] }))
+              act "frame1" "frame" (Translate(child = Some "origin", x = 18.0, y = 6.0, z = 12.0))
+              act "from1" "from-sketch" (FromSketch(child = Some "sketch1", flip = false, selection = SelectionLoop None)) ] }
 
     let emptyDocument () : Document =
         { Name = "untitled"
           SelectedId = Some "origin"
-          Eyes = [ defaultTailEye "origin" ]
-          Actions =
-            [ { Id = "origin"
-                Name = Some "origin"
-                Kind = Origin } ] }
+          Actions = [ act "origin" "origin" Origin ] }
 
     // Stress document — extends the default doc with three distinct
     // display-enabled surfaces so the viewer exercises both:
@@ -772,10 +609,15 @@ module Document =
     let stressDocument () : Document =
         let baseDoc = defaultDocument ()
 
+        // All intermediate stress geometry is hidden; only the final
+        // actions (gridFinal / ringFinal / slabFinal) are flipped to
+        // VIsosurface below. Frames in this doc are throwaway structure
+        // — hide their gizmos too to keep the viewport clean.
         let mk id name kind =
             { Id = id
               Name = Some name
-              Kind = kind }
+              Kind = kind
+              Visibility = VHidden }
 
         // Fold a list of IDs into a binary chain of smooth unions. Returns
         // the created union actions plus the last union's ID (= the root
@@ -819,12 +661,11 @@ module Document =
         let gridUnionActions, gridRootId =
             gridCells |> List.map gridSphereId |> chainUnions "gu" gridSmoothR
 
-        let gridDisplay =
-            { DisplaySettings.defaults with Enabled = true; Color = [| 0.85; 0.55; 0.40 |] }
         let gridFinal =
             gridRootId
             |> Option.map (fun rid ->
-                mk "s1_final" "sphere grid" (Translate(child = Some rid, x = -14.0, y = 0.0, z = 0.0)))
+                { mk "s1_final" "sphere grid" (Translate(child = Some rid, x = -14.0, y = 0.0, z = 0.0))
+                    with Visibility = VIsosurface })
 
         // ── Surface 2: ring of cylinders (cool), center ────────────────
         let ringN = 8
@@ -846,12 +687,11 @@ module Document =
         let ringUnionActions, ringRootId =
             [ 0 .. ringN - 1 ] |> List.map ringCylId |> chainUnions "ru" 0.6
 
-        let ringDisplay =
-            { DisplaySettings.defaults with Enabled = true; Color = [| 0.35; 0.55; 0.85 |] }
         let ringFinal =
             ringRootId
             |> Option.map (fun rid ->
-                mk "s2_final" "ring" (Translate(child = Some rid, x = 0.0, y = -8.0, z = 0.0)))
+                { mk "s2_final" "ring" (Translate(child = Some rid, x = 0.0, y = -8.0, z = 0.0))
+                    with Visibility = VIsosurface })
 
         // ── Surface 3: perforated slab (green), centered right ─────────
         // Big box with 4 cylindrical holes drilled through — exercises
@@ -883,12 +723,11 @@ module Document =
             | Some _ -> Some "slab_sub"
             | None -> Some "slab_box"
 
-        let slabDisplay =
-            { DisplaySettings.defaults with Enabled = true; Color = [| 0.45; 0.75; 0.50 |] }
         let slabFinal =
             slabRootId
             |> Option.map (fun rid ->
-                mk "s3_final" "slab" (Translate(child = Some rid, x = 14.0, y = 0.0, z = 0.0)))
+                { mk "s3_final" "slab" (Translate(child = Some rid, x = 14.0, y = 0.0, z = 0.0))
+                    with Visibility = VIsosurface })
 
         // ── Assemble ───────────────────────────────────────────────────
         let finals = List.choose id [ gridFinal; ringFinal; slabFinal ]
@@ -900,22 +739,6 @@ module Document =
             @ ringActions @ ringUnionActions @ (Option.toList ringFinal)
             @ [ slabAction ] @ holeActions @ holeUnionActions @ slabSubtractActions @ (Option.toList slabFinal)
 
-        // One pinned eye per surface final, carrying its display colour.
-        let eyeFor (idx: int) (action: DocAction option) (display: DisplaySettings) : Eye list =
-            match action with
-            | Some a ->
-                [ { Id = sprintf "eye-stress-%d" idx
-                    TargetActionId = a.Id
-                    TailFollowing = false
-                    Display = display
-                    FieldSlice = None } ]
-            | None -> []
-        let stressEyes =
-            eyeFor 0 gridFinal gridDisplay
-            @ eyeFor 1 ringFinal ringDisplay
-            @ eyeFor 2 slabFinal slabDisplay
-
         { baseDoc with
             Actions = baseDoc.Actions @ extras
-            Eyes = baseDoc.Eyes @ stressEyes
             SelectedId = Some selectedId }

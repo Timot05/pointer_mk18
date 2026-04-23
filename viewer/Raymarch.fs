@@ -404,32 +404,31 @@ let private ensureBlockCapacity (rm: Raymarch) (blocksX: int) (blocksY: int) =
 let private MAX_SURFACES = 32
 
 /// `state.Compiled.Surfaces` lists one FieldSurface per DocAction that
-/// compiles to a field. Only surfaces whose action is targeted by an
-/// eye with Display.Enabled render; those get their colour / opacity /
-/// iso-value from the eye. Filter up front so the WGSL codegen and the
-/// surfaceStates buffer stay tight.
+/// compiles to a field. Only surfaces whose action has `VIsosurface`
+/// visibility render; those use a single default colour / opacity /
+/// iso value until per-action display settings are reintroduced.
+let private DEFAULT_COLOR : float32[] = [| 0.522f; 0.682f; 0.784f |]
+let private DEFAULT_OPACITY = 0.9f
+let private DEFAULT_ISO_VALUE = 0.0f
+
 let private enabledSurfacesAndState (state: EditorState)
         : FieldSurface list * float32[] =
-    let displayById =
-        state.Doc.Eyes
-        |> List.choose (fun e ->
-            if e.Display.Enabled then Some (e.TargetActionId, e.Display) else None)
-        |> Map.ofList
+    let isoIds =
+        state.Doc.Actions
+        |> List.choose (fun a ->
+            if a.Visibility = VIsosurface then Some a.Id else None)
+        |> Set.ofList
     let enabled =
         state.Compiled.Surfaces
-        |> List.choose (fun s ->
-            Map.tryFind s.ActionId displayById
-            |> Option.map (fun d -> s, d))
+        |> List.filter (fun s -> Set.contains s.ActionId isoIds)
         |> List.truncate MAX_SURFACES
-    let filteredSurfaces = enabled |> List.map fst
-    let state =
+    let st =
         enabled
-        |> List.mapi (fun i (_, d) ->
-            let baseIdx = i * FLOATS_PER_SURFACE
-            [| float32 d.Color.[0]; float32 d.Color.[1]; float32 d.Color.[2]; float32 d.Opacity
-               float32 d.IsoValue; 1.0f; 0.0f; 0.0f |])
+        |> List.mapi (fun _ _ ->
+            [| DEFAULT_COLOR.[0]; DEFAULT_COLOR.[1]; DEFAULT_COLOR.[2]; DEFAULT_OPACITY
+               DEFAULT_ISO_VALUE; 1.0f; 0.0f; 0.0f |])
         |> Array.concat
-    filteredSurfaces, state
+    enabled, st
 
 let private slotFloat32Array (state: EditorState) : float32[] =
     state.SlotValues |> Array.map float32

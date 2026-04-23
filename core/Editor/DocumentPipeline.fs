@@ -8,9 +8,13 @@ namespace Server
 type DocumentView =
     { Name: string
       Actions: DocAction list
-      Eyes: Eye list
       SelectedId: string option
-      SelectedEyeId: string option
+      WiringActionId: string option
+      EditFocusIdx: int
+      EditingInputField: ActionParamField option
+      EditingInputInitial: string option
+      RefPickIdx: int
+      ActionPickerOpen: bool
       SelectedTargets: SelectionTarget list
       SketchUi: SketchUiState
       RefOptions: Map<string, string list>
@@ -55,9 +59,13 @@ module DocumentPipeline =
 
         { Name = state.Doc.Name
           Actions = state.Doc.Actions
-          Eyes = state.Doc.Eyes
           SelectedId = state.Doc.SelectedId
-          SelectedEyeId = state.SelectedEyeId
+          WiringActionId = state.WiringActionId
+          EditFocusIdx = state.EditFocusIdx
+          EditingInputField = state.EditingInputField
+          EditingInputInitial = state.EditingInputInitial
+          RefPickIdx = state.RefPickIdx
+          ActionPickerOpen = state.ActionPickerOpen
           SelectedTargets = state.SelectedTargets
           SketchUi = Editor.sketchUiState state
           RefOptions = refOptions

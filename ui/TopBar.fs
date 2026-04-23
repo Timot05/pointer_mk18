@@ -63,6 +63,18 @@ let render
             dispatch ClearModel
     )
 
+    // Complex demo scene — ~100 prims spread across three surfaces
+    // (sphere grid, cylinder ring, perforated slab). Exercises the
+    // raymarcher's per-block pruning + the new global-prune pre-pass
+    // with enough stuff that timing differences are visible.
+    let stressBtn = dropdownItem "Load stress example" None
+    stressBtn.addEventListener (
+        "click",
+        fun _ ->
+            fileDropdown?style?display <- "none"
+            dispatch (ReplaceDocument(Server.Document.stressDocument ()))
+    )
+
     fileBtn.addEventListener (
         "click",
         fun e ->
@@ -79,6 +91,7 @@ let render
     fileDropdown.appendChild (saveBtn :> Node) |> ignore
     fileDropdown.appendChild (loadBtn :> Node) |> ignore
     fileDropdown.appendChild (clearBtn :> Node) |> ignore
+    fileDropdown.appendChild (stressBtn :> Node) |> ignore
     fileMenu.appendChild (fileBtn :> Node) |> ignore
     fileMenu.appendChild (fileDropdown :> Node) |> ignore
     topbar.appendChild (fileMenu :> Node) |> ignore

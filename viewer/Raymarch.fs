@@ -92,6 +92,7 @@ type Raymarch =
           // does front probe + forward walk in one pass, writing both
           // frontDepths and backDepths.
           mutable Pipeline: IGPURenderPipeline option
+          mutable GlobalAnalyzePipeline: IGPUComputePipeline option
           mutable FrontWalkPipeline: IGPUComputePipeline option
           mutable AnalysisPipeline: IGPUComputePipeline option
           mutable PipelineWgsl: (string * string) option
@@ -101,6 +102,9 @@ type Raymarch =
           // viewer scenes rarely have >32 surfaces, which is all a u32
           // can represent.
           CfgBuffer: IGPUBuffer
+          // Scene-wide alive mask — 4 bytes, written once per frame by
+          // `global_analyze_main` over the full frustum AABB.
+          GlobalMaskBuffer: IGPUBuffer
           mutable FrontDepthBuffer: IGPUBuffer
           mutable BackDepthBuffer: IGPUBuffer
           mutable MaskBuffer: IGPUBuffer
@@ -160,6 +164,12 @@ let private blockComputeLayout (device: IGPUDevice) : IGPUBindGroupLayout =
                box
                 {| binding = 3
                    visibility = GPUShaderStage.Compute
+                   buffer = {| ``type`` = "storage" |} |}
+               // Binding 4: scene-wide alive mask (one u32) written by
+               // `global_analyze_main`, read by front_walk + analysis.
+               box
+                {| binding = 4
+                   visibility = GPUShaderStage.Compute
                    buffer = {| ``type`` = "storage" |} |} |] }
 
 let private blockFragmentLayout (device: IGPUDevice) : IGPUBindGroupLayout =
@@ -189,7 +199,25 @@ let private makeSharedBindGroup
         { layout = layout
           entries = [| { binding = 0; resource = box { buffer = buffer } } |] }
 
-let private makeBlockBindGroup
+/// Compute bind group — includes the scene-wide mask at binding 4.
+let private makeBlockComputeBindGroup
+        (device: IGPUDevice)
+        (layout: IGPUBindGroupLayout)
+        (cfg: IGPUBuffer) (front: IGPUBuffer) (back: IGPUBuffer)
+        (masks: IGPUBuffer) (globalMask: IGPUBuffer)
+        : IGPUBindGroup =
+    device.createBindGroup
+        { layout = layout
+          entries =
+            [| { binding = 0; resource = box { buffer = cfg } }
+               { binding = 1; resource = box { buffer = front } }
+               { binding = 2; resource = box { buffer = back } }
+               { binding = 3; resource = box { buffer = masks } }
+               { binding = 4; resource = box { buffer = globalMask } } |] }
+
+/// Fragment bind group — no globalMask (per-block masks are already
+/// filtered through it by `analysis_main`).
+let private makeBlockFragmentBindGroup
         (device: IGPUDevice)
         (layout: IGPUBindGroupLayout)
         (cfg: IGPUBuffer) (front: IGPUBuffer) (back: IGPUBuffer) (masks: IGPUBuffer)
@@ -280,6 +308,9 @@ let create (scene: Scene.Scene) : Raymarch =
 
     // Cfg is 12 × 4 = 48 bytes (matches `struct Cfg` in the shaders).
     let cfgBuffer = uniformBuffer scene.Device 48
+    // Global alive mask — 16 bytes (one u32 + padding to the minimum
+    // binding size).
+    let globalMaskBuffer = storageBuffer scene.Device MIN_STORAGE_BYTES
 
     let frontBuffer = storageBuffer scene.Device (MIN_STORAGE_BYTES)
     let backBuffer = storageBuffer scene.Device (MIN_STORAGE_BYTES)
@@ -296,6 +327,7 @@ let create (scene: Scene.Scene) : Raymarch =
       CameraComputeBindGroup = camComputeBindGroup
 
       Pipeline = None
+      GlobalAnalyzePipeline = None
       FrontWalkPipeline = None
       AnalysisPipeline = None
       PipelineWgsl = None
@@ -308,13 +340,16 @@ let create (scene: Scene.Scene) : Raymarch =
       SurfaceCapacityCount = MIN_STORAGE_BYTES / (FLOATS_PER_SURFACE * 4)
 
       CfgBuffer = cfgBuffer
+      GlobalMaskBuffer = globalMaskBuffer
       FrontDepthBuffer = frontBuffer
       BackDepthBuffer = backBuffer
       MaskBuffer = maskBuffer
       BlockComputeBindGroup =
-        makeBlockBindGroup scene.Device blockComp cfgBuffer frontBuffer backBuffer maskBuffer
+        makeBlockComputeBindGroup scene.Device blockComp cfgBuffer
+            frontBuffer backBuffer maskBuffer globalMaskBuffer
       BlockFragmentBindGroup =
-        makeBlockBindGroup scene.Device blockFrag cfgBuffer frontBuffer backBuffer maskBuffer
+        makeBlockFragmentBindGroup scene.Device blockFrag cfgBuffer
+            frontBuffer backBuffer maskBuffer
       BlocksX = 0
       BlocksY = 0 }
 
@@ -352,10 +387,11 @@ let private ensureBlockCapacity (rm: Raymarch) (blocksX: int) (blocksY: int) =
     rm.MaskBuffer <-
         storageBuffer rm.Scene.Device (totalBlocks * MASK_BYTES_PER_BLOCK)
     rm.BlockComputeBindGroup <-
-        makeBlockBindGroup rm.Scene.Device rm.BlockComputeLayout
+        makeBlockComputeBindGroup rm.Scene.Device rm.BlockComputeLayout
             rm.CfgBuffer rm.FrontDepthBuffer rm.BackDepthBuffer rm.MaskBuffer
+            rm.GlobalMaskBuffer
     rm.BlockFragmentBindGroup <-
-        makeBlockBindGroup rm.Scene.Device rm.BlockFragmentLayout
+        makeBlockFragmentBindGroup rm.Scene.Device rm.BlockFragmentLayout
             rm.CfgBuffer rm.FrontDepthBuffer rm.BackDepthBuffer rm.MaskBuffer
     rm.BlocksX <- blocksX
     rm.BlocksY <- blocksY
@@ -452,6 +488,8 @@ let update (rm: Raymarch) (state: EditorState) =
         | Some (computeSrc, fragmentSrc) ->
             let computeModule =
                 rm.Scene.Device.createShaderModule { code = computeSrc }
+            rm.GlobalAnalyzePipeline <-
+                Some (buildComputePipeline rm.Scene rm.ComputePipelineLayout computeModule "global_analyze_main")
             rm.FrontWalkPipeline <-
                 Some (buildComputePipeline rm.Scene rm.ComputePipelineLayout computeModule "front_walk_main")
             rm.AnalysisPipeline <-
@@ -460,6 +498,7 @@ let update (rm: Raymarch) (state: EditorState) =
                 Some (buildRenderPipeline rm.Scene rm.RenderPipelineLayout fragmentSrc)
         | None ->
             rm.Pipeline <- None
+            rm.GlobalAnalyzePipeline <- None
             rm.FrontWalkPipeline <- None
             rm.AnalysisPipeline <- None
 
@@ -490,8 +529,8 @@ let update (rm: Raymarch) (state: EditorState) =
 /// BEFORE `beginRenderPass` — the fragment reads the buffers these
 /// passes write.
 let encodeCompute (rm: Raymarch) (encoder: IGPUCommandEncoder) =
-    match rm.FrontWalkPipeline, rm.AnalysisPipeline with
-    | Some frontWalkPipe, Some analysisPipe
+    match rm.GlobalAnalyzePipeline, rm.FrontWalkPipeline, rm.AnalysisPipeline with
+    | Some globalPipe, Some frontWalkPipe, Some analysisPipe
         when rm.BlocksX > 0 && rm.BlocksY > 0 ->
         let dispatchX = ceilDiv rm.BlocksX BLOCK_SIZE
         let dispatchY = ceilDiv rm.BlocksY BLOCK_SIZE
@@ -500,8 +539,15 @@ let encodeCompute (rm: Raymarch) (encoder: IGPUCommandEncoder) =
         pass.setBindGroup(1, rm.SlotBindGroup)
         pass.setBindGroup(2, rm.SurfaceBindGroup)
         pass.setBindGroup(3, rm.BlockComputeBindGroup)
+        // 1 thread total — one interval eval over the whole frustum
+        // AABB, writes the scene-wide alive mask.
+        pass.setPipeline globalPipe
+        pass.dispatchWorkgroups(1, 1, 1)
+        // Probe uses the global mask to skip dead surfaces each step.
         pass.setPipeline frontWalkPipe
         pass.dispatchWorkgroups(dispatchX, dispatchY, 1)
+        // Per-block analysis refines to a tighter per-block mask, also
+        // gated by the global mask so dead surfaces skip interval eval.
         pass.setPipeline analysisPipe
         pass.dispatchWorkgroups(dispatchX, dispatchY, 1)
         pass.endPass()

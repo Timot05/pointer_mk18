@@ -63,6 +63,11 @@ struct Cfg {
 @group(3) @binding(1) var<storage, read_write> frontDepths: array<f32>;
 @group(3) @binding(2) var<storage, read_write> backDepths: array<f32>;
 @group(3) @binding(3) var<storage, read_write> masks: array<u32>;
+// Scene-wide alive mask — one u32 produced by `global_analyze_main`
+// over the full frustum AABB. Read by `front_walk_main` to skip
+// surfaces that can't touch the scene, and by `analysis_main` to avoid
+// evaluating their per-block interval at all.
+@group(3) @binding(4) var<storage, read_write> globalMask: array<u32>;
 """
 
     let private FRAGMENT_BINDINGS = """
@@ -125,6 +130,7 @@ fn front_walk_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let ro = world_ray_origin(uv);
   let rd = cam.forward;
   let walk_step = 2.0 * cfg.threshold;
+  let gm = globalMask[0];
 
   var t: f32 = cfg.t_near;
   var found: bool = false;
@@ -133,7 +139,7 @@ fn front_walk_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   for (var i: u32 = 0u; i < cfg.max_probe_steps; i = i + 1u) {
     if (t >= cfg.t_far) { break; }
-    let d = scene_dist(ro + rd * t);
+    let d = scene_dist(ro + rd * t, gm);
     if (d < cfg.threshold) {
       if (!found) { first_hit = t; found = true; }
       last_hit = t;
@@ -154,6 +160,39 @@ fn front_walk_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 """
 
+    /// Global analysis: one thread, one interval evaluation over the
+    /// whole frustum. Sets a bit per surface whose isovalue is inside
+    /// its whole-scene interval. Everything downstream skips surfaces
+    /// with their bit cleared — both the probe's per-step `scene_dist`
+    /// and the per-block `analysis_main`.
+    let private GLOBAL_ANALYSIS_PRELUDE_WGSL = """
+@compute @workgroup_size(1, 1, 1)
+fn global_analyze_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  if (gid.x != 0u || gid.y != 0u) { return; }
+
+  let u_lo = -1.0; let u_hi = 1.0;
+  let v_lo = -1.0; let v_hi = 1.0;
+  let t_lo = cfg.t_near; let t_hi = cfg.t_far;
+
+  let A = cam.aspect * cam.view_half_h;
+  let B = cam.view_half_h;
+  let xi = aabb_axis(u_lo, u_hi, A * cam.right.x,
+                     v_lo, v_hi, B * cam.up.x,
+                     t_lo, t_hi, cam.forward.x,
+                     cam.eye.x);
+  let yi = aabb_axis(u_lo, u_hi, A * cam.right.y,
+                     v_lo, v_hi, B * cam.up.y,
+                     t_lo, t_hi, cam.forward.y,
+                     cam.eye.y);
+  let zi = aabb_axis(u_lo, u_hi, A * cam.right.z,
+                     v_lo, v_hi, B * cam.up.z,
+                     t_lo, t_hi, cam.forward.z,
+                     cam.eye.z);
+  let ibox = IntvBox(xi, yi, zi);
+
+  var mask: u32 = 0u;
+"""
+
     /// Analysis: for each block whose front probe hit something, build
     /// the world AABB of the block region × [tStart, tEnd] and run
     /// interval-SDF evaluation per surface. A surface is alive iff its
@@ -168,8 +207,9 @@ fn analysis_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let idx = gid.y * cfg.blocks_x + gid.x;
   let tStart = frontDepths[idx];
   let tEnd   = backDepths[idx];
+  let gm = globalMask[0];
 
-  if (tStart >= cfg.t_far) {
+  if (tStart >= cfg.t_far || gm == 0u) {
     masks[idx] = 0u;
     return;
   }
@@ -313,34 +353,48 @@ struct FOut {
 
     // ── Per-surface snippets ────────────────────────────────────────────
 
-    /// Emit a per-surface `scene_dist(p)` helper returning
-    /// min_i |eval_sdf_i(p) - iso_i| for all enabled surfaces.
+    /// Emit a per-surface `scene_dist(p, gm)` helper returning
+    /// min_i |eval_sdf_i(p) - iso_i| across all enabled surfaces, but
+    /// only those whose bit is set in `gm` — the scene-wide alive mask
+    /// produced by `global_analyze_main`. Surfaces ruled out by the
+    /// whole-frustum interval pass cost nothing beyond a bit test.
     let private emitSceneDist (sb: StringBuilder) (surfaces: FieldSurface list) =
-        sb.AppendLine("fn scene_dist(p: vec3<f32>) -> f32 {") |> ignore
+        sb.AppendLine("fn scene_dist(p: vec3<f32>, gm: u32) -> f32 {") |> ignore
         sb.AppendLine("  var md: f32 = 1.0e10;") |> ignore
         surfaces |> List.iteri (fun i _ ->
             sb.AppendLine("  {") |> ignore
-            sb.AppendLine($"    let st = surfaceStates[{i}];") |> ignore
-            sb.AppendLine("    if (st.isoEnabled.y >= 0.5) {") |> ignore
-            sb.AppendLine($"      let d = abs(eval_sdf_{i}(p) - st.isoEnabled.x);") |> ignore
-            sb.AppendLine("      if (d < md) { md = d; }") |> ignore
+            sb.AppendLine($"    if ((gm & (1u << {i}u)) != 0u) {{") |> ignore
+            sb.AppendLine($"      let st = surfaceStates[{i}];") |> ignore
+            sb.AppendLine("      if (st.isoEnabled.y >= 0.5) {") |> ignore
+            sb.AppendLine($"        let d = abs(eval_sdf_{i}(p) - st.isoEnabled.x);") |> ignore
+            sb.AppendLine("        if (d < md) { md = d; }") |> ignore
+            sb.AppendLine("      }") |> ignore
             sb.AppendLine("    }") |> ignore
             sb.AppendLine("  }") |> ignore)
         sb.AppendLine("  return md;") |> ignore
         sb.AppendLine("}") |> ignore
 
-    /// Per-surface mask-setting inside `analysis_main`. A surface is
-    /// alive iff its interval [lo, hi] contains its isovalue — the
-    /// surface's isosurface could pass through the block.
-    let private emitAnalysisMask (sb: StringBuilder) (surfaces: FieldSurface list) =
+    /// Per-surface mask-setting body. A surface is alive iff its
+    /// interval [lo, hi] contains its isovalue — the isosurface could
+    /// pass through the box. `gate` is either `None` (unconditional,
+    /// used by the whole-frustum global pass) or a WGSL u32 expression
+    /// that has to be non-zero for the surface to be considered.
+    let private emitMaskFromInterval
+            (sb: StringBuilder) (surfaces: FieldSurface list) (gate: string option) =
         surfaces |> List.iteri (fun i _ ->
             sb.AppendLine("  {") |> ignore
-            sb.AppendLine($"    let st = surfaceStates[{i}];") |> ignore
-            sb.AppendLine("    if (st.isoEnabled.y >= 0.5) {") |> ignore
-            sb.AppendLine($"      let iv = interval_sdf_{i}(ibox);") |> ignore
-            sb.AppendLine("      let iso = st.isoEnabled.x;") |> ignore
-            sb.AppendLine("      if (iv.lo <= iso && iso <= iv.hi) {") |> ignore
-            sb.AppendLine($"        mask = mask | (1u << {i}u);") |> ignore
+            match gate with
+            | Some cond ->
+                sb.AppendLine($"    if (({cond} & (1u << {i}u)) != 0u) {{") |> ignore
+            | None ->
+                sb.AppendLine("    if (true) {") |> ignore
+            sb.AppendLine($"      let st = surfaceStates[{i}];") |> ignore
+            sb.AppendLine("      if (st.isoEnabled.y >= 0.5) {") |> ignore
+            sb.AppendLine($"        let iv = interval_sdf_{i}(ibox);") |> ignore
+            sb.AppendLine("        let iso = st.isoEnabled.x;") |> ignore
+            sb.AppendLine("        if (iv.lo <= iso && iso <= iv.hi) {") |> ignore
+            sb.AppendLine($"          mask = mask | (1u << {i}u);") |> ignore
+            sb.AppendLine("        }") |> ignore
             sb.AppendLine("      }") |> ignore
             sb.AppendLine("    }") |> ignore
             sb.AppendLine("  }") |> ignore)
@@ -388,9 +442,16 @@ struct FOut {
         sb.AppendLine(GpuSdf.generateIntervalFunctions surfaces) |> ignore
         sb.Append(BLOCK_HELPERS) |> ignore
         emitSceneDist sb surfaces
+        // 1. Whole-frustum alive-mask pre-pass.
+        sb.Append(GLOBAL_ANALYSIS_PRELUDE_WGSL) |> ignore
+        emitMaskFromInterval sb surfaces None
+        sb.AppendLine("  globalMask[0] = mask;") |> ignore
+        sb.AppendLine("}") |> ignore
+        // 2. Front + walk probe (uses globalMask to skip dead surfaces).
         sb.Append(FRONT_WALK_WGSL) |> ignore
+        // 3. Per-block analysis (further tightens by per-block AABB).
         sb.Append(ANALYSIS_PRELUDE_WGSL) |> ignore
-        emitAnalysisMask sb surfaces
+        emitMaskFromInterval sb surfaces (Some "gm")
         sb.AppendLine("  masks[idx] = mask;") |> ignore
         sb.AppendLine("}") |> ignore
         sb.ToString()

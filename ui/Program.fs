@@ -105,10 +105,10 @@ let private actionListSignature (doc: DocumentView) =
         doc.Errors
         |> List.map (fun e -> e.ActionId)
         |> Set.ofList
-    // Wiring state and the inline action-picker flag both reshape
-    // the action list, so fold them into the signature. EditFocusIdx
-    // only changes row classes, but we still need to re-render for it.
-    let wiringSig = doc.WiringActionId
+    // Expansion set + the inline action-picker flag both reshape the
+    // action list, so fold them into the signature. EditFocusIdx only
+    // changes row classes but still requires a re-render to apply.
+    let expandedSig = doc.ExpandedActionIds
     let pickerSig = doc.ActionPickerOpen
     let focusSig = doc.EditFocusIdx
     let editingSig = doc.EditingInputField
@@ -119,7 +119,7 @@ let private actionListSignature (doc: DocumentView) =
         a.Name,
         a.Visibility,
         Set.contains a.Id actionErrors)
-    |> fun rows -> sprintf "%A|%b|%d|%A|%d|%A" wiringSig pickerSig focusSig editingSig refPickSig rows
+    |> fun rows -> sprintf "%A|%b|%d|%A|%d|%A" expandedSig pickerSig focusSig editingSig refPickSig rows
 
 let private uiSignature (state: EditorState) =
     sprintf
@@ -132,10 +132,10 @@ let private uiSignature (state: EditorState) =
         state.ConstraintPlacementMode
         state.ConstraintPlacementDraft
         state.ConstraintPlacementCursor
-        // Wire mode lives at the shell level (Shell.fs owns the
-        // `.panel-host-wire` element + the `.is-wiring` layout class),
-        // so a wiring toggle has to trigger a full shell re-render.
-        state.WiringActionId
+        // Expansion changes reshape the action list but not the
+        // shell; we still include them in the UI signature so Shell
+        // and the panel stay in sync.
+        state.ExpandedActionIds
         state.ViewerMode
 
 let mutable private lastCompiled = store.State.Compiled

@@ -339,17 +339,23 @@ let renderFrame
             visibleFrames viewState.HighlightedTarget viewState.HighlightedTargets
             state.Doc.SelectedId
 
-    // Translate gizmo rides on the same vertex format and pipeline as
-    // frame gizmos — both are handled by `Gizmo.wgsl` lines. Appended
-    // after frame gizmos so it draws on top.
-    let translateGizmoData =
-        match TranslateGizmo.contextOf state with
-        | Some ctx ->
-            let worldPerPx = (2.0 * Camera.viewHalfH scene.Camera) / max (float h) 1.0
-            TranslateGizmo.buildVertices ctx worldPerPx
-        | None -> [||]
+    let translateCtx = TranslateGizmo.contextOf state
+    let rotateCtx = RotateGizmo.contextOf state
+    let halfPlaneCtx = HalfPlaneGizmo.contextOf state
+    let worldPerPx = (2.0 * Camera.viewHalfH scene.Camera) / max (float h) 1.0
 
-    let gizmoData = Array.append frameGizmoData translateGizmoData
+    // Thin line pipeline: frame gizmos + translate plane outlines
+    // (same Gizmo.wgsl format, line-list).
+    let translateThinData =
+        match translateCtx with
+        | Some ctx ->
+            TranslateGizmo.buildThinVertices ctx worldPerPx
+        | None -> [||]
+    let rotateLineData =
+        match rotateCtx with
+        | Some ctx -> RotateGizmo.buildLineVertices ctx worldPerPx
+        | None -> [||]
+    let gizmoData = Array.concat [| frameGizmoData; translateThinData; rotateLineData |]
     if gizmoData.Length > 0 then
         let buf = upload scene.Pool slots.FrameGizmo gizmoData
         colorPass.setPipeline scene.GizmoPipeline
@@ -357,6 +363,79 @@ let renderFrame
         colorPass.setBindGroup(1, scene.ViewportBindGroup)
         colorPass.setVertexBuffer(0, buf)
         colorPass.draw (gizmoData.Length / 12)
+
+    let rotateActiveHandle =
+        match state.ActiveSession with
+        | Some (RotateAxisDrag s) -> Some(TargetGizmoHandle(s.ActionId, GRotateAxis))
+        | Some (RotateAngleDrag s) -> Some(TargetGizmoHandle(s.ActionId, GRotateAngle))
+        | _ -> None
+    let rotatePointData =
+        match rotateCtx with
+        | Some ctx ->
+            let activeHandle =
+                match rotateActiveHandle with
+                | Some(TargetGizmoHandle(aid, h)) when aid = ctx.ActionId -> Some h
+                | _ -> None
+            RotateGizmo.buildPointVertices ctx worldPerPx activeHandle
+        | None -> [||]
+    if rotatePointData.Length > 0 then
+        let buf = upload scene.Pool slots.FrameOriginPoint rotatePointData
+        colorPass.setPipeline scene.WorldPointPipeline
+        colorPass.setBindGroup(0, scene.CameraBindGroup)
+        colorPass.setBindGroup(1, scene.ViewportBindGroup)
+        colorPass.setVertexBuffer(0, scene.PointQuadBuffer)
+        colorPass.setVertexBuffer(1, buf)
+        colorPass.drawInstanced(6, rotatePointData.Length / 8)
+
+    // Thick pipeline: translate-gizmo axes + arrow tips + (optional)
+    // dashed drag guide. Separate pipeline because the thick quads are
+    // rendered as triangle-list camera-facing geometry (see
+    // `viewer/Shaders/TranslateGizmoThick.wgsl`).
+    match translateCtx with
+    | Some ctx ->
+        let activeAxis =
+            match state.ActiveSession with
+            | Some (GizmoAxisDrag s) when s.ActionId = ctx.ActionId -> Some s.AxisIndex
+            | _ -> None
+        let viewportExtentPx = float32 (max w h)
+        let thickData = TranslateGizmo.buildThickVertices ctx activeAxis viewportExtentPx
+        if thickData.Length > 0 then
+            let buf = upload scene.Pool slots.TranslateGizmo thickData
+            colorPass.setPipeline scene.TranslateGizmoPipeline
+            colorPass.setBindGroup(0, scene.CameraBindGroup)
+            colorPass.setBindGroup(1, scene.ViewportBindGroup)
+            colorPass.setVertexBuffer(0, buf)
+            colorPass.draw (thickData.Length / 13)
+    | None -> ()
+
+    match rotateCtx with
+    | Some ctx ->
+        let thickData = RotateGizmo.buildThickVertices ctx
+        if thickData.Length > 0 then
+            let buf = upload scene.Pool slots.TranslateGizmo thickData
+            colorPass.setPipeline scene.TranslateGizmoPipeline
+            colorPass.setBindGroup(0, scene.CameraBindGroup)
+            colorPass.setBindGroup(1, scene.ViewportBindGroup)
+            colorPass.setVertexBuffer(0, buf)
+            colorPass.draw (thickData.Length / 13)
+    | None -> ()
+
+    match halfPlaneCtx with
+    | Some ctx ->
+        let dragActive =
+            match state.ActiveSession with
+            | Some (HalfPlaneOffsetDrag s) when s.ActionId = ctx.ActionId -> true
+            | _ -> false
+        let viewportExtentPx = float32 (max w h)
+        let thickData = HalfPlaneGizmo.buildThickVertices ctx worldPerPx dragActive viewportExtentPx
+        if thickData.Length > 0 then
+            let buf = upload scene.Pool slots.TranslateGizmo thickData
+            colorPass.setPipeline scene.TranslateGizmoPipeline
+            colorPass.setBindGroup(0, scene.CameraBindGroup)
+            colorPass.setBindGroup(1, scene.ViewportBindGroup)
+            colorPass.setVertexBuffer(0, buf)
+            colorPass.draw (thickData.Length / 13)
+    | None -> ()
 
     colorPass.endPass()
 

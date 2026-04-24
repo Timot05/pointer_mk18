@@ -536,6 +536,7 @@ let ``Pickable list is stable across compiles of the same input`` () =
         | PickDimension(id, s, i, _) -> sprintf "dim|%d|%s|%d" id s i
         | PickFrameOrigin(id, f) -> sprintf "frame-origin|%d|%s" id f
         | PickFrameAxis(id, f, part) -> sprintf "frame-axis|%d|%s|%s" id f part
+        | PickGizmoHandle(id, a, h) -> sprintf "gizmo|%d|%s|%A" id a h
     let k1 = r1.Pickables |> List.map key
     let k2 = r2.Pickables |> List.map key
     Assert.Equal<string list>(k1, k2)

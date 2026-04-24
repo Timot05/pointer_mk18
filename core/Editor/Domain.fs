@@ -335,29 +335,69 @@ module Document =
             SelectedId = if doc.SelectedId = Some id then None else doc.SelectedId }
 
     // ── Visibility helpers ──────────────────────────────────────────
+    //
+    // Visibility behaviour is driven by the action's *output* type, not
+    // its kind. A `Translate` chained onto a Frame only has a gizmo to
+    // show, but one chained onto a Field can render as an isosurface
+    // or field-line slice — the cycle differs accordingly. Callers
+    // pass the post-typecheck output type from `Compiled.TypeMap`;
+    // when that's missing (pre-compile, missing refs, etc.) we fall
+    // back to the binary "gizmo/hidden" toggle.
 
-    /// Default visibility for a newly-added action. Frames / sketches /
-    /// origin show their gizmo so the user doesn't have to toggle on
-    /// every insert; field-producing kinds show the isosurface so a
-    /// fresh primitive is immediately visible.
+    /// Default visibility for a newly-added action — picked before the
+    /// post-insert typecheck runs, so it's kind-only. `recompileState`
+    /// later normalises to the correct mode once the output type is
+    /// known (see `normalizeVisibility`).
     let defaultVisibility (kind: ActionKind) : ActionVisibility =
         match kind with
         | Origin | Translate _ | Rotate _ | Move _ | Sketch _ -> VVisible
+        // Half-planes are infinite — an isosurface is a single boundary
+        // plane and not very informative. Default to the iso-line slice
+        // which shows the distance-field structure.
+        | HalfPlane _ -> VFieldLines
         | _ -> VIsosurface
 
-    /// Cycle order on `v`. Field-producing kinds rotate through three
-    /// modes; everything else is a binary toggle.
-    let cycleVisibility (kind: ActionKind) (current: ActionVisibility) : ActionVisibility =
+    /// Cycle order on `v`. Field outputs normally rotate through three
+    /// modes (Hidden → Isosurface → FieldLines → Hidden); HalfPlane
+    /// skips isosurface (not useful for an infinite primitive) and
+    /// toggles Hidden ↔ FieldLines. Non-field kinds (Frame / Sketch /
+    /// Mesh) are a binary Hidden ↔ Visible toggle.
+    let cycleVisibility (kind: ActionKind) (isFieldOutput: bool) (current: ActionVisibility) : ActionVisibility =
         match kind with
-        | Origin | Translate _ | Rotate _ | Move _ | Sketch _ ->
+        | HalfPlane _ ->
             match current with
-            | VHidden -> VVisible
+            | VHidden -> VFieldLines
             | _ -> VHidden
-        | _ ->
+        | _ when isFieldOutput ->
             match current with
             | VHidden -> VIsosurface
             | VIsosurface -> VFieldLines
             | VFieldLines | VVisible -> VHidden
+        | _ ->
+            match current with
+            | VHidden -> VVisible
+            | _ -> VHidden
+
+    /// Snap visibility to a mode valid for the given output type. Used
+    /// after recompile so a Translate that used to wrap a field and
+    /// had `VIsosurface` drops to `VVisible` when its child is rewired
+    /// to a frame (and vice versa). HalfPlanes additionally coerce
+    /// Isosurface/Visible to FieldLines — the isosurface mode isn't
+    /// exposed through the cycle so any stale value is an invalid state.
+    let normalizeVisibility (kind: ActionKind) (isFieldOutput: bool) (current: ActionVisibility) : ActionVisibility =
+        match kind with
+        | HalfPlane _ ->
+            match current with
+            | VHidden -> VHidden
+            | _ -> VFieldLines
+        | _ when isFieldOutput ->
+            match current with
+            | VVisible -> VIsosurface
+            | _ -> current
+        | _ ->
+            match current with
+            | VIsosurface | VFieldLines -> VVisible
+            | _ -> current
 
     let setVisibility (id: ActionId) (visibility: ActionVisibility) (doc: Document) : Document =
         { doc with

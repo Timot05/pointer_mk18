@@ -15,6 +15,19 @@ namespace Server
 
 type PickId = int
 
+/// Translate-gizmo handle kinds. Indices: 0=X 1=Y 2=Z for axes; 0=XY
+/// 1=YZ 2=XZ for planes. The handle carries no geometry — all
+/// positions are derived at render time from the action's resolved
+/// world transform + the camera's world-per-pixel. The pick-compute
+/// dispatch builds matching geometry buffers and shares the pick id.
+type GizmoHandle =
+    | GAxis of axis: int
+    | GPlane of plane: int
+    | GRotateAxis
+    | GRotateAngle
+    | GHalfPlaneAxis of axis: int
+    | GHalfPlaneOffset
+
 type Pickable =
     // Sketch entities — coords live in existing sketch entity slots.
     | PickPoint of pickId: PickId * sketchId: ActionId * entityId: string * xSlot: Slot * ySlot: Slot
@@ -28,6 +41,9 @@ type Pickable =
     // Frame gizmos.
     | PickFrameOrigin of pickId: PickId * frameId: ActionId
     | PickFrameAxis of pickId: PickId * frameId: ActionId * part: string
+    // Translate-gizmo handles (ephemeral — rebuilt per frame for the
+    // selected Translate action, not baked into the compile result).
+    | PickGizmoHandle of pickId: PickId * actionId: ActionId * handle: GizmoHandle
 
 type SelectionTarget =
     | TargetPoint of sketchId: ActionId * entityId: string
@@ -38,6 +54,12 @@ type SelectionTarget =
     | TargetDimension of sketchId: ActionId * constraintIndex: int
     | TargetFrameOrigin of frameId: ActionId
     | TargetFrameAxis of frameId: ActionId * part: string
+    /// Gizmo handles are not real "selectable" things — they trigger
+    /// drag sessions on click. This target exists only so the
+    /// reduceCandidates / priority plumbing can flow them through the
+    /// same pipeline as everything else; they never end up in
+    /// `SelectedTargets`.
+    | TargetGizmoHandle of actionId: ActionId * handle: GizmoHandle
 
 type PickCandidateInput =
     { PickId: PickId
@@ -56,6 +78,7 @@ module Pickable =
         | PickDimension(id, _, _, _) -> id
         | PickFrameOrigin(id, _) -> id
         | PickFrameAxis(id, _, _) -> id
+        | PickGizmoHandle(id, _, _) -> id
 
     /// Resolve a pickable to the ActionId the server should select when
     /// this pickable is clicked.
@@ -69,6 +92,7 @@ module Pickable =
         | PickDimension(_, sketchId, _, _) -> sketchId
         | PickFrameOrigin(_, frameId) -> frameId
         | PickFrameAxis(_, frameId, _) -> frameId
+        | PickGizmoHandle(_, actionId, _) -> actionId
 
     let selectionTarget =
         function
@@ -80,26 +104,28 @@ module Pickable =
         | PickDimension(_, sketchId, constraintIndex, _) -> TargetDimension(sketchId, constraintIndex)
         | PickFrameOrigin(_, frameId) -> TargetFrameOrigin(frameId)
         | PickFrameAxis(_, frameId, part) -> TargetFrameAxis(frameId, part)
+        | PickGizmoHandle(_, actionId, handle) -> TargetGizmoHandle(actionId, handle)
 
     let sameTarget target pickable =
         selectionTarget pickable = target
 
-    /// Selection priority ordering, lower wins. Frames sit below sketch
-    /// entities but above loops — fat gizmos shouldn't steal clicks from
-    /// sketch geometry, but still need to beat the filled-face hit
-    /// region of a loop. Loops are the widest hit region of all, so
-    /// hovering anywhere inside a loop resolves to whatever narrower
-    /// shape the cursor is actually aimed at.
+    /// Selection priority ordering, lower wins. Gizmo handles are the
+    /// narrowest interactive targets — they sit above everything else
+    /// so clicks on an axis shaft never get stolen by an underlying
+    /// sketch point. Frames sit below sketch entities but above loops
+    /// — fat frame gizmos shouldn't steal clicks from sketch geometry,
+    /// but still beat the filled-face hit region of a loop.
     let selectionPriority =
         function
-        | TargetPoint _ -> 0
+        | TargetGizmoHandle _ -> 0
+        | TargetPoint _ -> 1
         | TargetLine _
         | TargetCircle _
-        | TargetArc _ -> 1
-        | TargetDimension _ -> 2
+        | TargetArc _ -> 2
+        | TargetDimension _ -> 3
         | TargetFrameOrigin _
-        | TargetFrameAxis _ -> 3
-        | TargetLoop _ -> 4
+        | TargetFrameAxis _ -> 4
+        | TargetLoop _ -> 5
 
     let reduceCandidates (pickables: Pickable list) (candidates: PickCandidateInput list) : Pickable option =
         let byId = pickables |> List.map (fun p -> pickId p, p) |> Map.ofList

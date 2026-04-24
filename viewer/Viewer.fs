@@ -119,7 +119,8 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 Kernel.Background.create scene
                 |> Promise.iter (fun bg ->
                     background.Value <- Some bg
-                    pushIr bg)
+                    if AppStore.store.State.ViewerMode = IntervalKernel then
+                        pushIr bg)
 
                 // Adaptive render-resolution scale. Dropped to
                 // `LOW_RES_SCALE` while the camera's moving so the heavy
@@ -164,17 +165,24 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                     let compiled = box state.Compiled
                     let slots = box state.SlotValues
                     let compiledChanged = compiled <> lastCompiled
-                    if compiledChanged then
-                        let model = ViewerPipeline.viewerModel state
-                        pickableById <-
-                            model.Pickables
-                            |> List.map (fun p -> Pickable.pickId p, p)
-                            |> Map.ofList
+                    let model = ViewerPipeline.viewerModel state
+                    pickableById <-
+                        (model.Pickables
+                         @ TranslateGizmo.ephemeralPickablesForState state
+                         @ RotateGizmo.ephemeralPickablesForState state)
+                         @ HalfPlaneGizmo.ephemeralPickablesForState state
+                        |> List.map (fun p -> Pickable.pickId p, p)
+                        |> Map.ofList
                     // IR depends on topology (Compiled), values
                     // (SlotValues — replaced on every drag/edit), *and*
                     // the Doc (display toggles don't touch the first two).
+                    // Only push to the kernel when that mode is active —
+                    // in Raymarch mode the kernel's output is unused and
+                    // running it is both wasteful and a source of worker
+                    // crashes on edge-case IR.
                     let doc = box state.Doc
-                    if compiledChanged || slots <> lastSlotValues || doc <> lastDoc then
+                    if state.ViewerMode = IntervalKernel
+                       && (compiledChanged || slots <> lastSlotValues || doc <> lastDoc) then
                         match background.Value with
                         | Some bg -> pushIr bg
                         | None ->

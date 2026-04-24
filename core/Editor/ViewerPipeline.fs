@@ -109,34 +109,29 @@ module ViewerPipeline =
         | "Y" -> { X = 1.0; Y = 0.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }, { X = 0.0; Y = 1.0; Z = 0.0 }
         | _ -> { X = 1.0; Y = 0.0; Z = 0.0 }, { X = 0.0; Y = 1.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }
 
-    /// Walks down a FieldNode accumulating its leading rigid transforms so
-    /// the field slice can be rendered in world space.
-    let rec private leadingFieldTransform (state: EditorState) (field: FieldNode) (acc: RigidTransform) =
-        let slot (s: Slot) = state.SlotValues.[s]
-
-        match field with
-        | FTranslate(x, y, z, child) ->
-            let step = RigidTransform.translate { X = slot x; Y = slot y; Z = slot z }
-            leadingFieldTransform state child (acc * step)
-        | FRotate(ax, ay, az, angle, child) ->
-            let step =
-                RigidTransform.fromAxisAngle
-                    { X = slot ax
-                      Y = slot ay
-                      Z = slot az }
-                    (slot angle)
-
-            leadingFieldTransform state child (acc * step)
-        | FFieldOp(_, _, child) -> leadingFieldTransform state child acc
-        | _ -> acc
+    /// Thin shim — the real implementation lives in `Editor` so the
+    /// scene-interaction code can reuse it without creating a circular
+    /// dependency with `ViewerPipeline`.
+    let leadingFieldTransform = Editor.leadingFieldTransform
 
     /// Slice placement for any action with `VFieldLines` visibility.
-    /// No per-action plane / offset / extent state yet — default to the
-    /// "Z" slice (XY plane through the action's leading frame) with a
-    /// fixed extent. Will become configurable later.
+    /// No per-action plane / offset / extent state yet — defaults per
+    /// kind. Will become configurable later.
     let private DEFAULT_SLICE_PLANE = "Z"
     let private DEFAULT_SLICE_OFFSET = 0.0
     let private DEFAULT_SLICE_EXTENT = 20.0
+
+    /// Pick a slice-plane name such that iso-lines of the action's
+    /// distance field render usefully. Most primitives slice through
+    /// the XY plane. A half-plane's distance field is constant along
+    /// any plane perpendicular to its axis (degenerate), so we pick a
+    /// slice plane that *contains* that axis — iso-lines on it run
+    /// perpendicular to the axis, which is what the user sees.
+    let private slicePlaneFor (kind: ActionKind) : string =
+        match kind with
+        | HalfPlane("Z", _, _) -> "X"
+        | HalfPlane _ -> "Z"
+        | _ -> DEFAULT_SLICE_PLANE
 
     let private activeFieldSlices (state: EditorState) : FieldSliceView list =
         let surfaceIndexByAction =
@@ -152,7 +147,7 @@ module ViewerPipeline =
                 | None -> None
                 | Some(surfaceIndex, field) ->
                     let frame = leadingFieldTransform state field RigidTransform.Identity
-                    let localX, localY, localN = localSliceBasis DEFAULT_SLICE_PLANE
+                    let localX, localY, localN = localSliceBasis (slicePlaneFor action.Kind)
                     let planeX = frame.Rot.Rotate(localX)
                     let planeY = frame.Rot.Rotate(localY)
                     let planeN = frame.Rot.Rotate(localN)

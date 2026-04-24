@@ -37,6 +37,7 @@ type Scene =
       TriPipeline: IGPURenderPipeline
       PointPipeline: IGPURenderPipeline
       GizmoPipeline: IGPURenderPipeline
+      TranslateGizmoPipeline: IGPURenderPipeline
       WorldPointPipeline: IGPURenderPipeline
       LabelPipeline: IGPURenderPipeline
       BackgroundPipeline: IGPURenderPipeline
@@ -189,6 +190,8 @@ let create
     let lineShader = device.createShaderModule { code = Shaders.line }
     let pointShader = device.createShaderModule { code = Shaders.point }
     let gizmoShader = device.createShaderModule { code = Shaders.gizmo }
+    let translateGizmoThickShader =
+        device.createShaderModule { code = Shaders.translateGizmoThick }
     let worldPointShader = device.createShaderModule { code = Shaders.worldPoint }
     let labelShader = device.createShaderModule { code = Shaders.label }
 
@@ -310,6 +313,33 @@ let create
                    depthStencil =
                     {| format = "depth24plus"; depthWriteEnabled = false; depthCompare = "always" |} |})
 
+    // ── Translate gizmo (thick camera-facing quads + arrow tips) ─────
+    // Vertex layout (13 floats / 52 bytes):
+    //   anchor(xyz) dir(xyz) offset(xy) color(rgba) dash_scale
+    let translateGizmoPipeline =
+        device.createRenderPipeline
+            (box
+                {| layout = camViewportLayout
+                   vertex =
+                    {| ``module`` = translateGizmoThickShader
+                       entryPoint = "vs"
+                       buffers =
+                        [| {| arrayStride = 13 * 4
+                              stepMode = "vertex"
+                              attributes =
+                                [| {| shaderLocation = 0; offset = 0;  format = "float32x3" |}
+                                   {| shaderLocation = 1; offset = 12; format = "float32x3" |}
+                                   {| shaderLocation = 2; offset = 24; format = "float32x2" |}
+                                   {| shaderLocation = 3; offset = 32; format = "float32x4" |}
+                                   {| shaderLocation = 4; offset = 48; format = "float32" |} |] |} |] |}
+                   fragment =
+                    {| ``module`` = translateGizmoThickShader
+                       entryPoint = "fs"
+                       targets = [| {| format = format; blend = alphaBlend () |} |] |}
+                   primitive = {| topology = "triangle-list" |}
+                   depthStencil =
+                    {| format = "depth24plus"; depthWriteEnabled = false; depthCompare = "always" |} |})
+
     // ── World-space point (no frame uniform) + pick variant ──────────
     let worldPointPipeline =
         device.createRenderPipeline
@@ -335,7 +365,7 @@ let create
                        targets = [| {| format = format; blend = alphaBlend () |} |] |}
                    primitive = {| topology = "triangle-list" |}
                    depthStencil =
-                    {| format = "depth24plus"; depthWriteEnabled = false; depthCompare = "less" |} |})
+                    {| format = "depth24plus"; depthWriteEnabled = false; depthCompare = "always" |} |})
 
     // ── MSDF label pipeline ──────────────────────────────────────────
     let labelPipeline =
@@ -430,6 +460,7 @@ let create
       TriPipeline = triPipeline
       PointPipeline = pointPipeline
       GizmoPipeline = gizmoPipeline
+      TranslateGizmoPipeline = translateGizmoPipeline
       WorldPointPipeline = worldPointPipeline
       LabelPipeline = labelPipeline
       BackgroundPipeline = backgroundPipeline

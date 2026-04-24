@@ -588,35 +588,30 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     let mutable dropIndex : int option = None
     let mutable dropBefore = false
 
-    // Edit-mode snapshot — the action whose inputs are being expanded
-    // below it in the list.
-    let wiredIdx =
-        doc.WiringActionId
-        |> Option.bind (fun id ->
-            actions |> Array.tryFindIndex (fun a -> a.Id = id))
-
     // When a ref input is being picked, the candidate at RefPickIdx
     // gets highlighted on its own action row above, so the user sees
     // which upstream action Enter will assign.
     let refPickCandidateId : ActionId option =
-        match wiredIdx, doc.EditingInputField with
-        | Some wi, Some field ->
-            let wired = actions.[wi]
-            let input =
-                inputsOf wired.Kind
-                |> List.tryFind (fun i ->
-                    match i with
-                    | RefDisplay s -> s.Field = field
-                    | _ -> false)
-            match input with
-            | Some (RefDisplay s) ->
-                let candidates =
-                    Map.tryFind s.AcceptedKey doc.RefOptions
-                    |> Option.defaultValue []
-                if doc.RefPickIdx >= 0 && doc.RefPickIdx < candidates.Length then
-                    Some candidates.[doc.RefPickIdx]
-                else None
-            | _ -> None
+        match doc.SelectedId, doc.EditingInputField with
+        | Some selId, Some field when Set.contains selId doc.ExpandedActionIds ->
+            match actions |> Array.tryFind (fun a -> a.Id = selId) with
+            | Some sel ->
+                let input =
+                    inputsOf sel.Kind
+                    |> List.tryFind (fun i ->
+                        match i with
+                        | RefDisplay s -> s.Field = field
+                        | _ -> false)
+                match input with
+                | Some (RefDisplay s) ->
+                    let candidates =
+                        Map.tryFind s.AcceptedKey doc.RefOptions
+                        |> Option.defaultValue []
+                    if doc.RefPickIdx >= 0 && doc.RefPickIdx < candidates.Length then
+                        Some candidates.[doc.RefPickIdx]
+                    else None
+                | _ -> None
+            | None -> None
         | _ -> None
 
     let clearDropIndicators () =
@@ -630,19 +625,13 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
         let row = renderRow dispatch doc action
         rows.[i] <- row
 
-        // Wiring mode's drop zones + bubble tray live in the sibling
-        // `WireColumn` panel; here we only need to render empty spacer
-        // rows below the wired action so the action list stays
-        // vertically aligned with the bubble rows in the wire column.
-        ()
+        let expanded = Set.contains action.Id doc.ExpandedActionIds
+        if expanded then row.classList.add "is-expanded"
 
-        // In edit mode, highlight whichever row (action or input) has
-        // keyboard focus. EditFocusIdx = 0 means the action row itself;
-        // 1..N means the Nth input row.
-        match wiredIdx with
-        | Some wi when i = wi && doc.EditFocusIdx = 0 ->
+        // Keyboard focus lands on the action row itself when
+        // EditFocusIdx = 0 AND the action is selected.
+        if doc.SelectedId = Some action.Id && doc.EditFocusIdx = 0 then
             row.classList.add "is-edit-focused"
-        | _ -> ()
 
         if refPickCandidateId = Some action.Id then
             row.classList.add "is-pick-candidate"
@@ -686,20 +675,20 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
 
         list.appendChild (row :> Node) |> ignore
 
-        // Input rows — expanded directly below the action being
-        // edited. Shows label + current value for every ref / scalar
-        // / select / check input the action has. Editing comes from
-        // the keyboard handlers (Enter / Arrow keys) in a later pass.
-        match wiredIdx with
-        | Some wi when i = wi ->
+        // Input rows — rendered whenever the action is in
+        // `ExpandedActionIds`. Only the SELECTED action's focus index
+        // applies (keyboard navigation never lands focus on a
+        // non-selected action's inputs; clicking another action
+        // collapses to its action row).
+        if expanded then
             let inputs = inputsOf action.Kind
+            let selectedHere = doc.SelectedId = Some action.Id
             inputs
             |> List.iteri (fun ii input ->
                 let inputRow = renderInputRow dispatch doc action.Id input
-                if doc.EditFocusIdx = ii + 1 then
+                if selectedHere && doc.EditFocusIdx = ii + 1 then
                     inputRow.classList.add "is-focused"
                 list.appendChild (inputRow :> Node) |> ignore)
-        | _ -> ()
 
     // Drop in empty space → append at end
     list.addEventListener (

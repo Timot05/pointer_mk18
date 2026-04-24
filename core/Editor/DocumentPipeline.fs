@@ -9,7 +9,7 @@ type DocumentView =
     { Name: string
       Actions: DocAction list
       SelectedId: string option
-      WiringActionId: string option
+      ExpandedActionIds: Set<ActionId>
       EditFocusIdx: int
       EditingInputField: ActionParamField option
       EditingInputInitial: string option
@@ -60,7 +60,7 @@ module DocumentPipeline =
         { Name = state.Doc.Name
           Actions = state.Doc.Actions
           SelectedId = state.Doc.SelectedId
-          WiringActionId = state.WiringActionId
+          ExpandedActionIds = state.ExpandedActionIds
           EditFocusIdx = state.EditFocusIdx
           EditingInputField = state.EditingInputField
           EditingInputInitial = state.EditingInputInitial

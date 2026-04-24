@@ -29,6 +29,14 @@ let private addEvent (target: obj) (name: string) (h: obj -> unit) : unit = jsNa
 
 let private DRAG_THRESHOLD_PX = 4.0
 
+let private toPointerRay (ray: Camera.Ray) : PointerRay =
+    { Origin = ray.Origin; Direction = ray.Direction }
+
+let private pointerMods (e: obj) : PointerMods =
+    { Shift = e?shiftKey
+      Meta = e?metaKey || e?ctrlKey
+      Alt = e?altKey }
+
 /// Hooks the viewer needs to expose back to the input subsystem.
 /// `PickAt` dispatches the compute picker for a 5×5 window around the
 /// cursor and returns every hit as a deduped `PickCandidateInput list`
@@ -89,11 +97,7 @@ let install
     let mutable dragLast : float * float = 0.0, 0.0
     let mutable dragPickable : Pickable option = None
     let mutable dragActive = false
-    // Translate-gizmo drag: captured on mousedown when the cursor lands
-    // on an axis or plane handle; consumed by mousemove/mouseup in the
-    // same gesture. Using a local mutable keeps the pick/drag math out
-    // of the store — only Begin/Update/Finish messages cross over.
-    let mutable gizmoDrag : TranslateGizmo.DragContext option = None
+    let mutable sceneDragActive = false
 
     let pickableById () = hooks.PickableById ()
     let toSketchLocal sid mx my = mouseToSketchLocal canvas dpr camera sid mx my
@@ -107,44 +111,14 @@ let install
         dragLast <- x, y
         dragPickable <- None
         dragActive <- false
-        gizmoDrag <- None
+        sceneDragActive <- false
         if button = 0 then
             let state = AppStore.store.State
-
-            // Translate-gizmo pick runs CPU-side before the GPU picker
-            // — if a handle is under the cursor, skip the normal select
-            // flow and begin a gizmo drag instead.
             let rect = canvas?getBoundingClientRect ()
             let localX = (x - rect?left) * dpr
             let localY = (y - rect?top) * dpr
             let canvasW = canvas.clientWidth * dpr
             let canvasH = canvas.clientHeight * dpr
-            let gizmoHit =
-                match TranslateGizmo.contextOf state with
-                | Some ctx ->
-                    match TranslateGizmo.pick ctx camera canvasW canvasH localX localY with
-                    | Some handle ->
-                        let ray = Camera.screenToRay canvasW canvasH camera localX localY
-                        TranslateGizmo.beginDrag ctx handle ray
-                        |> Option.map (fun drag -> ctx, drag)
-                    | None -> None
-                | None -> None
-
-            let gizmoClaimed =
-                match gizmoHit with
-                | Some (ctx, drag) ->
-                    gizmoDrag <- Some drag
-                    dragActive <- true
-                    Store.dispatch AppStore.store
-                        (BeginGizmoDrag
-                            { ActionId = ctx.ActionId
-                              InitialX = ctx.CurrentX
-                              InitialY = ctx.CurrentY
-                              InitialZ = ctx.CurrentZ })
-                    true
-                | None -> false
-
-            if gizmoClaimed then () else
 
             let viewState = ViewerPipeline.viewerState state
             let toolActive =
@@ -168,33 +142,41 @@ let install
                     Pickable.reduceCandidates
                         (pickableById () |> Map.toList |> List.map snd)
                         candidates
-                if placementActive then
-                    dragPickable <- None
-                    let isTargetable =
-                        match topPickable with
-                        | Some (PickPoint _) | Some (PickLine _)
-                        | Some (PickCircle _) | Some (PickArc _)
-                        | Some (PickFrameOrigin _) -> true
-                        | _ -> false
-                    if isTargetable then
-                        Store.dispatch AppStore.store (ViewerHover candidates)
-                        Store.dispatch AppStore.store ViewerDimensionClickTarget
-                    else
-                        let latest = ViewerPipeline.viewerState AppStore.store.State
-                        match latest.SketchUi.PendingConstraintPlacement, hooks.ToolCursor.Value with
-                        | Some _, Some (_, u, v) ->
-                            Store.dispatch AppStore.store (ViewerPlaceConstraint(u, v))
-                        | _ -> ()
-                elif toolActive then
-                    dragPickable <- None
-                    match hooks.ToolCursor.Value with
-                    | Some (_, u, v) ->
-                        Store.dispatch AppStore.store (ViewerToolClick(u, v))
-                    | None -> ()
-                else
-                    dragPickable <- topPickable
+                match topPickable with
+                | Some (PickGizmoHandle _ as gizmoPickable) ->
+                    let ray = Camera.screenToRay canvasW canvasH camera localX localY
+                    sceneDragActive <- true
+                    dragActive <- true
                     Store.dispatch AppStore.store
-                        (ViewerPick(selectionIntent e, candidates))))
+                        (ScenePointerDown(gizmoPickable, toPointerRay ray, pointerMods e))
+                | _ ->
+                    if placementActive then
+                        dragPickable <- None
+                        let isTargetable =
+                            match topPickable with
+                            | Some (PickPoint _) | Some (PickLine _)
+                            | Some (PickCircle _) | Some (PickArc _)
+                            | Some (PickFrameOrigin _) -> true
+                            | _ -> false
+                        if isTargetable then
+                            Store.dispatch AppStore.store (ViewerHover candidates)
+                            Store.dispatch AppStore.store ViewerDimensionClickTarget
+                        else
+                            let latest = ViewerPipeline.viewerState AppStore.store.State
+                            match latest.SketchUi.PendingConstraintPlacement, hooks.ToolCursor.Value with
+                            | Some _, Some (_, u, v) ->
+                                Store.dispatch AppStore.store (ViewerPlaceConstraint(u, v))
+                            | _ -> ()
+                    elif toolActive then
+                        dragPickable <- None
+                        match hooks.ToolCursor.Value with
+                        | Some (_, u, v) ->
+                            Store.dispatch AppStore.store (ViewerToolClick(u, v))
+                        | None -> ()
+                    else
+                        dragPickable <- topPickable
+                        Store.dispatch AppStore.store
+                            (ViewerPick(selectionIntent e, candidates))))
 
     addEvent canvas "dblclick" (fun e ->
         ePreventDefault e
@@ -269,21 +251,15 @@ let install
             let (sx, sy) = dragStart
             let movedPx = sqrt ((x - sx) * (x - sx) + (y - sy) * (y - sy))
 
-            // Translate-gizmo drag: when a handle was grabbed on
-            // mousedown, every mousemove projects the current cursor
-            // ray onto the axis or plane and dispatches UpdateGizmoDrag.
-            let gizmoHandled =
-                if gizmoDrag.IsSome && button = 0 then
+            let sceneHandled =
+                if sceneDragActive && button = 0 then
                     let rect = canvas?getBoundingClientRect ()
                     let localX = (x - rect?left) * dpr
                     let localY = (y - rect?top) * dpr
                     let canvasW = canvas.clientWidth * dpr
                     let canvasH = canvas.clientHeight * dpr
                     let ray = Camera.screenToRay canvasW canvasH camera localX localY
-                    match TranslateGizmo.applyDrag gizmoDrag.Value ray with
-                    | Some (nx, ny, nz) ->
-                        Store.dispatch AppStore.store (UpdateGizmoDrag(nx, ny, nz))
-                    | None -> ()
+                    Store.dispatch AppStore.store (ScenePointerMove(toPointerRay ray))
                     true
                 else false
 
@@ -303,7 +279,7 @@ let install
                       Target = { X = u; Y = v } }
             let updateDragTo u v = UpdateSketchDragTarget { X = u; Y = v }
 
-            if not gizmoHandled then
+            if not sceneHandled then
                 match button, dragPickable with
                 | 0, Some (PickPoint(_, sid, pid, _, _)) ->
                     if not dragActive && movedPx > DRAG_THRESHOLD_PX then
@@ -334,14 +310,21 @@ let install
             dragLast <- x, y)
 
     addEvent window "mouseup" (fun _ ->
-        if gizmoDrag.IsSome then
-            Store.dispatch AppStore.store FinishGizmoDrag
+        if sceneDragActive then
+            let (x, y) = dragLast
+            let rect = canvas?getBoundingClientRect ()
+            let localX = (x - rect?left) * dpr
+            let localY = (y - rect?top) * dpr
+            let canvasW = canvas.clientWidth * dpr
+            let canvasH = canvas.clientHeight * dpr
+            let ray = Camera.screenToRay canvasW canvasH camera localX localY
+            Store.dispatch AppStore.store (ScenePointerUp(toPointerRay ray))
         elif dragActive then
             Store.dispatch AppStore.store FinishSketchDrag
         dragButton <- None
         dragPickable <- None
         dragActive <- false
-        gizmoDrag <- None)
+        sceneDragActive <- false)
 
     addEventPassiveFalse canvas "contextmenu" (fun e -> ePreventDefault e)
 

@@ -108,7 +108,8 @@ type Slots =
       PlacementPreviewLine: PerSketchSlots
       PlacementPreviewLabel: PerSketchSlots
       FrameOriginPoint: Slot
-      FrameGizmo: Slot }
+      FrameGizmo: Slot
+      TranslateGizmo: Slot }
 
 let createSlots () : Slots =
     { Grid = createPerSketchSlots ()
@@ -123,4 +124,5 @@ let createSlots () : Slots =
       PlacementPreviewLine = createPerSketchSlots ()
       PlacementPreviewLabel = createPerSketchSlots ()
       FrameOriginPoint = createSlot ()
-      FrameGizmo = createSlot () }
+      FrameGizmo = createSlot ()
+      TranslateGizmo = createSlot () }

@@ -33,9 +33,9 @@ open WebGPU
 let private PICK_GRID = 5
 let SAMPLES_PER_DISPATCH = PICK_GRID * PICK_GRID
 /// Max simultaneous dispatches we pre-allocate sample-buffer slots for.
-/// One per visible sketch + one for frames. 32 covers any realistic
-/// sketch count.
-let private MAX_DISPATCHES = 32
+/// One per visible sketch + one for frames + one for the selected
+/// translate gizmo. 64 leaves plenty of room while keeping readback tiny.
+let private MAX_DISPATCHES = 64
 /// Per-pick-state slot size — 256-byte alignment is the WebGPU min for
 /// dynamic uniform offsets.
 let private PICK_STATE_STRIDE = 256
@@ -73,8 +73,10 @@ type PickCompute =
           // ── Pipelines + layouts ──
           SketchPipeline: IGPUComputePipeline
           FramePipeline: IGPUComputePipeline
+          GizmoPipeline: IGPUComputePipeline
           SketchBindGroupLayout: IGPUBindGroupLayout
           FrameBindGroupLayout: IGPUBindGroupLayout
+          GizmoBindGroupLayout: IGPUBindGroupLayout
           // ── Uniforms ──
           PickStateBuffer: IGPUBuffer
           // ── Per-sketch geometry ──
@@ -83,6 +85,12 @@ type PickCompute =
           mutable FrameOrigins: IGPUBuffer
           mutable FrameOriginsBytes: int
           mutable FrameBindGroup: IGPUBindGroup option
+          // ── Selected translate gizmo geometry (ephemeral) ──
+          mutable GizmoAxes: IGPUBuffer
+          mutable GizmoAxesBytes: int
+          mutable GizmoPlanes: IGPUBuffer
+          mutable GizmoPlanesBytes: int
+          mutable GizmoBindGroup: IGPUBindGroup option
           // ── Samples output + staging readback ──
           SamplesBuffer: IGPUBuffer
           SamplesStaging: IGPUBuffer
@@ -90,6 +98,7 @@ type PickCompute =
           // ── Per-frame state ──
           mutable LastSketchOrder: (string * int) list
           mutable LastFrameDispatchIndex: int option
+          mutable LastGizmoDispatchIndex: int option
           mutable InFlight: bool }
 
 // ── Buffer helpers ───────────────────────────────────────────────────
@@ -182,6 +191,30 @@ let private frameLayout (device: IGPUDevice) : IGPUBindGroupLayout =
                    visibility = GPUShaderStage.Compute
                    buffer = {| ``type`` = "storage" |} |} |] }
 
+let private gizmoLayout (device: IGPUDevice) : IGPUBindGroupLayout =
+    device.createBindGroupLayout
+        { entries =
+            [| box
+                {| binding = 0
+                   visibility = GPUShaderStage.Compute
+                   buffer = {| ``type`` = "uniform" |} |}
+               box
+                {| binding = 1
+                   visibility = GPUShaderStage.Compute
+                   buffer = {| ``type`` = "uniform"; hasDynamicOffset = true |} |}
+               box
+                {| binding = 2
+                   visibility = GPUShaderStage.Compute
+                   buffer = {| ``type`` = "read-only-storage" |} |}
+               box
+                {| binding = 3
+                   visibility = GPUShaderStage.Compute
+                   buffer = {| ``type`` = "read-only-storage" |} |}
+               box
+                {| binding = 4
+                   visibility = GPUShaderStage.Compute
+                   buffer = {| ``type`` = "storage" |} |} |] }
+
 // ── Construction ─────────────────────────────────────────────────────
 
 /// Pipeline layouts bind the `PickState` buffer at binding-2 (sketch)
@@ -194,6 +227,7 @@ let create (scene: Scene.Scene) : PickCompute =
     let device = scene.Device
     let sketchBindLayout = sketchLayout device
     let frameBindLayout = frameLayout device
+    let gizmoBindLayout = gizmoLayout device
 
     let sketchPipelineLayout =
         device.createPipelineLayout
@@ -201,11 +235,16 @@ let create (scene: Scene.Scene) : PickCompute =
     let framePipelineLayout =
         device.createPipelineLayout
             { bindGroupLayouts = [| frameBindLayout |] }
+    let gizmoPipelineLayout =
+        device.createPipelineLayout
+            { bindGroupLayouts = [| gizmoBindLayout |] }
 
     let sketchShader =
         device.createShaderModule { code = Shaders.pickCompute }
     let frameShader =
         device.createShaderModule { code = Shaders.framePickCompute }
+    let gizmoShader =
+        device.createShaderModule { code = Shaders.gizmoPickCompute }
 
     let sketchPipeline =
         device.createComputePipeline
@@ -217,6 +256,11 @@ let create (scene: Scene.Scene) : PickCompute =
             (box
                 {| layout = framePipelineLayout
                    compute = {| ``module`` = frameShader; entryPoint = "cs_main" |} |})
+    let gizmoPipeline =
+        device.createComputePipeline
+            (box
+                {| layout = gizmoPipelineLayout
+                   compute = {| ``module`` = gizmoShader; entryPoint = "cs_main" |} |})
 
     let pickStateBuffer = uniformBuffer device (PICK_STATE_STRIDE * MAX_DISPATCHES)
     let samplesBytes = MAX_DISPATCHES * SAMPLES_PER_DISPATCH * 16
@@ -235,18 +279,26 @@ let create (scene: Scene.Scene) : PickCompute =
     { Scene = scene
       SketchPipeline = sketchPipeline
       FramePipeline = framePipeline
+      GizmoPipeline = gizmoPipeline
       SketchBindGroupLayout = sketchBindLayout
       FrameBindGroupLayout = frameBindLayout
+      GizmoBindGroupLayout = gizmoBindLayout
       PickStateBuffer = pickStateBuffer
       SketchBuffers = System.Collections.Generic.Dictionary()
       FrameOrigins = emptyStorage device
       FrameOriginsBytes = 16
       FrameBindGroup = None
+      GizmoAxes = emptyStorage device
+      GizmoAxesBytes = 16
+      GizmoPlanes = emptyStorage device
+      GizmoPlanesBytes = 16
+      GizmoBindGroup = None
       SamplesBuffer = samplesBuffer
       SamplesStaging = samplesStaging
       SamplesBytes = samplesBytes
       LastSketchOrder = []
       LastFrameDispatchIndex = None
+      LastGizmoDispatchIndex = None
       InFlight = false }
 
 // ── Per-sketch buffer management ─────────────────────────────────────
@@ -300,6 +352,20 @@ let private uploadWithSentinelPad
 /// hits at the world origin.
 let private FRAME_ORIGIN_SENTINEL : float32[] =
     [| 1.0e30f; 1.0e30f; 1.0e30f; 0.0f |]
+
+/// Gizmo-axis sentinel: one complete 2-vec4 axis entry far outside
+/// the camera. Pick id is irrelevant because it should never be hit.
+let private GIZMO_AXIS_SENTINEL : float32[] =
+    [| 1.0e30f; 1.0e30f; 1.0e30f; 1.0f
+       1.0f; 0.0f; 0.0f; 0.0f |]
+
+/// Gizmo-plane sentinel: one complete 3-vec4 plane entry far outside
+/// the camera. Keeps oversized storage buffers from exposing stale
+/// plane handles after growth.
+let private GIZMO_PLANE_SENTINEL : float32[] =
+    [| 1.0e30f; 1.0e30f; 1.0e30f; 0.0f
+       1.0f; 0.0f; 0.0f; 16.0f
+       0.0f; 1.0f; 0.0f; 44.0f |]
 
 // ── Geometry array builders ──────────────────────────────────────────
 //
@@ -408,7 +474,11 @@ let private buildLabelsArray
 /// Build (x, y, pickId) for every frame origin. One vec4 per frame:
 /// (x, y, z, pickId). The compute shader projects each through the
 /// current camera uniform.
-let private buildFrameOriginsArray (frames: FrameView list) (pickables: Pickable list) : float32[] =
+let private buildWorldPointPickArray
+        (frames: FrameView list)
+        (rotateCtx: RotateGizmo.Context option)
+        (pickables: Pickable list)
+        (worldPerPx: float) : float32[] =
     let idByFrame =
         pickables
         |> List.choose (fun p ->
@@ -425,6 +495,137 @@ let private buildFrameOriginsArray (frames: FrameView list) (pickables: Pickable
             out.Add(float32 pos.Y)
             out.Add(float32 pos.Z)
             out.Add(float32 pid)
+        | None -> ()
+    match rotateCtx with
+    | Some ctx ->
+        let pickIdFor handle =
+            pickables
+            |> List.tryPick (function
+                | PickGizmoHandle(pid, aid, h) when aid = ctx.ActionId && h = handle -> Some pid
+                | _ -> None)
+        let axisEnd =
+            ctx.Origin + (Editor.rotateAxisHandlePx * worldPerPx) * ctx.AxisWorld
+        let angleEnd =
+            ctx.Origin
+            + (Editor.rotateAngleHandlePx * worldPerPx)
+              * (((cos ctx.Angle) * ctx.BasisU + (sin ctx.Angle) * ctx.BasisV).Normalized)
+        match pickIdFor GRotateAxis with
+        | Some pid ->
+            out.Add(float32 axisEnd.X)
+            out.Add(float32 axisEnd.Y)
+            out.Add(float32 axisEnd.Z)
+            out.Add(float32 pid)
+        | None -> ()
+        match pickIdFor GRotateAngle with
+        | Some pid ->
+            out.Add(float32 angleEnd.X)
+            out.Add(float32 angleEnd.Y)
+            out.Add(float32 angleEnd.Z)
+            out.Add(float32 pid)
+        | None -> ()
+    | None -> ()
+    out.ToArray()
+
+let private axisVecs (ctx: TranslateGizmo.Context) : Vec3[] =
+    [| ctx.AxisX; ctx.AxisY; ctx.AxisZ |]
+
+let private planeVecs (ctx: TranslateGizmo.Context) : (Vec3 * Vec3)[] =
+    [| ctx.AxisX, ctx.AxisY
+       ctx.AxisY, ctx.AxisZ
+       ctx.AxisX, ctx.AxisZ |]
+
+/// Axis pick layout: 2 vec4 per axis:
+///   (anchor.xyz, length_px), (dir.xyz, pickId)
+let private buildGizmoAxesArray
+        (translateCtx: TranslateGizmo.Context option)
+        (halfPlaneCtx: HalfPlaneGizmo.Context option)
+        (pickables: Pickable list)
+        (worldPerPx: float) : float32[] =
+    let out = ResizeArray<float32>()
+    match translateCtx with
+    | Some ctx ->
+        let pickIdByAxis =
+            pickables
+            |> List.choose (function
+                | PickGizmoHandle(pid, aid, GAxis axis) when aid = ctx.ActionId -> Some(axis, pid)
+                | _ -> None)
+            |> Map.ofList
+        for (axisIdx, axis) in axisVecs ctx |> Array.indexed do
+            match Map.tryFind axisIdx pickIdByAxis with
+            | Some pid ->
+                out.Add(float32 ctx.Origin.X)
+                out.Add(float32 ctx.Origin.Y)
+                out.Add(float32 ctx.Origin.Z)
+                out.Add(TranslateGizmo.AXIS_LENGTH_PX + TranslateGizmo.ARROW_LENGTH_PX)
+                out.Add(float32 axis.X)
+                out.Add(float32 axis.Y)
+                out.Add(float32 axis.Z)
+                out.Add(float32 pid)
+            | None -> ()
+    | None -> ()
+    match halfPlaneCtx with
+    | Some ctx ->
+        let pickIdFor handle =
+            pickables
+            |> List.tryPick (function
+                | PickGizmoHandle(pid, aid, h) when aid = ctx.ActionId && h = handle -> Some pid
+                | _ -> None)
+        for axisIdx in 0 .. 2 do
+            match pickIdFor (GHalfPlaneAxis axisIdx) with
+            | Some pid ->
+                let dir = HalfPlaneGizmo.localAxis axisIdx
+                out.Add(0.0f)
+                out.Add(0.0f)
+                out.Add(0.0f)
+                out.Add(HalfPlaneGizmo.AXIS_LENGTH_PX)
+                out.Add(float32 dir.X)
+                out.Add(float32 dir.Y)
+                out.Add(float32 dir.Z)
+                out.Add(float32 pid)
+            | None -> ()
+        match pickIdFor GHalfPlaneOffset with
+        | Some pid ->
+            let sign = if ctx.Offset < 0.0 then -1.0 else 1.0
+            let dir = sign * ctx.AxisDir
+            let anchor = HalfPlaneGizmo.offsetAnchor ctx worldPerPx
+            let lengthPx = HalfPlaneGizmo.displayedOffsetPx ctx worldPerPx + HalfPlaneGizmo.ARROW_LENGTH_PX
+            out.Add(float32 anchor.X)
+            out.Add(float32 anchor.Y)
+            out.Add(float32 anchor.Z)
+            out.Add(lengthPx)
+            out.Add(float32 dir.X)
+            out.Add(float32 dir.Y)
+            out.Add(float32 dir.Z)
+            out.Add(float32 pid)
+        | None -> ()
+    | None -> ()
+    out.ToArray()
+
+/// Plane pick layout: 3 vec4 per plane:
+///   (origin.xyz, pickId), (axisU.xyz, near_px), (axisV.xyz, far_px)
+let private buildGizmoPlanesArray (ctx: TranslateGizmo.Context) (pickables: Pickable list) : float32[] =
+    let pickIdByPlane =
+        pickables
+        |> List.choose (function
+            | PickGizmoHandle(pid, aid, GPlane plane) when aid = ctx.ActionId -> Some(plane, pid)
+            | _ -> None)
+        |> Map.ofList
+    let out = ResizeArray<float32>()
+    for (planeIdx, (u, v)) in planeVecs ctx |> Array.indexed do
+        match Map.tryFind planeIdx pickIdByPlane with
+        | Some pid ->
+            out.Add(float32 ctx.Origin.X)
+            out.Add(float32 ctx.Origin.Y)
+            out.Add(float32 ctx.Origin.Z)
+            out.Add(float32 pid)
+            out.Add(float32 u.X)
+            out.Add(float32 u.Y)
+            out.Add(float32 u.Z)
+            out.Add(TranslateGizmo.PLANE_NEAR_PX)
+            out.Add(float32 v.X)
+            out.Add(float32 v.Y)
+            out.Add(float32 v.Z)
+            out.Add(TranslateGizmo.PLANE_FAR_PX)
         | None -> ()
     out.ToArray()
 
@@ -462,13 +663,28 @@ let private rebuildFrameBindGroup (pc: PickCompute) : IGPUBindGroup =
                { binding = 2; resource = box { buffer = pc.FrameOrigins } }
                { binding = 3; resource = box { buffer = pc.SamplesBuffer } } |] }
 
+let private rebuildGizmoBindGroup (pc: PickCompute) : IGPUBindGroup =
+    pc.Scene.Device.createBindGroup
+        { layout = pc.GizmoBindGroupLayout
+          entries =
+            [| { binding = 0; resource = box { buffer = pc.Scene.CameraBuffer } }
+               { binding = 1
+                 resource = bindingResourceWithSize pc.PickStateBuffer PICK_STATE_VIEW_BYTES }
+               { binding = 2; resource = box { buffer = pc.GizmoAxes } }
+               { binding = 3; resource = box { buffer = pc.GizmoPlanes } }
+               { binding = 4; resource = box { buffer = pc.SamplesBuffer } } |] }
+
 // ── Per-frame update ─────────────────────────────────────────────────
 
 /// Rebuild per-sketch geometry buffers + frame origin buffer from the
 /// current pickables. Called every frame by the render loop after
 /// geometry might have shifted.
 let update (pc: PickCompute) (state: EditorState) (viewState: ViewerState) =
-    let pickables = state.Compiled.Pickables
+    let gizmoPickables =
+        TranslateGizmo.ephemeralPickablesForState state
+        @ RotateGizmo.ephemeralPickablesForState state
+        @ HalfPlaneGizmo.ephemeralPickablesForState state
+    let pickables = state.Compiled.Pickables @ gizmoPickables
     let slotLookup = state.Compiled.Slots.Index
     let paramValues = viewState.Params
 
@@ -543,7 +759,13 @@ let update (pc: PickCompute) (state: EditorState) (viewState: ViewerState) =
         viewState.Frames
         |> List.filter (fun f ->
             Map.tryFind f.Id viewState.Visible |> Option.defaultValue true)
-    let origins = buildFrameOriginsArray visibleFrames pickables
+    let worldPerPx = (2.0 * Camera.viewHalfH pc.Scene.Camera) / max (float pc.Scene.Canvas.height) 1.0
+    let origins =
+        buildWorldPointPickArray
+            visibleFrames
+            (RotateGizmo.contextOf state)
+            pickables
+            worldPerPx
     let struct (fo, foBytes, foGrew) =
         uploadWithSentinelPad pc.Scene origins FRAME_ORIGIN_SENTINEL
             pc.FrameOrigins pc.FrameOriginsBytes
@@ -554,6 +776,39 @@ let update (pc: PickCompute) (state: EditorState) (viewState: ViewerState) =
 
     pc.LastFrameDispatchIndex <-
         if origins.Length > 0 then Some sketchOrder.Length else None
+
+    // Selected translate gizmo. Ephemeral pickables share the same id
+    // map as the viewer's mousedown reducer, but are not part of the
+    // compiled topology pickables.
+    let gizmoAxes, gizmoPlanes =
+        let translateCtx = TranslateGizmo.contextOf state
+        let halfPlaneCtx = HalfPlaneGizmo.contextOf state
+        let axes = buildGizmoAxesArray translateCtx halfPlaneCtx gizmoPickables worldPerPx
+        let planes =
+            match translateCtx with
+            | Some ctx when not gizmoPickables.IsEmpty -> buildGizmoPlanesArray ctx gizmoPickables
+            | _ -> [||]
+        axes, planes
+    let mutable gizmoChanged = false
+    let struct (ga, gaBytes, gaGrew) =
+        uploadWithSentinelPad pc.Scene gizmoAxes GIZMO_AXIS_SENTINEL
+            pc.GizmoAxes pc.GizmoAxesBytes
+    pc.GizmoAxes <- ga
+    pc.GizmoAxesBytes <- gaBytes
+    if gaGrew then gizmoChanged <- true
+    let struct (gp, gpBytes, gpGrew) =
+        uploadWithSentinelPad pc.Scene gizmoPlanes GIZMO_PLANE_SENTINEL
+            pc.GizmoPlanes pc.GizmoPlanesBytes
+    pc.GizmoPlanes <- gp
+    pc.GizmoPlanesBytes <- gpBytes
+    if gpGrew then gizmoChanged <- true
+    if gizmoChanged || pc.GizmoBindGroup.IsNone then
+        pc.GizmoBindGroup <- Some(rebuildGizmoBindGroup pc)
+
+    pc.LastGizmoDispatchIndex <-
+        if gizmoAxes.Length > 0 || gizmoPlanes.Length > 0 then
+            Some(sketchOrder.Length + (if pc.LastFrameDispatchIndex.IsSome then 1 else 0))
+        else None
 
 // ── Pick dispatch + readback ─────────────────────────────────────────
 
@@ -589,6 +844,10 @@ let pickAt (pc: PickCompute) (px: int) (py: int) : JS.Promise<PickCandidateInput
             | Some idx ->
                 writePickState pc idx canvasW canvasH (float32 px) (float32 py)
             | None -> ()
+            match pc.LastGizmoDispatchIndex with
+            | Some idx ->
+                writePickState pc idx canvasW canvasH (float32 px) (float32 py)
+            | None -> ()
 
             let encoder = pc.Scene.Device.createCommandEncoder()
 
@@ -620,6 +879,15 @@ let pickAt (pc: PickCompute) (px: int) (py: int) : JS.Promise<PickCandidateInput
                 pass.dispatchWorkgroups(1, 1, 1)
             | _ -> ()
 
+            // ── Selected translate-gizmo dispatch ──
+            match pc.LastGizmoDispatchIndex, pc.GizmoBindGroup with
+            | Some idx, Some bg ->
+                pass.setPipeline pc.GizmoPipeline
+                let pickStateOffset = idx * PICK_STATE_STRIDE
+                pass.setBindGroupWithOffsets(0, bg, [| pickStateOffset |])
+                pass.dispatchWorkgroups(1, 1, 1)
+            | _ -> ()
+
             pass.endPass()
 
             // Copy samples → staging for CPU readback.
@@ -634,7 +902,8 @@ let pickAt (pc: PickCompute) (px: int) (py: int) : JS.Promise<PickCandidateInput
             // (for score) — so interleaved reinterpret is free.
             let totalSamples =
                 (List.length sketchDispatches
-                    + (if pc.LastFrameDispatchIndex.IsSome then 1 else 0))
+                    + (if pc.LastFrameDispatchIndex.IsSome then 1 else 0)
+                    + (if pc.LastGizmoDispatchIndex.IsSome then 1 else 0))
                 * SAMPLES_PER_DISPATCH
             let rawU32 = WebGPU.readU32Range arr 0 (totalSamples * 4)
             let rawF32 = WebGPU.readF32Range arr 0 (totalSamples * 4)

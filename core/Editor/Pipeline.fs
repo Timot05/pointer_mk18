@@ -187,10 +187,14 @@ module Pipeline =
         (b: SlotTable.Builder)
         (action: DocAction)
         : SlotTable.Builder =
+        // Translate / Rotate always get their x/y/z (or axis/angle)
+        // slots, regardless of output type. A Field-output Translate
+        // with an unwired child otherwise skips slot allocation
+        // (FieldIR bails on the empty child), and the gizmo-drag
+        // path can't find its slots to patch. `allocFrameSlots`
+        // no-ops for non-Translate/Rotate kinds.
+        allocFrameSlots b action
         match Map.tryFind action.Id typeMap, action.Kind with
-        | Some FieldType.Frame, _ ->
-            allocFrameSlots b action
-            b
         | Some FieldType.Sketch, Sketch(_, _, sketch) ->
             allocSketchSlots b action.Id sketch
             b

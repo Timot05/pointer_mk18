@@ -63,6 +63,44 @@ let private selectedIsSketch (doc: DocumentView) : bool =
     | Some { Kind = Sketch _ } -> true
     | _ -> false
 
+/// Flat ordered list of keyboard-navigable rows. Each row is
+/// `(actionId, focusIdx)` where `focusIdx = 0` is the action's own
+/// row and `focusIdx = 1..N` are the N input rows of an expanded
+/// action. Up/Down step through this list; a focus change that
+/// crosses action boundaries also shifts `SelectedId`.
+let private flatRows (doc: DocumentView) : (ActionId * int) list =
+    doc.Actions
+    |> List.collect (fun a ->
+        let actionRow = [ a.Id, 0 ]
+        if Set.contains a.Id doc.ExpandedActionIds then
+            let n = List.length (ActionList.inputsOf a.Kind)
+            actionRow @ [ for i in 1..n -> a.Id, i ]
+        else
+            actionRow)
+
+let private currentRowIndex (rows: (ActionId * int) list) (doc: DocumentView) : int =
+    match doc.SelectedId with
+    | Some id ->
+        rows
+        |> List.tryFindIndex (fun (aid, idx) -> aid = id && idx = doc.EditFocusIdx)
+        |> Option.defaultValue -1
+    | None -> -1
+
+/// Move keyboard focus by `dir` (±1) through `flatRows`. Dispatches
+/// `SelectAction` when the step crosses into a different action, then
+/// always finalises `SetEditFocus` with the row's focus index.
+let private stepFocus (dispatch: Message -> unit) (doc: DocumentView) (dir: int) =
+    let rows = flatRows doc
+    if List.isEmpty rows then ()
+    else
+        let cur = currentRowIndex rows doc
+        let target = max 0 (min (rows.Length - 1) (cur + dir))
+        if target <> cur && cur >= 0 then
+            let aid, idx = rows.[target]
+            if Some aid <> doc.SelectedId then
+                dispatch (SelectAction aid)
+            dispatch (SetEditFocus idx)
+
 // ── Sketch-mode shortcuts ──────────────────────────────────────────────
 
 /// Returns true if the key was handled, so the global handler can stop.
@@ -172,89 +210,110 @@ let register
                 // Sketch-mode shortcuts first
                 if handleSketchShortcut dispatch doc ke then () else
 
+                // Context snapshots used across several handlers.
+                let selectedExpanded =
+                    match doc.SelectedId with
+                    | Some id -> Set.contains id doc.ExpandedActionIds
+                    | None -> false
+                let focusedInputSlot () =
+                    match doc.SelectedId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
+                    | Some sel when selectedExpanded && doc.EditFocusIdx > 0 ->
+                        let inputs = ActionList.inputsOf sel.Kind
+                        let ii = doc.EditFocusIdx - 1
+                        if ii >= 0 && ii < inputs.Length then Some(sel, inputs.[ii]) else None
+                    | _ -> None
+                let inRefPickSubEdit () =
+                    match doc.EditingInputField, focusedInputSlot () with
+                    | Some _, Some(_, ActionList.RefDisplay _) -> true
+                    | _ -> false
                 match ke.key with
                 | "Escape" when doc.EditingInputField.IsSome ->
-                    // Cancel the current input sub-edit, but keep the
-                    // row focused so the user can keep navigating.
+                    // Cancel the current input sub-edit, keep the row focused.
                     e.preventDefault ()
                     dispatch StopEditingInputField
-                | "Escape" when doc.WiringActionId.IsSome ->
-                    e.preventDefault ()
-                    dispatch StopWiring
-                | "Enter" when doc.WiringActionId.IsNone && doc.SelectedId.IsSome ->
-                    // Enter on a selected action opens edit mode —
-                    // input rows expand directly beneath it. Skipped
-                    // for primitives without any editable inputs so
-                    // users don't see an empty expansion.
-                    match selectedAction doc with
-                    | Some sel ->
-                        if not (List.isEmpty (ActionList.inputsOf sel.Kind)) then
+                | "Escape" ->
+                    // Collapse the focused action, if any.
+                    match doc.SelectedId with
+                    | Some id when Set.contains id doc.ExpandedActionIds ->
+                        e.preventDefault ()
+                        dispatch (CollapseAction id)
+                    | _ -> ()
+                | "ArrowRight" ->
+                    // Right expands the focused action OR descends into
+                    // its inputs (if already expanded).
+                    match doc.SelectedId with
+                    | Some id ->
+                        let action = doc.Actions |> List.tryFind (fun a -> a.Id = id)
+                        match action with
+                        | Some a when not (List.isEmpty (ActionList.inputsOf a.Kind)) ->
                             e.preventDefault ()
-                            dispatch (StartWiring sel.Id)
+                            if not (Set.contains id doc.ExpandedActionIds) then
+                                dispatch (ExpandAction id)
+                            elif doc.EditFocusIdx = 0 then
+                                dispatch (SetEditFocus 1)
+                        | _ -> ()
                     | None -> ()
-                | "Enter" when doc.WiringActionId.IsSome && doc.EditingInputField.IsSome ->
+                | "ArrowLeft" ->
+                    // Left collapses the selected action in one shot,
+                    // whether focus is on the action row or on one of
+                    // its inputs. CollapseAction resets EditFocusIdx.
+                    match doc.SelectedId with
+                    | Some id when Set.contains id doc.ExpandedActionIds ->
+                        e.preventDefault ()
+                        dispatch (CollapseAction id)
+                    | _ -> ()
+                | "Enter" when doc.EditingInputField.IsSome ->
                     // Ref sub-edit: commit the highlighted upstream pick.
                     // Scalar sub-edit: the inline <input> normally
-                    // handles Enter itself (and its keydown handler
-                    // stops propagation). This branch is reached only
-                    // when focus never actually landed on the input — a
-                    // fallback that reads value from the DOM so Enter
-                    // still saves reliably.
-                    match doc.WiringActionId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
-                    | Some wired ->
-                        match doc.EditingInputField with
-                        | Some field ->
-                            let input =
-                                ActionList.inputsOf wired.Kind
-                                |> List.tryFind (fun i ->
-                                    match i with
-                                    | ActionList.RefDisplay s -> s.Field = field
-                                    | ActionList.ScalarDisplay(_, _, f)
-                                    | ActionList.SelectDisplay(_, _, _, f)
-                                    | ActionList.CheckDisplay(_, _, f) -> f = field)
-                            match input with
-                            | Some (ActionList.RefDisplay s) ->
-                                e.preventDefault ()
-                                let candidates =
-                                    Map.tryFind s.AcceptedKey doc.RefOptions
-                                    |> Option.defaultValue []
-                                if doc.RefPickIdx >= 0 && doc.RefPickIdx < candidates.Length then
-                                    dispatch (Editor.setActionParamValue wired.Id field (VString candidates.[doc.RefPickIdx]))
-                                dispatch StopEditingInputField
-                            | Some (ActionList.ScalarDisplay(_, _, scalarField)) ->
-                                e.preventDefault ()
-                                let el = document.querySelector ".input-row-edit"
-                                if not (isNull el) then
-                                    let inputEl = el :?> HTMLInputElement
-                                    match System.Double.TryParse(inputEl.value) with
-                                    | true, v ->
-                                        let payload =
-                                            match scalarField with
-                                            | MeshResolution -> VInt(int v)
-                                            | _ -> VFloat v
-                                        dispatch (Editor.setActionParamValue wired.Id scalarField payload)
-                                    | _ -> ()
-                                dispatch StopEditingInputField
+                    // handles Enter itself (its keydown handler stops
+                    // propagation); this branch is the fallback for
+                    // when focus never landed on the input.
+                    match focusedInputSlot (), doc.EditingInputField with
+                    | Some(sel, ActionList.RefDisplay s), Some field ->
+                        e.preventDefault ()
+                        let candidates =
+                            Map.tryFind s.AcceptedKey doc.RefOptions
+                            |> Option.defaultValue []
+                        if doc.RefPickIdx >= 0 && doc.RefPickIdx < candidates.Length then
+                            dispatch (Editor.setActionParamValue sel.Id field (VString candidates.[doc.RefPickIdx]))
+                        dispatch StopEditingInputField
+                    | Some(sel, ActionList.ScalarDisplay(_, _, scalarField)), _ ->
+                        e.preventDefault ()
+                        let el = document.querySelector ".input-row-edit"
+                        if not (isNull el) then
+                            let inputEl = el :?> HTMLInputElement
+                            match System.Double.TryParse(inputEl.value) with
+                            | true, v ->
+                                let payload =
+                                    match scalarField with
+                                    | MeshResolution -> VInt(int v)
+                                    | _ -> VFloat v
+                                dispatch (Editor.setActionParamValue sel.Id scalarField payload)
                             | _ -> ()
-                        | None -> ()
-                    | None -> ()
-                | "Enter" when doc.WiringActionId.IsSome ->
-                    // Enter over a row in edit mode:
-                    //   idx = 0 (action row)    → leave edit mode.
-                    //   idx > 0 (input row)     → start / apply sub-edit
-                    //                             based on the input's kind.
-                    e.preventDefault ()
-                    if doc.EditFocusIdx = 0 then
-                        dispatch StopWiring
-                    else
-                        match doc.WiringActionId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
-                        | Some wired ->
-                            let inputs = ActionList.inputsOf wired.Kind
+                        dispatch StopEditingInputField
+                    | _ -> ()
+                | "Enter" when doc.SelectedId.IsSome ->
+                    // Enter on a selected action / input row:
+                    //  * action row, collapsed + has inputs  → expand.
+                    //  * action row, expanded + has inputs   → descend.
+                    //  * input row                           → start sub-edit.
+                    match selectedAction doc with
+                    | Some sel ->
+                        let inputs = ActionList.inputsOf sel.Kind
+                        if doc.EditFocusIdx = 0 then
+                            if not (List.isEmpty inputs) then
+                                e.preventDefault ()
+                                if not (Set.contains sel.Id doc.ExpandedActionIds) then
+                                    dispatch (ExpandAction sel.Id)
+                                else
+                                    dispatch (SetEditFocus 1)
+                        else
                             let ii = doc.EditFocusIdx - 1
                             if ii >= 0 && ii < inputs.Length then
+                                e.preventDefault ()
                                 match inputs.[ii] with
                                 | ActionList.CheckDisplay(_, value, field) ->
-                                    dispatch (Editor.setActionParamValue wired.Id field (VBool(not value)))
+                                    dispatch (Editor.setActionParamValue sel.Id field (VBool(not value)))
                                 | ActionList.SelectDisplay(_, value, choices, field) ->
                                     let nextChoice =
                                         match List.tryFindIndex ((=) value) choices with
@@ -262,11 +321,8 @@ let register
                                         | None when not choices.IsEmpty -> choices.[0]
                                         | None -> value
                                     if nextChoice <> value then
-                                        dispatch (Editor.setActionParamValue wired.Id field (VString nextChoice))
+                                        dispatch (Editor.setActionParamValue sel.Id field (VString nextChoice))
                                 | ActionList.ScalarDisplay(_, _, field) ->
-                                    // ActionList will render an inline
-                                    // number input for this field and
-                                    // focus it on the next render tick.
                                     dispatch (StartEditingInputField(field, 0, None))
                                 | ActionList.RefDisplay slot ->
                                     let candidates =
@@ -279,80 +335,45 @@ let register
                                                 candidates |> List.tryFindIndex ((=) cur))
                                             |> Option.defaultValue 0
                                         dispatch (StartEditingInputField(slot.Field, initial, None))
-                        | None -> ()
-                | k when doc.WiringActionId.IsSome
-                         && doc.EditingInputField.IsNone
-                         && doc.EditFocusIdx > 0
-                         && k.Length = 1
-                         && (let c = k.[0] in c = '-' || c = '.' || (c >= '0' && c <= '9')) ->
-                    // Typing a digit / '-' / '.' over a focused scalar
-                    // row starts the sub-edit pre-filled with that key,
-                    // so the user doesn't need to press Enter first.
-                    match doc.WiringActionId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
-                    | Some wired ->
-                        let inputs = ActionList.inputsOf wired.Kind
-                        let ii = doc.EditFocusIdx - 1
-                        if ii >= 0 && ii < inputs.Length then
-                            match inputs.[ii] with
-                            | ActionList.ScalarDisplay(_, _, field) ->
-                                e.preventDefault ()
-                                dispatch (StartEditingInputField(field, 0, Some k))
-                            | _ -> ()
                     | None -> ()
+                | k when
+                    doc.EditingInputField.IsNone
+                    && k.Length = 1
+                    && (let c = k.[0] in c = '-' || c = '.' || (c >= '0' && c <= '9'))
+                    && (match focusedInputSlot () with
+                        | Some(_, ActionList.ScalarDisplay _) -> true
+                        | _ -> false) ->
+                    // Typing a digit / '-' / '.' over a focused scalar
+                    // row starts the sub-edit pre-filled with that key.
+                    match focusedInputSlot () with
+                    | Some(sel, ActionList.ScalarDisplay(_, _, field)) ->
+                        e.preventDefault ()
+                        ignore sel
+                        dispatch (StartEditingInputField(field, 0, Some k))
+                    | _ -> ()
                 | "Delete" | "Backspace" ->
                     e.preventDefault ()
                     dispatch DeleteIntent
                 | "ArrowDown" | "ArrowUp" ->
                     e.preventDefault ()
-                    // Three arrow-key regimes:
-                    //   1. Ref sub-edit  → cycle candidate picks.
-                    //   2. Edit mode     → move focus across action row
-                    //                      and input rows of the wired action.
-                    //   3. Idle          → change the selected action.
-                    match doc.WiringActionId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
-                    | Some wired when doc.EditingInputField.IsSome ->
-                        match doc.EditingInputField with
-                        | Some field ->
-                            let input =
-                                ActionList.inputsOf wired.Kind
-                                |> List.tryFind (fun i ->
-                                    match i with
-                                    | ActionList.RefDisplay s -> s.Field = field
-                                    | _ -> false)
-                            match input with
-                            | Some (ActionList.RefDisplay s) ->
-                                let candidates =
-                                    Map.tryFind s.AcceptedKey doc.RefOptions
-                                    |> Option.defaultValue []
-                                if not candidates.IsEmpty then
-                                    let cur = doc.RefPickIdx
-                                    let next =
-                                        if ke.key = "ArrowDown" then min (cur + 1) (candidates.Length - 1)
-                                        else max (cur - 1) 0
-                                    if next <> cur then
-                                        dispatch (SetRefPickIdx next)
-                            | _ -> ()
-                        | None -> ()
-                    | Some wired ->
-                        let inputCount = List.length (ActionList.inputsOf wired.Kind)
-                        let cur = doc.EditFocusIdx
-                        let next =
-                            if ke.key = "ArrowDown" then min (cur + 1) inputCount
-                            else max (cur - 1) 0
-                        if next <> cur then
-                            dispatch (SetEditFocus next)
-                    | None ->
-                        let actions = doc.Actions
-                        let idx =
-                            actions
-                            |> List.tryFindIndex (fun a -> Some a.Id = doc.SelectedId)
-                            |> Option.defaultValue -1
-                        if idx >= 0 then
-                            let next =
-                                if ke.key = "ArrowDown" then min (idx + 1) (actions.Length - 1)
-                                else max (idx - 1) 0
-                            if next <> idx then
-                                dispatch (SelectAction actions.[next].Id)
+                    let dir = if ke.key = "ArrowDown" then 1 else -1
+                    if inRefPickSubEdit () then
+                        // Ref sub-edit: cycle candidate picks.
+                        match focusedInputSlot () with
+                        | Some(_, ActionList.RefDisplay s) ->
+                            let candidates =
+                                Map.tryFind s.AcceptedKey doc.RefOptions
+                                |> Option.defaultValue []
+                            if not candidates.IsEmpty then
+                                let cur = doc.RefPickIdx
+                                let next = max 0 (min (candidates.Length - 1) (cur + dir))
+                                if next <> cur then
+                                    dispatch (SetRefPickIdx next)
+                        | _ -> ()
+                    else
+                        // Navigate the flat list of visible rows —
+                        // action rows + input rows of expanded actions.
+                        stepFocus dispatch doc dir
                 | "v" ->
                     // Cycle visibility of the selected action through
                     // the modes its kind supports (Hidden / Visible for

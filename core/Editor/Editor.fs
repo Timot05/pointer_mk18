@@ -57,14 +57,6 @@ type SketchDrag =
       YField: ActionParamField
       Target: LabelPos }
 
-/// In-flight translate-gizmo drag. Values are applied via direct
-/// slot patches (same realtime trick label drags use), and
-/// `Initial*` is kept so Cancel can restore the pre-drag state.
-type GizmoDrag =
-    { ActionId: ActionId
-      InitialX: float
-      InitialY: float
-      InitialZ: float }
 
 type EditorState =
     { Doc: Document
@@ -82,19 +74,25 @@ type EditorState =
       EditingDimension: EditingDimension option
       ActiveSketchDrag: SketchDrag option
       PendingSketchDragCommit: bool
-      /// In-flight translate gizmo drag (axis or plane handle).
-      /// Slot values are patched in real time while this is Some.
-      ActiveGizmoDrag: GizmoDrag option
+      /// Unified pointer-drag session on the 3D scene (currently
+      /// translate-gizmo axis/plane drags). Sketch point / label drags
+      /// still live in `ActiveSketchDrag` — they use a different
+      /// effect flow (async solver) and will join `ActiveSession` in a
+      /// follow-up pass.
+      ActiveSession: SceneSession option
       ConstraintPlacementMode: ConstraintPlacementKind option
       ConstraintPlacementDraft: ConstraintPlacementDraft option
       ConstraintPlacementCursor: (string * LabelPos) option
-      /// When Some id, the action list is in "edit this action's
-      /// inputs" mode for that action: one row per editable input is
-      /// expanded directly below it in the list.
-      WiringActionId: ActionId option
-      /// Which row of the edit expansion is currently focused.
-      /// `0` = the action row itself; `1..N` = the N input rows. Only
-      /// meaningful when `WiringActionId` is Some.
+      /// Action IDs whose inline input rows are currently expanded in
+      /// the action list. Multiple actions can be open at once —
+      /// `Right` arrow expands the currently-focused action, `Left`
+      /// collapses it (see Shortcuts.fs). `normalizeState` trims any
+      /// ids whose action no longer exists.
+      ExpandedActionIds: Set<ActionId>
+      /// Row within the currently-selected action that has keyboard
+      /// focus. `0` = the action row itself; `1..N` = the N input rows
+      /// (only meaningful while the selected action is in
+      /// `ExpandedActionIds`; otherwise forced to 0).
       EditFocusIdx: int
       /// When Some, an input row is in sub-edit mode:
       ///   * Scalar → ActionList renders an inline number input.
@@ -137,10 +135,12 @@ type Effect =
 
 type Message =
     | SelectAction of string
-    /// Enter "edit this action's inputs" mode: the action list expands
-    /// one row per editable input below the action.
-    | StartWiring of ActionId
-    | StopWiring
+    /// Expand the given action's input rows in the action list.
+    /// Idempotent — re-expanding a visible action is a no-op.
+    | ExpandAction of ActionId
+    /// Collapse the given action's input rows. No-op when the action
+    /// is already collapsed.
+    | CollapseAction of ActionId
     /// Move the focus cursor within the edit expansion. `0` = action
     /// row; `1..N` = input rows.
     | SetEditFocus of int
@@ -185,14 +185,23 @@ type Message =
     | ApplyResolvedSketchResult of string * float32[]
     | FinishSketchDrag
     | CancelSketchDrag
-    /// Start a translate gizmo drag on the given action. The viewer
-    /// captures initial x/y/z so Cancel can revert.
-    | BeginGizmoDrag of GizmoDrag
-    /// Apply new absolute x/y/z values to the dragging Translate.
-    /// Patches Doc + slot values in place — no recompile.
-    | UpdateGizmoDrag of x: float * y: float * z: float
-    | FinishGizmoDrag
-    | CancelGizmoDrag
+    /// Unified pointer-down on the 3D scene. The viewer resolves the
+    /// top pickable under the cursor and hands us a `PointerRay`; the
+    /// reducer decides whether to start a drag session or fall
+    /// through to selection-style logic. Only gizmo handles start a
+    /// `SceneSession` today — other pickable kinds continue to use
+    /// their current messages (ViewerPick, BeginSketchDrag, …).
+    | ScenePointerDown of target: Pickable * ray: PointerRay * mods: PointerMods
+    /// Every mousemove during an active session. Delegated to the
+    /// active session's update logic. No-op when `ActiveSession = None`.
+    | ScenePointerMove of ray: PointerRay
+    /// Mouseup — finishes the active session (commits in place; the
+    /// slot values have already been patched incrementally by
+    /// `ScenePointerMove`).
+    | ScenePointerUp of ray: PointerRay
+    /// Escape / external cancel — reverts the session's slot patches
+    /// to the captured drag-start values.
+    | SceneCancel
     | ViewerToolClick of float * float
     | ViewerPlaceConstraint of float * float
     | ToggleSketchEdit
@@ -313,11 +322,11 @@ module Editor =
           EditingDimension = None
           ActiveSketchDrag = None
           PendingSketchDragCommit = false
-          ActiveGizmoDrag = None
+          ActiveSession = None
           ConstraintPlacementMode = None
           ConstraintPlacementDraft = None
           ConstraintPlacementCursor = None
-          WiringActionId = None
+          ExpandedActionIds = Set.empty
           EditFocusIdx = 0
           EditingInputField = None
           EditingInputInitial = None
@@ -534,24 +543,24 @@ module Editor =
             match state.ActiveSketchDrag, state.Doc.SelectedId with
             | Some drag, Some selectedId when next.EditMode && selectedId = drag.SketchId -> Some drag
             | _ -> None
-        let activeGizmoDrag =
-            state.ActiveGizmoDrag
-            |> Option.filter (fun drag ->
-                state.Doc.Actions |> List.exists (fun a -> a.Id = drag.ActionId))
-        // If the action being wired was
-        // removed, exit wiring mode so the action list doesn't keep
-        // rendering phantom bubbles.
-        let wiringActionId =
-            state.WiringActionId
-            |> Option.filter (fun id -> state.Doc.Actions |> List.exists (fun a -> a.Id = id))
+        let activeSession =
+            state.ActiveSession
+            |> Option.filter (fun session ->
+                let id = SceneSession.actionId session
+                state.Doc.Actions |> List.exists (fun a -> a.Id = id))
+        // Drop any expanded ids whose action has been deleted.
+        let actionIds = state.Doc.Actions |> List.map (fun a -> a.Id) |> Set.ofList
+        let expandedActionIds = Set.intersect state.ExpandedActionIds actionIds
+        // Focus index is meaningful only while the selected action is
+        // expanded — otherwise clamp to 0 (the action row).
+        let selectedExpanded =
+            match state.Doc.SelectedId with
+            | Some id -> Set.contains id expandedActionIds
+            | None -> false
         let editFocusIdx =
-            match wiringActionId with
-            | Some _ -> max 0 state.EditFocusIdx
-            | None -> 0
+            if selectedExpanded then max 0 state.EditFocusIdx else 0
         let editingInputField =
-            match wiringActionId with
-            | Some _ -> state.EditingInputField
-            | None -> None
+            if selectedExpanded then state.EditingInputField else None
         let editingInputInitial =
             match editingInputField with
             | Some _ -> state.EditingInputInitial
@@ -569,11 +578,11 @@ module Editor =
             EditingDimension = editingDimension
             ActiveSketchDrag = activeSketchDrag
             PendingSketchDragCommit = if activeSketchDrag.IsSome then state.PendingSketchDragCommit else false
-            ActiveGizmoDrag = activeGizmoDrag
+            ActiveSession = activeSession
             ConstraintPlacementMode = next.ConstraintPlacementMode |> Option.bind tryConstraintPlacementKind
             ConstraintPlacementCursor = constraintPlacementCursor
             ConstraintPlacementDraft = constraintPlacementDraft
-            WiringActionId = wiringActionId
+            ExpandedActionIds = expandedActionIds
             EditFocusIdx = editFocusIdx
             EditingInputField = editingInputField
             EditingInputInitial = editingInputInitial
@@ -581,8 +590,27 @@ module Editor =
 
     let recompileState (state: EditorState) =
         let compiled = Pipeline.compile state.Doc.Actions
+        // Visibility is bound to the output type (Field vs Frame etc).
+        // When a ref rewire flips the type — e.g. a Translate switches
+        // from wrapping a field to wrapping a frame — snap the
+        // visibility to a mode that still makes sense.
+        let normalizedActions =
+            state.Doc.Actions
+            |> List.map (fun a ->
+                let isField =
+                    Map.tryFind a.Id compiled.TypeMap = Some FieldType.Field
+                let normalized = Document.normalizeVisibility a.Kind isField a.Visibility
+                if normalized = a.Visibility then a
+                else { a with Visibility = normalized })
+        let anyChanged =
+            (state.Doc.Actions, normalizedActions)
+            ||> List.exists2 (fun a b -> a.Visibility <> b.Visibility)
+        let nextDoc =
+            if anyChanged then { state.Doc with Actions = normalizedActions }
+            else state.Doc
         let next =
             { state with
+                Doc = nextDoc
                 Compiled = compiled
                 SlotValues = Array.copy compiled.Slots.Values
                 SolvedSketchParams = Map.empty
@@ -682,12 +710,12 @@ module Editor =
             EditingDimension = None
             ActiveSketchDrag = None
             PendingSketchDragCommit = false
-            ActiveGizmoDrag = None
+            ActiveSession = None
             SolvedSketchParams = Map.empty
             ConstraintPlacementMode = None
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None
-            WiringActionId = None
+            ExpandedActionIds = Set.empty
             EditFocusIdx = 0
             EditingInputField = None
             EditingInputInitial = None
@@ -775,6 +803,389 @@ module Editor =
         | { Kind = DragConstraintLabel _ } -> true
         | _ -> false
 
+    /// Walks down a FieldNode accumulating its leading rigid transforms
+    /// so the viewer's field-slice renderer and the translate-gizmo
+    /// session can share one way of resolving "where does this field
+    /// live in the world". For frame-output Translates the transform
+    /// comes from `Compiled.Frames`; for field-output Translates the
+    /// compiled `FieldSurface.Field` tree encodes the accumulated
+    /// translate/rotate chain.
+    let rec leadingFieldTransform (state: EditorState) (field: FieldNode) (acc: RigidTransform) =
+        let slot (s: Slot) = state.SlotValues.[s]
+        match field with
+        | FTranslate(x, y, z, child) ->
+            let step = RigidTransform.translate { X = slot x; Y = slot y; Z = slot z }
+            leadingFieldTransform state child (acc * step)
+        | FRotate(ax, ay, az, angle, child) ->
+            let step =
+                RigidTransform.fromAxisAngle
+                    { X = slot ax; Y = slot ay; Z = slot az }
+                    (slot angle)
+            leadingFieldTransform state child (acc * step)
+        | FFieldOp(_, _, child) -> leadingFieldTransform state child acc
+        | _ -> acc
+
+    /// Resolve the world pose of an action whose output can be expressed as a
+    /// leading rigid transform (currently Translate/Rotate gizmos).
+    let resolveActionTransform (state: EditorState) (actionId: ActionId) : RigidTransform =
+        match Map.tryFind actionId state.Compiled.Frames with
+        | Some chain -> Frames.foldChain state.Compiled.Slots state.SlotValues chain
+        | None ->
+            state.Compiled.Surfaces
+            |> List.tryFind (fun s -> s.ActionId = actionId)
+            |> Option.map (fun s -> leadingFieldTransform state s.Field RigidTransform.Identity)
+            |> Option.defaultValue RigidTransform.Identity
+
+    // ── Scene interaction dispatch ────────────────────────────────────
+    //
+    // Unified entry points for the `Scene*` pointer messages. Each
+    // returns `(EditorState * Effect list)` — same contract as the
+    // reducer itself so the top-level `update` just delegates.
+
+    let rotateAxisHandlePx = 76.0
+    let rotateAngleHandlePx = 52.0
+
+    let private readTranslateSlot (state: EditorState) (actionId: ActionId) (path: string) : float =
+        match SlotTable.tryFindSlot state.Compiled.Slots { ActionId = actionId; Path = path } with
+        | Some s when s < state.SlotValues.Length -> state.SlotValues.[s]
+        | _ -> 0.0
+
+    let private readRotateSlot = readTranslateSlot
+
+    let private patchRotateSlots
+            (state: EditorState)
+            (actionId: ActionId)
+            (ax: float) (ay: float) (az: float)
+            (angle: float) : Document * float array =
+        let nextDoc =
+            state.Doc
+            |> Document.patchParamValue actionId RotateAxisX (VFloat ax)
+            |> Document.patchParamValue actionId RotateAxisY (VFloat ay)
+            |> Document.patchParamValue actionId RotateAxisZ (VFloat az)
+            |> Document.patchParamValue actionId RotateAngle (VFloat angle)
+        let updates =
+            [ { ActionId = actionId; Path = "ax" }, ax
+              { ActionId = actionId; Path = "ay" }, ay
+              { ActionId = actionId; Path = "az" }, az
+              { ActionId = actionId; Path = "angle" }, angle ]
+        nextDoc, patchSlotValues state.SlotValues state.Compiled updates
+
+    let halfPlaneAxisDir (state: EditorState) (actionId: ActionId) : Vec3 =
+        match state.Doc.Actions |> List.tryFind (fun a -> a.Id = actionId) with
+        | Some { Kind = HalfPlane(axis, _, _) } ->
+            match axis with
+            | "X" -> { X = 1.0; Y = 0.0; Z = 0.0 }
+            | "Y" -> { X = 0.0; Y = 1.0; Z = 0.0 }
+            | _ -> { X = 0.0; Y = 0.0; Z = 1.0 }
+        | _ -> { X = 0.0; Y = 0.0; Z = 1.0 }
+
+    let halfPlaneAxisIndex (state: EditorState) (actionId: ActionId) : int =
+        match state.Doc.Actions |> List.tryFind (fun a -> a.Id = actionId) with
+        | Some { Kind = HalfPlane(axis, _, _) } ->
+            match axis with
+            | "X" -> 0
+            | "Y" -> 1
+            | _ -> 2
+        | _ -> 2
+
+    let private halfPlaneAxisName axisIndex =
+        match axisIndex with
+        | 0 -> "X"
+        | 1 -> "Y"
+        | _ -> "Z"
+
+    let halfPlaneOffsetValue (state: EditorState) (actionId: ActionId) : float =
+        readTranslateSlot state actionId "offset"
+
+    let private patchHalfPlaneOffset
+            (state: EditorState)
+            (actionId: ActionId)
+            (offset: float) : Document * float array =
+        let nextDoc =
+            state.Doc
+            |> Document.patchParamValue actionId HalfPlaneOffset (VFloat offset)
+        let updates =
+            [ { ActionId = actionId; Path = "offset" }, offset ]
+        nextDoc, patchSlotValues state.SlotValues state.Compiled updates
+
+    let private setHalfPlaneAxis
+            (state: EditorState)
+            (actionId: ActionId)
+            (axisIndex: int) : EditorState * Effect list =
+        let axisName = halfPlaneAxisName axisIndex
+        let currentIndex = halfPlaneAxisIndex state actionId
+        if currentIndex = axisIndex then state, noEffects
+        else
+            let nextDoc =
+                state.Doc
+                |> Document.patchParamValue actionId HalfPlaneAxis (VString axisName)
+            { state with Doc = nextDoc } |> recompileState, noEffects
+
+    let normalizedRotateAxisLocal (state: EditorState) (actionId: ActionId) : Vec3 =
+        let axis =
+            { X = readRotateSlot state actionId "ax"
+              Y = readRotateSlot state actionId "ay"
+              Z = readRotateSlot state actionId "az" }
+        if axis.LengthSq < 1e-9 then { X = 0.0; Y = 0.0; Z = 1.0 }
+        else axis.Normalized
+
+    let rotateAngleValue (state: EditorState) (actionId: ActionId) : float =
+        readRotateSlot state actionId "angle"
+
+    let orthonormalBasisFromAxis (axis: Vec3) : Vec3 * Vec3 =
+        let helper =
+            if abs axis.Z < 0.9 then { X = 0.0; Y = 0.0; Z = 1.0 }
+            else { X = 1.0; Y = 0.0; Z = 0.0 }
+        let u = Vec3.Cross(helper, axis).Normalized
+        let v = Vec3.Cross(axis, u).Normalized
+        u, v
+
+    let private signedAngleAboutAxis (axis: Vec3) (basisU: Vec3) (basisV: Vec3) (dir: Vec3) : float =
+        let x = Vec3.Dot(dir, basisU)
+        let y = Vec3.Dot(dir, basisV)
+        System.Math.Atan2(y, x)
+
+    let private localAxis axisIndex : Vec3 =
+        match axisIndex with
+        | 0 -> { X = 1.0; Y = 0.0; Z = 0.0 }
+        | 1 -> { X = 0.0; Y = 1.0; Z = 0.0 }
+        | _ -> { X = 0.0; Y = 0.0; Z = 1.0 }
+
+    let private planeAxes planeIndex : Vec3 * Vec3 =
+        match planeIndex with
+        | 0 -> localAxis 0, localAxis 1  // XY
+        | 1 -> localAxis 1, localAxis 2  // YZ
+        | _ -> localAxis 0, localAxis 2  // XZ
+
+    let private patchTranslateSlots (state: EditorState) (actionId: ActionId) (x: float) (y: float) (z: float) : Document * float array =
+        let nextDoc =
+            state.Doc
+            |> Document.patchParamValue actionId TranslateX (VFloat x)
+            |> Document.patchParamValue actionId TranslateY (VFloat y)
+            |> Document.patchParamValue actionId TranslateZ (VFloat z)
+        let updates =
+            [ { ActionId = actionId; Path = "x" }, x
+              { ActionId = actionId; Path = "y" }, y
+              { ActionId = actionId; Path = "z" }, z ]
+        nextDoc, patchSlotValues state.SlotValues state.Compiled updates
+
+    let private beginGizmoAxisDrag
+            (state: EditorState) (actionId: ActionId) (axisIdx: int) (ray: PointerRay)
+            : EditorState * Effect list =
+        let xform = resolveActionTransform state actionId
+        let axisDirWorld = xform.Rot.Rotate(localAxis axisIdx)
+        match PointerRay.projectOntoAxis ray xform.Trans axisDirWorld with
+        | None -> state, noEffects
+        | Some t0 ->
+            let session =
+                { ActionId = actionId
+                  AxisIndex = axisIdx
+                  AxisDir = axisDirWorld
+                  Anchor = xform.Trans
+                  InitialX = readTranslateSlot state actionId "x"
+                  InitialY = readTranslateSlot state actionId "y"
+                  InitialZ = readTranslateSlot state actionId "z"
+                  InitialT = t0 }
+            { state with ActiveSession = Some(GizmoAxisDrag session) }, noEffects
+
+    let private beginGizmoPlaneDrag
+            (state: EditorState) (actionId: ActionId) (planeIdx: int) (ray: PointerRay)
+            : EditorState * Effect list =
+        let xform = resolveActionTransform state actionId
+        let localU, localV = planeAxes planeIdx
+        let axisU = xform.Rot.Rotate(localU)
+        let axisV = xform.Rot.Rotate(localV)
+        match PointerRay.intersectPlane ray xform.Trans axisU axisV with
+        | None -> state, noEffects
+        | Some(u0, v0) ->
+            let session =
+                { ActionId = actionId
+                  PlaneIndex = planeIdx
+                  AxisU = axisU
+                  AxisV = axisV
+                  Anchor = xform.Trans
+                  InitialX = readTranslateSlot state actionId "x"
+                  InitialY = readTranslateSlot state actionId "y"
+                  InitialZ = readTranslateSlot state actionId "z"
+                  InitialU = u0
+                  InitialV = v0 }
+            { state with ActiveSession = Some(GizmoPlaneDrag session) }, noEffects
+
+    let private beginRotateAxisDrag
+            (state: EditorState) (actionId: ActionId) : EditorState * Effect list =
+        let xform = resolveActionTransform state actionId
+        let axisLocal = normalizedRotateAxisLocal state actionId
+        let axisWorld = xform.Rot.Rotate(axisLocal).Normalized
+        let session =
+            { ActionId = actionId
+              Anchor = xform.Trans
+              WorldToLocal = xform.Rot.Inverse
+              FallbackWorldAxis = axisWorld
+              InitialAxisX = axisLocal.X
+              InitialAxisY = axisLocal.Y
+              InitialAxisZ = axisLocal.Z }
+        { state with ActiveSession = Some(RotateAxisDrag session) }, noEffects
+
+    let private beginRotateAngleDrag
+            (state: EditorState) (actionId: ActionId) (ray: PointerRay) : EditorState * Effect list =
+        let xform = resolveActionTransform state actionId
+        let axisLocal = normalizedRotateAxisLocal state actionId
+        let axisWorld = xform.Rot.Rotate(axisLocal).Normalized
+        let basisU, basisV = orthonormalBasisFromAxis axisWorld
+        // Angle drag lives in the plane orthogonal to the current axis and
+        // centered at the rotate origin. The viewer renders the guide using
+        // the same basis; only its screen-space radius is viewer-specific.
+        match PointerRay.intersectPlane ray xform.Trans basisU basisV with
+        | None -> state, noEffects
+        | Some _ ->
+            let session =
+                { ActionId = actionId
+                  Center = xform.Trans
+                  AxisWorld = axisWorld
+                  BasisU = basisU
+                  BasisV = basisV
+                  InitialAngle = rotateAngleValue state actionId }
+            { state with ActiveSession = Some(RotateAngleDrag session) }, noEffects
+
+    let private beginHalfPlaneOffsetDrag
+            (state: EditorState) (actionId: ActionId) (ray: PointerRay)
+            : EditorState * Effect list =
+        let axisDir = halfPlaneAxisDir state actionId
+        match PointerRay.projectOntoAxis ray Vec3.Zero axisDir with
+        | None -> state, noEffects
+        | Some t0 ->
+            let session =
+                { ActionId = actionId
+                  AxisDir = axisDir
+                  Anchor = Vec3.Zero
+                  InitialOffset = halfPlaneOffsetValue state actionId
+                  InitialT = t0 }
+            { state with ActiveSession = Some(HalfPlaneOffsetDrag session) }, noEffects
+
+    let private updateGizmoAxisDrag (state: EditorState) (s: GizmoAxisDragSession) (ray: PointerRay) : EditorState * Effect list =
+        match PointerRay.projectOntoAxis ray s.Anchor s.AxisDir with
+        | None -> state, noEffects
+        | Some t ->
+            let dt = t - s.InitialT
+            let nx, ny, nz =
+                match s.AxisIndex with
+                | 0 -> s.InitialX + dt, s.InitialY, s.InitialZ
+                | 1 -> s.InitialX, s.InitialY + dt, s.InitialZ
+                | _ -> s.InitialX, s.InitialY, s.InitialZ + dt
+            let nextDoc, nextSlots = patchTranslateSlots state s.ActionId nx ny nz
+            { state with Doc = nextDoc; SlotValues = nextSlots }, noEffects
+
+    let private updateGizmoPlaneDrag (state: EditorState) (s: GizmoPlaneDragSession) (ray: PointerRay) : EditorState * Effect list =
+        match PointerRay.intersectPlane ray s.Anchor s.AxisU s.AxisV with
+        | None -> state, noEffects
+        | Some(u, v) ->
+            let du = u - s.InitialU
+            let dv = v - s.InitialV
+            let nx, ny, nz =
+                match s.PlaneIndex with
+                | 0 -> s.InitialX + du, s.InitialY + dv, s.InitialZ
+                | 1 -> s.InitialX, s.InitialY + du, s.InitialZ + dv
+                | _ -> s.InitialX + du, s.InitialY, s.InitialZ + dv
+            let nextDoc, nextSlots = patchTranslateSlots state s.ActionId nx ny nz
+            { state with Doc = nextDoc; SlotValues = nextSlots }, noEffects
+
+    let private updateRotateAxisDrag (state: EditorState) (s: RotateAxisDragSession) (ray: PointerRay) : EditorState * Effect list =
+        let worldDir = PointerRay.projectToSphereDirection ray s.Anchor s.FallbackWorldAxis
+        let localDir = s.WorldToLocal.Rotate(worldDir).Normalized
+        let nextDoc, nextSlots =
+            patchRotateSlots state s.ActionId localDir.X localDir.Y localDir.Z (rotateAngleValue state s.ActionId)
+        { state with Doc = nextDoc; SlotValues = nextSlots }, noEffects
+
+    let private updateRotateAngleDrag (state: EditorState) (s: RotateAngleDragSession) (ray: PointerRay) : EditorState * Effect list =
+        match PointerRay.intersectPlane ray s.Center s.BasisU s.BasisV with
+        | None -> state, noEffects
+        | Some (u, v) ->
+            let dir = ({ X = u; Y = v; Z = 0.0 }.LengthSq)
+            if dir < 1e-9 then state, noEffects
+            else
+                let worldDir = (u * s.BasisU + v * s.BasisV).Normalized
+                let nextAngle = signedAngleAboutAxis s.AxisWorld s.BasisU s.BasisV worldDir
+                let axis = normalizedRotateAxisLocal state s.ActionId
+                let nextDoc, nextSlots =
+                    patchRotateSlots state s.ActionId axis.X axis.Y axis.Z nextAngle
+                { state with Doc = nextDoc; SlotValues = nextSlots }, noEffects
+
+    let private updateHalfPlaneOffsetDrag
+            (state: EditorState)
+            (s: HalfPlaneOffsetDragSession)
+            (ray: PointerRay) : EditorState * Effect list =
+        match PointerRay.projectOntoAxis ray s.Anchor s.AxisDir with
+        | None -> state, noEffects
+        | Some t ->
+            let nextOffset = s.InitialOffset + (t - s.InitialT)
+            let nextDoc, nextSlots = patchHalfPlaneOffset state s.ActionId nextOffset
+            { state with Doc = nextDoc; SlotValues = nextSlots }, noEffects
+
+    let sceneOnPointerDown (state: EditorState) (target: Pickable) (ray: PointerRay) : EditorState * Effect list =
+        match target with
+        | PickGizmoHandle(_, actionId, GAxis axisIdx) -> beginGizmoAxisDrag state actionId axisIdx ray
+        | PickGizmoHandle(_, actionId, GPlane planeIdx) -> beginGizmoPlaneDrag state actionId planeIdx ray
+        | PickGizmoHandle(_, actionId, GRotateAxis) -> beginRotateAxisDrag state actionId
+        | PickGizmoHandle(_, actionId, GRotateAngle) -> beginRotateAngleDrag state actionId ray
+        | PickGizmoHandle(_, actionId, GHalfPlaneAxis axisIdx) -> setHalfPlaneAxis state actionId axisIdx
+        | PickGizmoHandle(_, actionId, GHalfPlaneOffset) -> beginHalfPlaneOffsetDrag state actionId ray
+        | _ ->
+            // No non-gizmo pickables flow through Scene* this pass —
+            // selection / sketch drag / etc. still use their existing
+            // messages. Silently ignore anything else so future call
+            // sites can widen the match without a breaking change.
+            state, noEffects
+
+    let sceneOnPointerMove (state: EditorState) (ray: PointerRay) : EditorState * Effect list =
+        match state.ActiveSession with
+        | Some (GizmoAxisDrag s) -> updateGizmoAxisDrag state s ray
+        | Some (GizmoPlaneDrag s) -> updateGizmoPlaneDrag state s ray
+        | Some (RotateAxisDrag s) -> updateRotateAxisDrag state s ray
+        | Some (RotateAngleDrag s) -> updateRotateAngleDrag state s ray
+        | Some (HalfPlaneOffsetDrag s) -> updateHalfPlaneOffsetDrag state s ray
+        | None -> state, noEffects
+
+    let sceneOnPointerUp (state: EditorState) : EditorState * Effect list =
+        { state with ActiveSession = None }, noEffects
+
+    let sceneOnCancel (state: EditorState) : EditorState * Effect list =
+        match state.ActiveSession with
+        | Some (GizmoAxisDrag s) ->
+            let nextDoc, nextSlots = patchTranslateSlots state s.ActionId s.InitialX s.InitialY s.InitialZ
+            { state with
+                Doc = nextDoc
+                SlotValues = nextSlots
+                ActiveSession = None }, noEffects
+        | Some (GizmoPlaneDrag s) ->
+            let nextDoc, nextSlots = patchTranslateSlots state s.ActionId s.InitialX s.InitialY s.InitialZ
+            { state with
+                Doc = nextDoc
+                SlotValues = nextSlots
+                ActiveSession = None }, noEffects
+        | Some (RotateAxisDrag s) ->
+            let nextDoc, nextSlots =
+                patchRotateSlots state s.ActionId s.InitialAxisX s.InitialAxisY s.InitialAxisZ (rotateAngleValue state s.ActionId)
+            { state with
+                Doc = nextDoc
+                SlotValues = nextSlots
+                ActiveSession = None }, noEffects
+        | Some (RotateAngleDrag s) ->
+            let axis = normalizedRotateAxisLocal state s.ActionId
+            let nextDoc, nextSlots =
+                patchRotateSlots state s.ActionId axis.X axis.Y axis.Z s.InitialAngle
+            { state with
+                Doc = nextDoc
+                SlotValues = nextSlots
+                ActiveSession = None }, noEffects
+        | Some (HalfPlaneOffsetDrag s) ->
+            let nextDoc, nextSlots =
+                patchHalfPlaneOffset state s.ActionId s.InitialOffset
+            { state with
+                Doc = nextDoc
+                SlotValues = nextSlots
+                ActiveSession = None }, noEffects
+        | None -> state, noEffects
+
     let private patchDragTargetSlotValues (state: EditorState) (drag: SketchDrag) (target: LabelPos) =
         let patched = Array.copy state.SlotValues
 
@@ -859,84 +1270,52 @@ module Editor =
                 { state with PendingSketchDragCommit = false; SolvedSketchParams = Map.empty }, noEffects
         | CancelSketchDrag ->
             { state with ActiveSketchDrag = None; PendingSketchDragCommit = false; SolvedSketchParams = Map.empty }, noEffects
-        | BeginGizmoDrag drag ->
-            { state with ActiveGizmoDrag = Some drag }, noEffects
-        | UpdateGizmoDrag(x, y, z) ->
-            match state.ActiveGizmoDrag with
-            | Some drag ->
-                let nextDoc =
-                    state.Doc
-                    |> Document.patchParamValue drag.ActionId TranslateX (VFloat x)
-                    |> Document.patchParamValue drag.ActionId TranslateY (VFloat y)
-                    |> Document.patchParamValue drag.ActionId TranslateZ (VFloat z)
-                let updates =
-                    [ { ActionId = drag.ActionId; Path = "x" }, x
-                      { ActionId = drag.ActionId; Path = "y" }, y
-                      { ActionId = drag.ActionId; Path = "z" }, z ]
-                { state with
-                    Doc = nextDoc
-                    SlotValues = patchSlotValues state.SlotValues state.Compiled updates },
-                noEffects
-            | None -> state, noEffects
-        | FinishGizmoDrag ->
-            { state with ActiveGizmoDrag = None }, noEffects
-        | CancelGizmoDrag ->
-            match state.ActiveGizmoDrag with
-            | Some drag ->
-                let nextDoc =
-                    state.Doc
-                    |> Document.patchParamValue drag.ActionId TranslateX (VFloat drag.InitialX)
-                    |> Document.patchParamValue drag.ActionId TranslateY (VFloat drag.InitialY)
-                    |> Document.patchParamValue drag.ActionId TranslateZ (VFloat drag.InitialZ)
-                let updates =
-                    [ { ActionId = drag.ActionId; Path = "x" }, drag.InitialX
-                      { ActionId = drag.ActionId; Path = "y" }, drag.InitialY
-                      { ActionId = drag.ActionId; Path = "z" }, drag.InitialZ ]
-                { state with
-                    Doc = nextDoc
-                    SlotValues = patchSlotValues state.SlotValues state.Compiled updates
-                    ActiveGizmoDrag = None },
-                noEffects
-            | None -> state, noEffects
+        | ScenePointerDown(target, ray, _mods) ->
+            sceneOnPointerDown state target ray
+        | ScenePointerMove ray ->
+            sceneOnPointerMove state ray
+        | ScenePointerUp _ ->
+            sceneOnPointerUp state
+        | SceneCancel ->
+            sceneOnCancel state
         | _ ->
             let next =
                 match message with
                 | SelectAction id ->
-                    // Selecting an action exits wiring mode (which is
-                    // scoped to one action).
+                    // Selection doesn't touch the expansion set any
+                    // more — users can have several actions open and
+                    // jump between them without losing context.
                     { state with
                         Doc = Document.select id state.Doc
-                        WiringActionId = None
                         EditFocusIdx = 0
                         EditingInputField = None
                         EditingInputInitial = None
                         RefPickIdx = 0 }
-                | StartWiring actionId ->
+                | ExpandAction actionId ->
                     match state.Doc.Actions |> List.tryFind (fun a -> a.Id = actionId) with
                     | Some action ->
-                        // Entering edit mode on a Sketch action also
-                        // drops us into sketch-edit mode so the user
-                        // can start drawing immediately.
+                        // Expanding a Sketch action also drops into
+                        // sketch-edit mode so the user can start
+                        // drawing immediately.
                         let enterSketchEdit =
                             match action.Kind with
                             | Sketch _ -> true
                             | _ -> false
                         { state with
-                            WiringActionId = Some actionId
-                            EditFocusIdx = 0
-                            EditingInputField = None
-                            EditingInputInitial = None
-                            RefPickIdx = 0
+                            ExpandedActionIds = Set.add actionId state.ExpandedActionIds
                             SketchEditMode = if enterSketchEdit then true else state.SketchEditMode }
                         |> normalizeState
                     | None -> state
-                | StopWiring ->
+                | CollapseAction actionId ->
+                    // Dropping the focused action's expansion resets
+                    // focus to the action row + clears sub-edit state.
+                    let clearFocus = state.Doc.SelectedId = Some actionId
                     { state with
-                        WiringActionId = None
-                        EditFocusIdx = 0
-                        EditingInputField = None
-                        EditingInputInitial = None
-                        RefPickIdx = 0 }
+                        ExpandedActionIds = Set.remove actionId state.ExpandedActionIds
+                        EditFocusIdx = if clearFocus then 0 else state.EditFocusIdx
+                        EditingInputField = if clearFocus then None else state.EditingInputField
+                        EditingInputInitial = if clearFocus then None else state.EditingInputInitial
+                        RefPickIdx = if clearFocus then 0 else state.RefPickIdx }
                 | SetEditFocus idx ->
                     { state with
                         EditFocusIdx = max 0 idx
@@ -980,7 +1359,7 @@ module Editor =
                     { state with
                         Doc = Document.addAction action state.Doc
                         ActionPickerOpen = false
-                        WiringActionId = Some id
+                        ExpandedActionIds = Set.add id state.ExpandedActionIds
                         EditFocusIdx = 0
                         EditingInputField = None
                         EditingInputInitial = None
@@ -1019,7 +1398,9 @@ module Editor =
                 | CycleActionVisibility actionId ->
                     match state.Doc.Actions |> List.tryFind (fun a -> a.Id = actionId) with
                     | Some action ->
-                        let next = Document.cycleVisibility action.Kind action.Visibility
+                        let isField =
+                            Map.tryFind actionId state.Compiled.TypeMap = Some FieldType.Field
+                        let next = Document.cycleVisibility action.Kind isField action.Visibility
                         { state with Doc = Document.setVisibility actionId next state.Doc }
                         |> normalizeState
                     | None -> state
@@ -1114,10 +1495,10 @@ module Editor =
                 | ApplyResolvedSketchResult _
                 | FinishSketchDrag
                 | CancelSketchDrag
-                | BeginGizmoDrag _
-                | UpdateGizmoDrag _
-                | FinishGizmoDrag
-                | CancelGizmoDrag ->
+                | ScenePointerDown _
+                | ScenePointerMove _
+                | ScenePointerUp _
+                | SceneCancel ->
                     state
                 | ViewerToolClick(x, y) ->
                     match SketchAuthoring.trySelectedSketch state.Doc with

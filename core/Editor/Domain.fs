@@ -58,7 +58,8 @@ type SketchConstraintField =
     | ConstraintAngle
 
 type FromSketchSelectionValue =
-    | SelectionLoopValue of string option
+    | SelectionAllLoopsValue
+    | SelectionLoopsValue of string list
     | SelectionElementsValue of string list
 
 type ActionParamField =
@@ -330,9 +331,24 @@ module Document =
             Actions = doc.Actions |> List.map (fun a -> if a.Id = id then updated else a) }
 
     let removeAction (id: string) (doc: Document) : Document =
+        // When the deleted action is the selected one, move selection to
+        // the action above it (or to the first remaining action if we
+        // removed the topmost non-Origin row). Leaves selection alone
+        // when something else was selected.
+        let idx = doc.Actions |> List.tryFindIndex (fun a -> a.Id = id)
+        let nextActions = doc.Actions |> List.filter (fun a -> a.Id <> id)
+        let nextSelected =
+            if doc.SelectedId = Some id then
+                match idx with
+                | Some i when i > 0 ->
+                    doc.Actions |> List.tryItem (i - 1) |> Option.map (fun a -> a.Id)
+                | _ ->
+                    nextActions |> List.tryHead |> Option.map (fun a -> a.Id)
+            else
+                doc.SelectedId
         { doc with
-            Actions = doc.Actions |> List.filter (fun a -> a.Id <> id)
-            SelectedId = if doc.SelectedId = Some id then None else doc.SelectedId }
+            Actions = nextActions
+            SelectedId = nextSelected }
 
     // ── Visibility helpers ──────────────────────────────────────────
     //
@@ -435,10 +451,11 @@ module Document =
                 | _ -> entity)
         { sketch with Entities = entities }
 
-    let private patchFromSketchSelection current =
+    let private patchFromSketchSelection _current =
         function
+        | SelectionAllLoopsValue -> SelectionAllLoops
+        | SelectionLoopsValue loopIds -> SelectionLoops loopIds
         | SelectionElementsValue lineIds -> SelectionElements lineIds
-        | SelectionLoopValue loopId -> SelectionLoop loopId
 
     let private patchSketchConstraintParam index field value (sketch: ActionSketch) =
         let constraints =
@@ -535,24 +552,29 @@ module Document =
                              | FromSketchSelection ->
                                 match value with
                                 | VRecord _ ->
+                                    let stringList field =
+                                        ParamValue.tryField field value
+                                        |> Option.bind (function
+                                            | VArray items ->
+                                                List.foldBack
+                                                    (fun item acc ->
+                                                        match item, acc with
+                                                        | Some x, Some xs -> Some(x :: xs)
+                                                        | _ -> None)
+                                                    (items |> List.map ParamValue.asString)
+                                                    (Some [])
+                                            | _ -> None)
+                                        |> Option.defaultValue []
                                     match ParamValue.tryField "case" value |> Option.bind ParamValue.asString with
                                     | Some "SelectionElements" ->
-                                        let lineIds =
-                                            ParamValue.tryField "lineIds" value
-                                            |> Option.bind (function
-                                                | VArray items ->
-                                                    List.foldBack
-                                                        (fun item acc ->
-                                                            match item, acc with
-                                                            | Some x, Some xs -> Some(x :: xs)
-                                                            | _ -> None)
-                                                        (items |> List.map ParamValue.asString)
-                                                        (Some [])
-                                                | _ -> None)
-                                            |> Option.defaultValue []
-                                        patchFromSketchSelection sel (SelectionElementsValue lineIds)
+                                        patchFromSketchSelection sel (SelectionElementsValue(stringList "lineIds"))
+                                    | Some "SelectionLoops" ->
+                                        patchFromSketchSelection sel (SelectionLoopsValue(stringList "loopIds"))
+                                    | Some "SelectionAllLoops" ->
+                                        patchFromSketchSelection sel SelectionAllLoopsValue
                                     | _ ->
-                                        patchFromSketchSelection sel (SelectionLoopValue(ParamValue.tryField "loopId" value |> Option.bind ParamValue.asStringOption))
+                                        // Unknown / legacy payload — fall back to "all".
+                                        patchFromSketchSelection sel SelectionAllLoopsValue
                                 | _ -> sel
                              | _ -> sel))
                     | Thicken(c, amt) ->
@@ -626,7 +648,7 @@ module Document =
                                 Distance("p_bl", "p_br", 10.0, None)
                                 Distance("p_bl", "p_tl", 10.0, None) ] }))
               act "frame1" "frame" (Translate(child = Some "origin", x = 18.0, y = 6.0, z = 12.0))
-              act "from1" "from-sketch" (FromSketch(child = Some "sketch1", flip = false, selection = SelectionLoop None)) ] }
+              act "from1" "from-sketch" (FromSketch(child = Some "sketch1", flip = false, selection = SelectionAllLoops)) ] }
 
     let emptyDocument () : Document =
         { Name = "untitled"

@@ -128,14 +128,26 @@ type InputDisplay =
     | ScalarDisplay of label: string * value: float * field: ActionParamField
     | SelectDisplay of label: string * value: string * choices: string list * field: ActionParamField
     | CheckDisplay of label: string * value: bool * field: ActionParamField
+    /// Per-loop checkbox for a FromSketch action. Carries the data the
+    /// keyboard handler needs to compute the new FromSketchSelection
+    /// payload (the loop being toggled, the full set of detected loops,
+    /// and the current selection).
+    | LoopToggleDisplay of
+        label: string *
+        isChecked: bool *
+        loopId: string *
+        allLoopIds: string list *
+        selection: FromSketchSelection
 
 /// Every editable input of the action, in the same order as the right-
 /// panel's `renderKindControls` (so the two views line up semantically).
-let inputsOf (kind: ActionKind) : InputDisplay list =
+/// Takes the full doc because some inputs are dynamic — a FromSketch's
+/// loop checkboxes depend on the source sketch's detected loops.
+let inputsOf (doc: DocumentView) (action: DocAction) : InputDisplay list =
     let ref' label accepted field current : InputDisplay =
         RefDisplay { FullLabel = label; AcceptedKey = accepted; Field = field; Current = current }
     let scalar label value field = ScalarDisplay(label, value, field)
-    match kind with
+    match action.Kind with
     | Origin -> []
     | Sphere r -> [ scalar "radius" r SphereRadius ]
     | Cylinder(r, h) ->
@@ -183,9 +195,31 @@ let inputsOf (kind: ActionKind) : InputDisplay list =
             | YZ -> "YZ"
         [ ref' "origin" "origin" SketchOrigin o
           SelectDisplay("plane", planeLabel, [ "XY"; "XZ"; "YZ" ], SketchPlane) ]
-    | FromSketch(c, flip, _) ->
+    | FromSketch(c, flip, sel) ->
+        // Per-loop checkboxes: derived from whatever sketch this
+        // FromSketch is currently bound to, in the order the sketch
+        // detected them. SelectionAllLoops shows everything as ticked.
+        let loopRows =
+            match c |> Option.bind (fun id -> Map.tryFind id doc.SketchLoops) with
+            | None -> []
+            | Some loops ->
+                let allIds = loops |> List.map (fun l -> l.Id)
+                let isOn id =
+                    match sel with
+                    | SelectionAllLoops -> true
+                    | SelectionLoops ids -> List.contains id ids
+                    | SelectionElements _ -> false
+                loops
+                |> List.mapi (fun i loop ->
+                    LoopToggleDisplay(
+                        sprintf "loop %d" (i + 1),
+                        isOn loop.Id,
+                        loop.Id,
+                        allIds,
+                        sel))
         [ ref' "sketch" "child" FromSketchChild c
           CheckDisplay("flip", flip, FromSketchFlip) ]
+        @ loopRows
     | Thicken(c, amount) ->
         [ ref' "child" "child" ThickenChild c
           scalar "amount" amount ThickenAmount ]
@@ -217,6 +251,7 @@ let private fieldOfInput (input: InputDisplay) : ActionParamField =
     | ScalarDisplay(_, _, f)
     | SelectDisplay(_, _, _, f)
     | CheckDisplay(_, _, f) -> f
+    | LoopToggleDisplay _ -> FromSketchSelection
 
 let private renderInputRow
         (dispatch: Message -> unit)
@@ -225,16 +260,16 @@ let private renderInputRow
         (input: InputDisplay)
         : HTMLElement =
     let row = Dom.el "div" "input-row"
+    let field = fieldOfInput input
+    let isEditingThis = doc.EditingInputField = Some field
     let label =
         match input with
         | RefDisplay s -> s.FullLabel
         | ScalarDisplay(l, _, _) -> l
         | SelectDisplay(l, _, _, _) -> l
         | CheckDisplay(l, _, _) -> l
+        | LoopToggleDisplay(l, _, _, _, _) -> l
     row.appendChild (Dom.elText "span" "input-row-label" label :> Node) |> ignore
-
-    let field = fieldOfInput input
-    let isEditingThis = doc.EditingInputField = Some field
 
     match input, isEditingThis with
     | ScalarDisplay(_, value, scalarField), true ->
@@ -295,15 +330,14 @@ let private renderInputRow
             | ScalarDisplay(_, v, _) -> formatFloat v
             | SelectDisplay(_, v, _, _) -> v
             | CheckDisplay(_, v, _) -> if v then "yes" else "no"
+            | LoopToggleDisplay(_, isChecked, _, _, _) -> if isChecked then "yes" else "no"
         let valueEl = Dom.elText "span" "input-row-value" valueText
         match input with
         | RefDisplay s when s.Current.IsNone ->
             valueEl.classList.add "is-empty"
+        | LoopToggleDisplay(_, false, _, _, _) ->
+            valueEl.classList.add "is-empty"
         | _ -> ()
-        if isEditingThis then
-            match input with
-            | RefDisplay _ -> valueEl.classList.add "is-picking"
-            | _ -> ()
         row.appendChild (valueEl :> Node) |> ignore
     row
 
@@ -342,6 +376,26 @@ let private renderRow
     row.addEventListener ("click", fun _ -> dispatch (SelectAction action.Id))
 
     let main = Dom.el "div" "action-main"
+
+    // Expand caret — shown only for actions that actually have inputs.
+    // Rotates 90° via CSS when the parent row has `is-expanded`.
+    // Actions without inputs get an invisible placeholder so icons stay
+    // aligned across the list.
+    let hasInputs = not (List.isEmpty (inputsOf doc action))
+    let caret = Dom.el "button" "action-expand"
+    if not hasInputs then caret.classList.add "is-hidden"
+    caret.textContent <- "▸"  // ▸ BLACK RIGHT-POINTING SMALL TRIANGLE
+    caret.addEventListener (
+        "click",
+        fun _ ->
+            // Let the row's own click handler run too, so clicking the
+            // caret both selects the action and toggles its expansion.
+            if hasInputs then
+                if Set.contains action.Id doc.ExpandedActionIds then
+                    dispatch (CollapseAction action.Id)
+                else
+                    dispatch (ExpandAction action.Id))
+    main.appendChild (caret :> Node) |> ignore
 
     let icon = Dom.el "span" "action-icon"
     icon.appendChild (Icons.forKind action.Kind :> Node) |> ignore
@@ -556,6 +610,88 @@ let private renderActionPicker (dispatch: Message -> unit) : HTMLElement =
     window.requestAnimationFrame (fun _ -> input.focus()) |> ignore
     picker
 
+// ── Ref-pick overlay ──────────────────────────────────────────────────
+//
+// When the user is picking an upstream node for a Ref input, we draw a
+// small L-shaped arrow that starts at the right edge of the focused
+// input row, sticks out to the side, bends vertically toward the
+// candidate action row, and terminates with an arrowhead pointing into
+// the candidate. Gives the keyboard-driven pick a clear directional
+// handle (ArrowRight → enter pick, Up/Down → cycle).
+
+let private svgNs = "http://www.w3.org/2000/svg"
+
+let private createSvg (tag: string) : Element =
+    document.createElementNS (svgNs, tag)
+
+let private renderPickOverlay (list: HTMLElement) : unit =
+    // Remove any stale overlay before deciding whether to re-draw.
+    let existing = list.querySelector ".ref-pick-overlay"
+    if not (isNull existing) then existing.remove ()
+
+    let pickingRow = list.querySelector ".input-row.is-picking"
+    let candidateRow = list.querySelector ".action-row.is-pick-candidate"
+    match pickingRow, candidateRow with
+    | (:? HTMLElement as ir), (:? HTMLElement as cr) ->
+        // Anchor the start at the right edge of the *value* span rather
+        // than the row — the list clips overflow-x (side-effect of
+        // overflow-y: auto), so starting at the row's right edge left
+        // no room for the stub and the arrow was invisible. The value
+        // sits ~7px inside the row's right padding, which gives us
+        // enough room for a visible L-bend inside the list.
+        let valueEl = ir.querySelector ".input-row-value"
+        let ix, iy =
+            match valueEl with
+            | :? HTMLElement as ve ->
+                float ve.offsetLeft + float ve.offsetWidth,
+                float ve.offsetTop + float ve.offsetHeight / 2.0
+            | _ ->
+                float ir.offsetLeft + float ir.offsetWidth - 8.0,
+                float ir.offsetTop + float ir.offsetHeight / 2.0
+        let cy = float cr.offsetTop + float cr.offsetHeight / 2.0
+        // End at roughly the horizontal centre of the candidate row so
+        // the arrowhead sits inside the row and clearly points at it.
+        let cxEnd = float cr.offsetLeft + float cr.offsetWidth / 2.0
+
+        let stub = 10.0
+        let midX = ix + stub
+
+        let width = float list.clientWidth
+        let height = float list.scrollHeight
+
+        let svg = createSvg "svg"
+        svg.setAttribute ("class", "ref-pick-overlay")
+        svg.setAttribute ("width", sprintf "%f" width)
+        svg.setAttribute ("height", sprintf "%f" height)
+        svg.setAttribute ("viewBox", sprintf "0 0 %f %f" width height)
+
+        // Arrowhead marker — filled triangle in the accent color.
+        let defs = createSvg "defs"
+        let marker = createSvg "marker"
+        marker.setAttribute ("id", "ref-pick-arrowhead")
+        marker.setAttribute ("viewBox", "0 0 10 10")
+        marker.setAttribute ("refX", "9")
+        marker.setAttribute ("refY", "5")
+        marker.setAttribute ("markerWidth", "6")
+        marker.setAttribute ("markerHeight", "6")
+        marker.setAttribute ("orient", "auto")
+        let head = createSvg "path"
+        head.setAttribute ("d", "M 0,0 L 10,5 L 0,10 z")
+        head.setAttribute ("class", "ref-pick-head")
+        marker.appendChild (head :> Node) |> ignore
+        defs.appendChild (marker :> Node) |> ignore
+        svg.appendChild (defs :> Node) |> ignore
+
+        let path = createSvg "path"
+        let d = sprintf "M %f,%f H %f V %f H %f" ix iy midX cy cxEnd
+        path.setAttribute ("d", d)
+        path.setAttribute ("class", "ref-pick-path")
+        path.setAttribute ("marker-end", "url(#ref-pick-arrowhead)")
+        svg.appendChild (path :> Node) |> ignore
+
+        list.appendChild (svg :> Node) |> ignore
+    | _ -> ()
+
 // ── Panel ──────────────────────────────────────────────────────────────
 
 let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
@@ -588,29 +724,23 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     let mutable dropIndex : int option = None
     let mutable dropBefore = false
 
-    // When a ref input is being picked, the candidate at RefPickIdx
-    // gets highlighted on its own action row above, so the user sees
-    // which upstream action Enter will assign.
+    // Arrow overlay target: when the cursor is sitting on a Ref input,
+    // point at whatever action that ref currently references. There's
+    // no "pick mode" anymore — Left/Right on the row commit a cycle
+    // through candidates directly, and the arrow just tracks the
+    // committed value.
     let refPickCandidateId : ActionId option =
-        match doc.SelectedId, doc.EditingInputField with
-        | Some selId, Some field when Set.contains selId doc.ExpandedActionIds ->
+        match doc.SelectedId with
+        | Some selId when Set.contains selId doc.ExpandedActionIds && doc.EditFocusIdx > 0 ->
             match actions |> Array.tryFind (fun a -> a.Id = selId) with
             | Some sel ->
-                let input =
-                    inputsOf sel.Kind
-                    |> List.tryFind (fun i ->
-                        match i with
-                        | RefDisplay s -> s.Field = field
-                        | _ -> false)
-                match input with
-                | Some (RefDisplay s) ->
-                    let candidates =
-                        Map.tryFind s.AcceptedKey doc.RefOptions
-                        |> Option.defaultValue []
-                    if doc.RefPickIdx >= 0 && doc.RefPickIdx < candidates.Length then
-                        Some candidates.[doc.RefPickIdx]
-                    else None
-                | _ -> None
+                let ii = doc.EditFocusIdx - 1
+                let inputs = inputsOf doc sel
+                if ii >= 0 && ii < inputs.Length then
+                    match inputs.[ii] with
+                    | RefDisplay s -> s.Current
+                    | _ -> None
+                else None
             | None -> None
         | _ -> None
 
@@ -681,13 +811,20 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
         // non-selected action's inputs; clicking another action
         // collapses to its action row).
         if expanded then
-            let inputs = inputsOf action.Kind
+            let inputs = inputsOf doc action
             let selectedHere = doc.SelectedId = Some action.Id
             inputs
             |> List.iteri (fun ii input ->
                 let inputRow = renderInputRow dispatch doc action.Id input
-                if selectedHere && doc.EditFocusIdx = ii + 1 then
+                let isCursorHere = selectedHere && doc.EditFocusIdx = ii + 1
+                if isCursorHere then
                     inputRow.classList.add "is-focused"
+                    // Cursor on a Ref input → draw the overlay arrow to
+                    // the currently-referenced upstream action.
+                    match input with
+                    | RefDisplay s when s.Current.IsSome ->
+                        inputRow.classList.add "is-picking"
+                    | _ -> ()
                 list.appendChild (inputRow :> Node) |> ignore)
 
     // Drop in empty space → append at end
@@ -750,6 +887,11 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     // doesn't scroll with the action list.
     if doc.ActionPickerOpen then
         left.appendChild (renderActionPicker dispatch :> Node) |> ignore
+
+    // Ref-pick arrow overlay — rAF so the list is attached and element
+    // offsets are measurable. No-op when nothing is being picked.
+    window.requestAnimationFrame (fun _ ->
+        if unbox<bool> list?isConnected then renderPickOverlay list) |> ignore
 
     left
 

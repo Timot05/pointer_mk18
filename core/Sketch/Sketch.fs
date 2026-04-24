@@ -106,11 +106,16 @@ module SketchPlane =
     let defaults = XY
 
 /// How FromSketch selects geometry from its parent Sketch.
-/// Loop: closed face identified by sorted entity ids.
-/// Elements: specific lines/arcs to trace.
+///   AllLoops: every detected closed loop, auto-tracking as the sketch
+///             changes. The default for a freshly-created FromSketch.
+///   Loops:    a specific subset of loops by id; the user has explicitly
+///             toggled at least one off, so we no longer auto-track.
+///   Elements: specific lines/arcs to trace (legacy; not used by the
+///             current toggle UI but kept for the picking pipeline).
 type FromSketchSelection =
-    | SelectionLoop of loopId: string option
+    | SelectionAllLoops
+    | SelectionLoops of loopIds: string list
     | SelectionElements of lineIds: string list
 
 module FromSketchSelection =
-    let defaults = SelectionLoop None
+    let defaults = SelectionAllLoops

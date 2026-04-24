@@ -73,7 +73,7 @@ let private flatRows (doc: DocumentView) : (ActionId * int) list =
     |> List.collect (fun a ->
         let actionRow = [ a.Id, 0 ]
         if Set.contains a.Id doc.ExpandedActionIds then
-            let n = List.length (ActionList.inputsOf a.Kind)
+            let n = List.length (ActionList.inputsOf doc a)
             actionRow @ [ for i in 1..n -> a.Id, i ]
         else
             actionRow)
@@ -100,6 +100,97 @@ let private stepFocus (dispatch: Message -> unit) (doc: DocumentView) (dir: int)
             if Some aid <> doc.SelectedId then
                 dispatch (SelectAction aid)
             dispatch (SetEditFocus idx)
+
+/// Cycle a Ref input's value to the next/previous candidate and commit
+/// the change. `dir` is +1 for Right, -1 for Left. When the ref is
+/// currently unset, Right selects the first candidate and Left the last.
+let private cycleRefCandidate
+    (dispatch: Message -> unit)
+    (doc: DocumentView)
+    (sel: DocAction)
+    (slot: ActionList.WireSlot)
+    (dir: int)
+    =
+    let candidates =
+        Map.tryFind slot.AcceptedKey doc.RefOptions
+        |> Option.defaultValue []
+    if not candidates.IsEmpty then
+        let n = candidates.Length
+        let curIdx =
+            slot.Current
+            |> Option.bind (fun cur -> candidates |> List.tryFindIndex ((=) cur))
+        let nextIdx =
+            match curIdx with
+            | Some i -> (i + dir + n) % n
+            | None -> if dir >= 0 then 0 else n - 1
+        let nextValue = candidates.[nextIdx]
+        if curIdx <> Some nextIdx then
+            dispatch (Editor.setActionParamValue sel.Id slot.Field (VString nextValue))
+
+/// Cycle a SelectDisplay's value through its list of choices. Used for
+/// things like a sketch's plane. Same dir convention as cycleRefCandidate.
+let private cycleSelectChoice
+    (dispatch: Message -> unit)
+    (sel: DocAction)
+    (value: string)
+    (choices: string list)
+    (field: ActionParamField)
+    (dir: int)
+    =
+    if not (List.isEmpty choices) then
+        let n = choices.Length
+        let curIdx =
+            choices |> List.tryFindIndex ((=) value) |> Option.defaultValue 0
+        let nextIdx = (curIdx + dir + n) % n
+        let nextValue = choices.[nextIdx]
+        if nextValue <> value then
+            dispatch (Editor.setActionParamValue sel.Id field (VString nextValue))
+
+/// Encode a FromSketchSelection as the VRecord payload setActionParamValue
+/// expects on the FromSketchSelection field.
+let private encodeFromSketchSelection (sel: FromSketchSelection) : ParamValue =
+    let stringArray xs = VArray (xs |> List.map VString)
+    match sel with
+    | SelectionAllLoops ->
+        VRecord (Map.ofList [ "case", VString "SelectionAllLoops" ])
+    | SelectionLoops ids ->
+        VRecord (Map.ofList [ "case", VString "SelectionLoops"
+                              "loopIds", stringArray ids ])
+    | SelectionElements ids ->
+        VRecord (Map.ofList [ "case", VString "SelectionElements"
+                              "lineIds", stringArray ids ])
+
+/// Toggle one loop in a FromSketch action's selection and dispatch the
+/// resulting selection back to the store. Switches between SelectionAllLoops
+/// and SelectionLoops automatically — explicit subset when something is
+/// off, "all" again when every loop is back on.
+let private toggleFromSketchLoop
+    (dispatch: Message -> unit)
+    (sel: DocAction)
+    (loopId: string)
+    (allLoopIds: string list)
+    (current: FromSketchSelection)
+    (wasChecked: bool)
+    =
+    let currentExplicit =
+        match current with
+        | SelectionAllLoops -> allLoopIds
+        | SelectionLoops ids -> ids
+        | SelectionElements _ -> allLoopIds
+    let next =
+        if wasChecked then
+            currentExplicit |> List.filter (fun id -> id <> loopId)
+        else
+            // Preserve detection order rather than appending arbitrarily.
+            allLoopIds
+            |> List.filter (fun id ->
+                id = loopId || List.contains id currentExplicit)
+    let nextSel =
+        if List.length next = List.length allLoopIds
+           && List.forall (fun id -> List.contains id next) allLoopIds
+        then SelectionAllLoops
+        else SelectionLoops next
+    dispatch (Editor.setActionParamValue sel.Id FromSketchSelection (encodeFromSketchSelection nextSel))
 
 // ── Sketch-mode shortcuts ──────────────────────────────────────────────
 
@@ -218,7 +309,7 @@ let register
                 let focusedInputSlot () =
                     match doc.SelectedId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
                     | Some sel when selectedExpanded && doc.EditFocusIdx > 0 ->
-                        let inputs = ActionList.inputsOf sel.Kind
+                        let inputs = ActionList.inputsOf doc sel
                         let ii = doc.EditFocusIdx - 1
                         if ii >= 0 && ii < inputs.Length then Some(sel, inputs.[ii]) else None
                     | _ -> None
@@ -239,29 +330,74 @@ let register
                         dispatch (CollapseAction id)
                     | _ -> ()
                 | "ArrowRight" ->
-                    // Right expands the focused action OR descends into
-                    // its inputs (if already expanded).
-                    match doc.SelectedId with
-                    | Some id ->
-                        let action = doc.Actions |> List.tryFind (fun a -> a.Id = id)
-                        match action with
-                        | Some a when not (List.isEmpty (ActionList.inputsOf a.Kind)) ->
-                            e.preventDefault ()
-                            if not (Set.contains id doc.ExpandedActionIds) then
-                                dispatch (ExpandAction id)
-                            elif doc.EditFocusIdx = 0 then
-                                dispatch (SetEditFocus 1)
-                        | _ -> ()
-                    | None -> ()
-                | "ArrowLeft" ->
-                    // Left collapses the selected action in one shot,
-                    // whether focus is on the action row or on one of
-                    // its inputs. CollapseAction resets EditFocusIdx.
-                    match doc.SelectedId with
-                    | Some id when Set.contains id doc.ExpandedActionIds ->
+                    // Change the focused setting with Left/Right — no
+                    // more Enter-based cycling. Each input type commits
+                    // its own flavour of change on keypress.
+                    match focusedInputSlot () with
+                    | Some(sel, ActionList.RefDisplay slot) ->
                         e.preventDefault ()
-                        dispatch (CollapseAction id)
-                    | _ -> ()
+                        cycleRefCandidate dispatch doc sel slot 1
+                    | Some(sel, ActionList.SelectDisplay(_, value, choices, field)) ->
+                        e.preventDefault ()
+                        cycleSelectChoice dispatch sel value choices field 1
+                    | Some(sel, ActionList.CheckDisplay(_, value, field)) ->
+                        e.preventDefault ()
+                        dispatch (Editor.setActionParamValue sel.Id field (VBool(not value)))
+                    | Some(sel, ActionList.LoopToggleDisplay(_, isChecked, loopId, allIds, currentSel)) ->
+                        e.preventDefault ()
+                        toggleFromSketchLoop dispatch sel loopId allIds currentSel isChecked
+                    | Some(_, ActionList.ScalarDisplay(_, _, field)) ->
+                        // Scalars need a real value — Right opens the
+                        // inline number editor (what Enter used to do)
+                        // so arrow keys are the consistent entry point
+                        // across all input types.
+                        e.preventDefault ()
+                        dispatch (StartEditingInputField(field, 0, None))
+                    | _ ->
+                        match doc.SelectedId with
+                        | Some id ->
+                            let action = doc.Actions |> List.tryFind (fun a -> a.Id = id)
+                            match action with
+                            | Some a when not (List.isEmpty (ActionList.inputsOf doc a)) ->
+                                e.preventDefault ()
+                                if not (Set.contains id doc.ExpandedActionIds) then
+                                    dispatch (ExpandAction id)
+                                elif doc.EditFocusIdx = 0 then
+                                    dispatch (SetEditFocus 1)
+                            | _ -> ()
+                        | None -> ()
+                | "ArrowLeft" ->
+                    // On an input row: change the setting (cycle
+                    // backward / toggle). On the action row: collapse.
+                    // Scalars have no prev value, so Left is a no-op
+                    // there — users still have Right/Enter/typing to
+                    // open the inline editor.
+                    match focusedInputSlot () with
+                    | Some(sel, ActionList.RefDisplay slot) ->
+                        e.preventDefault ()
+                        cycleRefCandidate dispatch doc sel slot -1
+                    | Some(sel, ActionList.SelectDisplay(_, value, choices, field)) ->
+                        e.preventDefault ()
+                        cycleSelectChoice dispatch sel value choices field -1
+                    | Some(sel, ActionList.CheckDisplay(_, value, field)) ->
+                        e.preventDefault ()
+                        dispatch (Editor.setActionParamValue sel.Id field (VBool(not value)))
+                    | Some(sel, ActionList.LoopToggleDisplay(_, isChecked, loopId, allIds, currentSel)) ->
+                        e.preventDefault ()
+                        toggleFromSketchLoop dispatch sel loopId allIds currentSel isChecked
+                    | Some(_, ActionList.ScalarDisplay _) ->
+                        // No-op — intentionally consume nothing; the
+                        // action row below won't collapse because
+                        // EditFocusIdx > 0.
+                        ()
+                    | _ ->
+                        match doc.SelectedId with
+                        | Some id when
+                            Set.contains id doc.ExpandedActionIds
+                            && doc.EditFocusIdx = 0 ->
+                            e.preventDefault ()
+                            dispatch (CollapseAction id)
+                        | _ -> ()
                 | "Enter" when doc.EditingInputField.IsSome ->
                     // Ref sub-edit: commit the highlighted upstream pick.
                     // Scalar sub-edit: the inline <input> normally
@@ -293,49 +429,22 @@ let register
                         dispatch StopEditingInputField
                     | _ -> ()
                 | "Enter" when doc.SelectedId.IsSome ->
-                    // Enter on a selected action / input row:
-                    //  * action row, collapsed + has inputs  → expand.
-                    //  * action row, expanded + has inputs   → descend.
-                    //  * input row                           → start sub-edit.
+                    // Enter on an ACTION row only:
+                    //  * collapsed + has inputs → expand.
+                    //  * expanded + has inputs  → descend to first input.
+                    // Enter on an input row is a no-op — Left/Right (and
+                    // direct typing for scalars) are the authoritative
+                    // way to change any setting.
                     match selectedAction doc with
-                    | Some sel ->
-                        let inputs = ActionList.inputsOf sel.Kind
-                        if doc.EditFocusIdx = 0 then
-                            if not (List.isEmpty inputs) then
-                                e.preventDefault ()
-                                if not (Set.contains sel.Id doc.ExpandedActionIds) then
-                                    dispatch (ExpandAction sel.Id)
-                                else
-                                    dispatch (SetEditFocus 1)
-                        else
-                            let ii = doc.EditFocusIdx - 1
-                            if ii >= 0 && ii < inputs.Length then
-                                e.preventDefault ()
-                                match inputs.[ii] with
-                                | ActionList.CheckDisplay(_, value, field) ->
-                                    dispatch (Editor.setActionParamValue sel.Id field (VBool(not value)))
-                                | ActionList.SelectDisplay(_, value, choices, field) ->
-                                    let nextChoice =
-                                        match List.tryFindIndex ((=) value) choices with
-                                        | Some i -> choices.[(i + 1) % choices.Length]
-                                        | None when not choices.IsEmpty -> choices.[0]
-                                        | None -> value
-                                    if nextChoice <> value then
-                                        dispatch (Editor.setActionParamValue sel.Id field (VString nextChoice))
-                                | ActionList.ScalarDisplay(_, _, field) ->
-                                    dispatch (StartEditingInputField(field, 0, None))
-                                | ActionList.RefDisplay slot ->
-                                    let candidates =
-                                        Map.tryFind slot.AcceptedKey doc.RefOptions
-                                        |> Option.defaultValue []
-                                    if not candidates.IsEmpty then
-                                        let initial =
-                                            slot.Current
-                                            |> Option.bind (fun cur ->
-                                                candidates |> List.tryFindIndex ((=) cur))
-                                            |> Option.defaultValue 0
-                                        dispatch (StartEditingInputField(slot.Field, initial, None))
-                    | None -> ()
+                    | Some sel when doc.EditFocusIdx = 0 ->
+                        let inputs = ActionList.inputsOf doc sel
+                        if not (List.isEmpty inputs) then
+                            e.preventDefault ()
+                            if not (Set.contains sel.Id doc.ExpandedActionIds) then
+                                dispatch (ExpandAction sel.Id)
+                            else
+                                dispatch (SetEditFocus 1)
+                    | _ -> ()
                 | k when
                     doc.EditingInputField.IsNone
                     && k.Length = 1

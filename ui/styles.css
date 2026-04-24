@@ -535,6 +535,7 @@ body {
 /* ── Actions list (left panel) ─────────────────────────────────────── */
 
 .actions-list {
+  position: relative; /* containing block for .ref-pick-overlay */
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -601,10 +602,11 @@ body {
   background: var(--bg-surface);
 }
 
-.action-row.is-selected {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-}
+/* `.is-selected` tracks the document's SelectedId — kept as a state
+   marker but no longer paints the row. The highlight now follows the
+   keyboard cursor via `.is-edit-focused`, which is applied only when
+   the cursor is actually on the action row (EditFocusIdx = 0). That
+   way descending into the inputs no longer double-highlights. */
 
 .action-row.has-error {
   background: var(--error-soft);
@@ -615,7 +617,7 @@ body {
   background: var(--error-soft-hover);
 }
 
-.action-row.has-error.is-selected {
+.action-row.has-error.is-edit-focused {
   background: var(--error-soft-hover);
   border-color: var(--error);
 }
@@ -641,6 +643,38 @@ body {
   cursor: pointer;
   color: inherit;
   font: inherit;
+}
+
+.action-expand {
+  flex-shrink: 0;
+  width: 12px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.08s ease;
+  transform: rotate(0deg);
+}
+
+.action-expand:hover {
+  color: var(--text-primary);
+}
+
+.action-row.is-expanded .action-expand {
+  transform: rotate(90deg);
+}
+
+.action-expand.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .action-icon {
@@ -1244,17 +1278,44 @@ body {
 }
 
 .action-row.is-edit-focused {
+  background: var(--accent-soft);
   border-color: var(--accent);
 }
 
+/* `.is-pick-candidate` is kept as a marker class so the overlay can
+   find the candidate row, but we deliberately apply no visual styling —
+   the pick arrow is the sole indicator (avoids competing with
+   `.is-focused` on the current input row). */
 .action-row.is-pick-candidate {
-  background: var(--accent-soft);
-  border-color: var(--accent);
 }
 
 .input-row-value.is-picking {
   color: var(--accent);
   font-style: italic;
+}
+
+/* Ref-pick arrow overlay. Drawn inside .actions-list so it scrolls
+   with the content. Elements are positioned using offsetTop/Left,
+   which are relative to .actions-list (position: relative). */
+.ref-pick-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 2;
+}
+
+.ref-pick-path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ref-pick-head {
+  fill: var(--accent);
 }
 
 .input-row-edit {

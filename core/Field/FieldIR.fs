@@ -107,22 +107,26 @@ module FieldCompile =
 
         | REPoint _ -> None
 
-    /// Pick the ordered list of entity ids to trace for a FromSketch selection.
-    let private selectEntityIds (sketch: ActionSketch) (selection: FromSketchSelection) : string list =
+    /// Pick the entity-id sets to trace for a FromSketch selection. Each
+    /// inner list is one closed loop (so the caller can emit one FSketch
+    /// per loop and union them). `SelectionElements` is treated as a
+    /// single open trace.
+    let private selectLoops (sketch: ActionSketch) (selection: FromSketchSelection) : string list list =
         match selection with
-        | SelectionElements lineIds -> lineIds
-        | SelectionLoop loopId ->
+        | SelectionElements lineIds ->
+            if List.isEmpty lineIds then [] else [ lineIds ]
+        | SelectionAllLoops ->
+            SketchLoops.detectLoops sketch.Entities
+            |> List.map (fun l -> l.EntityIds)
+        | SelectionLoops loopIds ->
             let loops = SketchLoops.detectLoops sketch.Entities
-            match loopId with
-            | Some id ->
+            // Preserve order based on loopIds, dropping ids that no
+            // longer exist (sketch may have been edited).
+            loopIds
+            |> List.choose (fun id ->
                 loops
                 |> List.tryFind (fun l -> l.Id = id)
-                |> Option.map (fun l -> l.EntityIds)
-                |> Option.defaultValue []
-            | None ->
-                match loops with
-                | first :: _ -> first.EntityIds
-                | [] -> []
+                |> Option.map (fun l -> l.EntityIds))
 
     /// Walks an Element tree, allocating slots as it goes, producing a
     /// FieldNode. Every numeric value on an Element node becomes a slot
@@ -193,19 +197,33 @@ module FieldCompile =
             compileElement b child
             |> Option.map (fun fc -> FFieldOp(OpShell, slot id "thickness" t, fc))
 
-        | EFromSketch(_, sketchActionId, sketch, selection, flip) ->
+        | EFromSketch(id, sketchActionId, sketch, selection, flip) ->
             let entityMap =
                 sketch.Entities
                 |> List.map (fun e -> entityId e, e)
                 |> Map.ofList
-            let ids = selectEntityIds sketch selection
-            let prims =
-                ids
-                |> List.choose (fun eid ->
-                    Map.tryFind eid entityMap
-                    |> Option.bind (entityToPrimitive b sketchActionId entityMap))
-            if prims.IsEmpty then None
-            else Some (FSketch { Primitives = prims; Closed = true; Flip = flip })
+            let loops = selectLoops sketch selection
+            // Build one FSketch per loop, drop empties, then fold-union.
+            // The blend-radius slot is keyed by the FromSketch action id
+            // and is idempotent in the slot table, so emitting many
+            // unions with the same key is safe.
+            let fields =
+                loops
+                |> List.choose (fun ids ->
+                    let prims =
+                        ids
+                        |> List.choose (fun eid ->
+                            Map.tryFind eid entityMap
+                            |> Option.bind (entityToPrimitive b sketchActionId entityMap))
+                    if prims.IsEmpty then None
+                    else Some (FSketch { Primitives = prims; Closed = true; Flip = flip }))
+            match fields with
+            | [] -> None
+            | first :: rest ->
+                let r = slot id "radius" 0.0
+                rest
+                |> List.fold (fun acc next -> FBoolean(BoolUnion, r, acc, next)) first
+                |> Some
 
     /// Compile each visible action's element tree into a FieldSurface.
     /// Slots are allocated into the provided builder. Skipped (None) if the

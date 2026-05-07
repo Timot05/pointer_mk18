@@ -213,13 +213,16 @@ fn renderTileRecurse(
     if (bounds.hi < 0.0) return;
 
     if (level == FINEST_TILE_LEVEL) {
-        // DEBUG: paint magenta at every leaf tile, regardless of max_level.
-        // Combined with capping max_render_level to FINEST_TILE_LEVEL on the
-        // export side, this should turn the canvas magenta wherever leaf
-        // tiles are reached. If we still see blank, leaf-level processing
-        // itself isn't happening — interval test culls every tile, or the
-        // recursion never gets that deep.
-        stampLeafDebug(ctx, px_lo, px_hi, py_lo, py_hi, t_lo, t_hi);
+        if (ctx.max_level > FINEST_TILE_LEVEL) {
+            // PER_PIXEL_LEVEL: scan per-pixel only. Each ray gets its own
+            // hit at native screen-pixel density — no tile-stamp baseline,
+            // since stamping fills silhouette-edge pixels with the wrong
+            // normal and visibly blockifies the result.
+            emitLeafSamples(ctx, tape, px_lo, px_hi, py_lo, py_hi, t_lo, t_hi);
+        } else {
+            // max_level == FINEST_TILE_LEVEL: stamp the leaf tile as a block.
+            stampTileBlock(ctx, tape, px_lo, px_hi, py_lo, py_hi, u_lo, u_hi, v_lo, v_hi, t_lo, t_hi);
+        }
         return;
     }
     if (level == ctx.max_level) {
@@ -231,11 +234,10 @@ fn renderTileRecurse(
     }
 
     const next_level = level + 1;
-    // DEBUG: skip simplification — pass the parent tape down unchanged.
-    const child_tape: *const RegTape = tape;
-    // if (m.simplifyTape(tape, ctx.ir, choice_trace[0..], &depth_tapes[next_level])) |_| {
-    //     child_tape = &depth_tapes[next_level];
-    // } else |_| {}
+    var child_tape: *const RegTape = tape;
+    if (m.simplifyTape(tape, ctx.ir, choice_trace[0..], &depth_tapes[next_level])) |_| {
+        child_tape = &depth_tapes[next_level];
+    } else |_| {}
 
     // Recurse into 8 children, t-axis front-to-back (ascending t).
     const cx = tx * 2;
@@ -420,28 +422,6 @@ fn emitLeafSamples(
                 ctx.out_gbuffer[idx * 4 + 3] = t_hit;
                 ctx.out_pixels[idx] = shade(nx, ny, nz_n);
             }
-        }
-    }
-}
-
-// DEBUG: write a finite, distinctive value into every pixel of a leaf
-// tile. The depth lane is set to t_lo (so post-negation it shows up as a
-// finite wcz, not -inf), and the normal lane is (0, 0, 1) — straight at
-// the camera, which the shader paints as a flat color. Used to confirm
-// the per-pixel leaf branch is being executed.
-fn stampLeafDebug(ctx: *RenderCtx, px_lo: u32, px_hi: u32, py_lo: u32, py_hi: u32, t_lo: f32, t_hi: f32) void {
-    _ = t_hi;
-    var py: u32 = py_lo;
-    while (py < py_hi) : (py += 1) {
-        const row: usize = @as(usize, py) * @as(usize, ctx.width);
-        var px: u32 = px_lo;
-        while (px < px_hi) : (px += 1) {
-            const idx = row + px;
-            ctx.out_gbuffer[idx * 4 + 0] = 0;
-            ctx.out_gbuffer[idx * 4 + 1] = 0;
-            ctx.out_gbuffer[idx * 4 + 2] = 1;
-            ctx.out_gbuffer[idx * 4 + 3] = t_lo;
-            ctx.out_pixels[idx] = packRGBA(255, 0, 255, 255);
         }
     }
 }

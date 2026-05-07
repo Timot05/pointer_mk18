@@ -108,6 +108,12 @@ type Background =
           // False until the first level completes — no draw is issued
           // before that so we don't sample uninitialized texels.
           mutable HasDisplay: bool
+          // Set when `resize` was called with old Display kept at its
+          // pre-resize size. After the next swap, the now-Pending
+          // texture is at that old size; recreate it at the new size
+          // so subsequent worker uploads land in a correctly-sized
+          // target.
+          mutable PendingNeedsResize: bool
           mutable Width: int
           mutable Height: int
           mutable Tiles: Tile[]
@@ -258,6 +264,11 @@ let private uploadRenderedTile (bg: Background) (data: obj) : bool =
 /// Swap pending ↔ display. Pending's contents are now complete and
 /// consistent; the old display texture becomes the next pending (its
 /// stale content will be fully overwritten by the next level's tiles).
+///
+/// If `PendingNeedsResize` is set, the old Display we're rotating into
+/// the Pending slot is at the pre-resize size — destroy it and create
+/// a fresh Pending at the current size before the next dispatch tries
+/// to write tile coords past the old bounds.
 let private swapDisplay (bg: Background) =
     let t = bg.DisplayTexture
     let v = bg.DisplayView
@@ -265,9 +276,18 @@ let private swapDisplay (bg: Background) =
     bg.DisplayTexture <- bg.PendingTexture
     bg.DisplayView <- bg.PendingView
     bg.DisplayBindGroup <- bg.PendingBindGroup
-    bg.PendingTexture <- t
-    bg.PendingView <- v
-    bg.PendingBindGroup <- g
+    if bg.PendingNeedsResize then
+        t.destroy ()
+        bg.PendingTexture <- createTexture bg.Scene.Device bg.Width bg.Height
+        bg.PendingView <- bg.PendingTexture.createView ()
+        bg.PendingBindGroup <-
+            buildBindGroup bg.Scene.Device bg.Scene.BackgroundBindGroupLayout
+                bg.PendingView bg.Scene.BackgroundSampler bg.FieldCameraBuffer
+        bg.PendingNeedsResize <- false
+    else
+        bg.PendingTexture <- t
+        bg.PendingView <- v
+        bg.PendingBindGroup <- g
     bg.HasDisplay <- true
 
 let private handleResponse (bg: Background) (slot: WorkerSlot) (data: obj) =
@@ -275,6 +295,11 @@ let private handleResponse (bg: Background) (slot: WorkerSlot) (data: obj) =
     match kind with
     | "ready" ->
         slot.Ready <- true
+        // First worker to finish init sets the actual MaxLevel; later
+        // workers running the same wasm report the same value.
+        let reportedMax : int = data?maxLevel
+        if reportedMax > 0 && reportedMax <> bg.MaxLevel then
+            bg.MaxLevel <- reportedMax
         // IR might not be available yet at spawn time; `updateIr` will
         // push it directly once the editor compiles a field.
         if bg.HasIr then
@@ -389,6 +414,7 @@ let create (scene: Scene.Scene) : JS.Promise<Background> =
               PendingView = pendingView
               PendingBindGroup = pendingBindGroup
               HasDisplay = false
+              PendingNeedsResize = false
               Width = w
               Height = h
               Tiles = makeTiles w h
@@ -408,21 +434,20 @@ let create (scene: Scene.Scene) : JS.Promise<Background> =
 
 let resize (bg: Background) (w: int) (h: int) =
     if w = bg.Width && h = bg.Height then () else
-    bg.DisplayTexture.destroy ()
+    // Keep Display alive at its pre-resize size — the shader continues
+    // sampling it (slightly stretched at non-matching resolution, since
+    // UVs are normalized) so the canvas never blanks during a resolution
+    // change. Only recreate Pending at the new size; on the next swap
+    // we'll recreate the (now-Pending, old-size) texture too.
     bg.PendingTexture.destroy ()
     bg.Width <- w
     bg.Height <- h
-    bg.DisplayTexture <- createTexture bg.Scene.Device w h
-    bg.DisplayView <- bg.DisplayTexture.createView ()
-    bg.DisplayBindGroup <-
-        buildBindGroup bg.Scene.Device bg.Scene.BackgroundBindGroupLayout
-            bg.DisplayView bg.Scene.BackgroundSampler bg.FieldCameraBuffer
     bg.PendingTexture <- createTexture bg.Scene.Device w h
     bg.PendingView <- bg.PendingTexture.createView ()
     bg.PendingBindGroup <-
         buildBindGroup bg.Scene.Device bg.Scene.BackgroundBindGroupLayout
             bg.PendingView bg.Scene.BackgroundSampler bg.FieldCameraBuffer
-    bg.HasDisplay <- false
+    bg.PendingNeedsResize <- true
     bg.Tiles <- makeTiles w h
     bg.Level <- START_LEVEL
     bg.TilesEmitted <- 0

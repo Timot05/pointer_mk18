@@ -46,7 +46,11 @@ let private handle (ev: obj) =
         Wasm.instantiate (data?wasmModule)
         |> Promise.iter (fun x ->
             exports <- Some x
-            postMessagePlain {| kind = "ready" |})
+            // Echo the kernel's actual max_render_level back so the host's
+            // refinement loop doesn't climb past where the kernel will
+            // honour it (and waste worker time re-doing the same render).
+            let maxLevel = x.max_render_level ()
+            postMessagePlain {| kind = "ready"; maxLevel = maxLevel |})
     | "ir" ->
         match exports with
         | Some x ->

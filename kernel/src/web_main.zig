@@ -24,9 +24,11 @@ const scene_decode = @import("scene_decode.zig");
 const cpu_render = @import("cpu_render.zig");
 
 /// Largest full-canvas dimensions we support. Beyond this `render_voxels`
-/// returns 0. 1080p covers typical retina laptop logical canvases.
-pub const MAX_W: u32 = 1920;
-pub const MAX_H: u32 = 1080;
+/// returns 0. The host renders at devicePixelRatio × renderScale, so a
+/// 1920×1080 logical canvas on a retina display becomes 3840×2160 physical
+/// pixels at idle. Sized for 4K-ish retina to avoid surprising rejections.
+pub const MAX_W: u32 = 4096;
+pub const MAX_H: u32 = 2304;
 
 /// Largest tile (width or height). Mirrors the host's MAX_TILE = 1024 in
 /// `viewer/Kernel/Background.fs`.
@@ -144,9 +146,11 @@ pub export fn render_voxels(
         level,
     );
 
-    // Copy the tile sub-rect, negating the depth lane so mk18's WGSL
-    // shader sees ascending-wcz = closer-to-camera (mk21 stores ascending-t
-    // = away-from-eye internally).
+    // Copy the tile sub-rect into the host-visible gbuffer, packed as
+    // tile_w × tile_h × (nx, ny, nz, wcz). Negate the depth lane: mk21
+    // stores ascending-t (away from eye) but mk18's WGSL expects
+    // ascending-wcz (closer to camera). Miss pixels (t = +inf) become
+    // wcz = -inf, which the shader discards.
     var ty: u32 = 0;
     while (ty < tile_h) : (ty += 1) {
         const src_pixel_row: usize = @as(usize, tile_y + ty) * @as(usize, full_w) + @as(usize, tile_x);
@@ -174,9 +178,7 @@ pub export fn max_voxel_height() u32 {
 }
 
 pub export fn max_render_level() u32 {
-    // DEBUG: cap at FINEST_TILE_LEVEL to force the host to stop refining at
-    // the leaf-tile-stamp step, skipping per-pixel scan entirely.
-    return cpu_render.FINEST_TILE_LEVEL;
+    return cpu_render.PER_PIXEL_LEVEL;
 }
 
 // ── Mesh exports (stubbed; mk21 has no DC meshing this round) ────────────

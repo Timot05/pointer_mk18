@@ -1,0 +1,77 @@
+const math_ir = @import("math_ir.zig");
+const math_eval = @import("math_eval.zig");
+const math_reg_tape = @import("math_reg_tape.zig");
+const math_grad = @import("math_grad.zig");
+const math_simd_eval = @import("math_simd_eval.zig");
+const camera_frame = @import("camera_frame.zig");
+const scene_decode = @import("scene_decode.zig");
+const field_lower = @import("field_lower.zig");
+
+pub const Axis = math_ir.Axis;
+pub const Plane = math_ir.Plane;
+pub const Unary = math_ir.Unary;
+pub const Binary = math_ir.Binary;
+pub const NodeKind = math_ir.NodeKind;
+pub const PrimitiveKind = math_ir.PrimitiveKind;
+pub const IntrinsicKind = math_ir.IntrinsicKind;
+pub const Expr = math_ir.Expr;
+pub const Vec2 = math_ir.Vec2;
+pub const Vec3 = math_ir.Vec3;
+pub const SlotPoint2 = math_ir.SlotPoint2;
+pub const Interval = math_ir.Interval;
+pub const Box3 = math_ir.Box3;
+pub const Cube = math_ir.Cube;
+pub const Node = math_ir.Node;
+pub const Affine3 = math_ir.Affine3;
+pub const SketchPrimitive = math_ir.SketchPrimitive;
+pub const Intrinsic = math_ir.Intrinsic;
+pub const MathIR = math_ir.MathIR;
+pub const max_nodes = math_ir.max_nodes;
+pub const max_affines = math_ir.max_affines;
+pub const max_intrinsics = math_ir.max_intrinsics;
+pub const max_primitives = math_ir.max_primitives;
+pub const max_tape_words = math_ir.max_tape_words;
+pub const max_immediates = math_ir.max_immediates;
+
+pub const interval = math_eval.interval;
+pub const singleton = math_eval.singleton;
+pub const unknown = math_eval.unknown;
+pub const box3 = math_eval.box3;
+pub const evalUnaryPoint = math_eval.evalUnaryPoint;
+pub const evalBinaryPoint = math_eval.evalBinaryPoint;
+pub const evalPoint = math_eval.evalPoint;
+pub const evalSketchDistance = math_eval.evalSketchDistance;
+pub const evalInterval = math_eval.evalInterval;
+
+pub const RegOp = math_reg_tape.Op;
+pub const RegTape = math_reg_tape.RegTape;
+pub const compileToRegTape = math_reg_tape.compileToRegTape;
+pub const decodeRegEval = math_reg_tape.decodeRegEval;
+pub const decodeRegEvalWith = math_reg_tape.decodeRegEvalWith;
+pub const PointEvalScratch = math_reg_tape.PointEvalScratch;
+pub const decodeRegEvalInterval = math_reg_tape.decodeRegEvalInterval;
+pub const decodeRegEvalIntervalWithTrace = math_reg_tape.decodeRegEvalIntervalWithTrace;
+pub const Choice = math_reg_tape.Choice;
+pub const simplifyTape = math_reg_tape.simplifyTape;
+
+pub const Grad = math_grad.Grad;
+pub const decodeRegEvalF32 = math_grad.decodeRegEvalF32;
+pub const decodeRegEvalGrad = math_grad.decodeRegEvalGrad;
+
+pub const F4 = math_simd_eval.F4;
+pub const decodeRegEvalF4 = math_simd_eval.decodeRegEvalF4;
+
+pub const CameraFrame = camera_frame.CameraFrame;
+pub const CameraFrameNodes = camera_frame.CameraFrameNodes;
+pub const WrappedCamera = camera_frame.WrappedCamera;
+pub const MutableCamera = camera_frame.MutableCamera;
+pub const wrapWithCameraFrame = camera_frame.wrapWithCameraFrame;
+
+pub const FieldNode = scene_decode.Node;
+pub const FieldPrimitive = scene_decode.Primitive;
+pub const FieldSketchPrimitive = scene_decode.SketchPrimitive2d;
+pub const FieldAxis = scene_decode.Axis;
+pub const FieldBooleanOp = scene_decode.BooleanOp;
+pub const FieldUnaryOp = scene_decode.UnaryOp;
+pub const ParsedScene = scene_decode.ParsedScene;
+pub const lowerField = field_lower.lower;

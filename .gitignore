@@ -11,6 +11,10 @@ ui/src-gen/
 zig-out/
 ui/public/kernel/
 
+# Kernel diagnostic CLI outputs (render-demo, ir-dump)
+*.ppm
+*.dot
+
 archive/
 
 .claude/

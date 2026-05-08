@@ -51,8 +51,8 @@ pub fn main(args: std.process.Init) !void {
     cpu_render.render(
         pixels[0..],
         gbuffer[0..],
-        W,
-        H,
+        W, H,
+        0, 0, W, H,
         &tape,
         &scene.ir,
         scene.slots[0..],

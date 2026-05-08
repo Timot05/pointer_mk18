@@ -48,6 +48,7 @@ const SIMPLIFY_OUT_TAPE: usize = 2 * max_tape_words;
 // ── Module-level scratch (single-threaded WASM is fine) ───────────────────
 
 var simd_slots: [max_nodes]F4 = undefined;
+var grad4_slots: [max_nodes]m.Grad4 = undefined;
 var choice_trace: [max_tape_words]Choice = undefined;
 
 var depth_tapes: [TILE_SIZES.len]RegTape = undefined;
@@ -56,11 +57,24 @@ const NEG_LIGHT_DIR: [3]f32 = .{ -0.35, -0.55, 0.75 }; // pre-normalized
 
 // ── Public entry point ────────────────────────────────────────────────────
 
+/// Render a sub-rect `[tile_x..tile_x+tile_w, tile_y..tile_y+tile_h]` of an
+/// overall `full_w × full_h` image. Output is packed into `out_pixels` /
+/// `out_gbuffer` in row-major `tile_w × tile_h` layout (not full-image
+/// stride). Pass `tile_x = 0, tile_y = 0, tile_w = full_w, tile_h = full_h`
+/// to render the entire image.
+///
+/// Camera math (view_half_w/h, ray directions) uses `full_w × full_h` so
+/// pixels render the same regardless of which tile they belong to —
+/// adjacent tiles produce a seamless image when composited.
 pub fn render(
     out_pixels: []u32,
     out_gbuffer: []f32,
-    width: u32,
-    height: u32,
+    full_w: u32,
+    full_h: u32,
+    tile_x: u32,
+    tile_y: u32,
+    tile_w: u32,
+    tile_h: u32,
     tape: *const RegTape,
     ir: *const MathIR,
     slots: []const f64,
@@ -70,15 +84,17 @@ pub fn render(
     far: f32,
     max_level: u32,
 ) void {
-    const total: usize = @as(usize, width) * @as(usize, height);
-    std.debug.assert(out_pixels.len >= total);
-    std.debug.assert(out_gbuffer.len >= total * 4);
+    const tile_total: usize = @as(usize, tile_w) * @as(usize, tile_h);
+    std.debug.assert(out_pixels.len >= tile_total);
+    std.debug.assert(out_gbuffer.len >= tile_total * 4);
+    std.debug.assert(tile_x + tile_w <= full_w);
+    std.debug.assert(tile_y + tile_h <= full_h);
 
-    initBuffers(out_pixels, out_gbuffer, total);
+    initBuffers(out_pixels, out_gbuffer, tile_total);
 
     const pixel_world = @min(
-        2.0 * view_half_w / @as(f32, @floatFromInt(width)),
-        2.0 * view_half_h / @as(f32, @floatFromInt(height)),
+        2.0 * view_half_w / @as(f32, @floatFromInt(full_w)),
+        2.0 * view_half_h / @as(f32, @floatFromInt(full_h)),
     );
     const t_extent = far - near;
     const image_depth_vox: u32 = @intFromFloat(@ceil(t_extent / pixel_world));
@@ -86,8 +102,12 @@ pub fn render(
     var ctx = RenderCtx{
         .out_pixels = out_pixels,
         .out_gbuffer = out_gbuffer,
-        .width = width,
-        .height = height,
+        .full_w = full_w,
+        .full_h = full_h,
+        .tile_x = tile_x,
+        .tile_y = tile_y,
+        .tile_w = tile_w,
+        .tile_h = tile_h,
         .ir = ir,
         .slots = slots,
         .view_half_w = view_half_w,
@@ -98,18 +118,21 @@ pub fn render(
         .max_level = @min(max_level, PER_PIXEL_LEVEL),
     };
 
-    // Iterate top-level (128-px) tiles, front-to-back (ascending t).
+    // Iterate only top-level (128-px) tiles that intersect the sub-rect.
+    // Z still spans the full depth; t-range matches the full image.
     const root_size = TILE_SIZES[0];
-    const nx = (width + root_size - 1) / root_size;
-    const ny = (height + root_size - 1) / root_size;
+    const xt_lo = tile_x / root_size;
+    const xt_hi = (tile_x + tile_w + root_size - 1) / root_size;
+    const yt_lo = tile_y / root_size;
+    const yt_hi = (tile_y + tile_h + root_size - 1) / root_size;
     const nz = (image_depth_vox + root_size - 1) / root_size;
 
     var zt: u32 = 0;
     while (zt < nz) : (zt += 1) {
-        var yt: u32 = 0;
-        while (yt < ny) : (yt += 1) {
-            var xt: u32 = 0;
-            while (xt < nx) : (xt += 1) {
+        var yt: u32 = yt_lo;
+        while (yt < yt_hi) : (yt += 1) {
+            var xt: u32 = xt_lo;
+            while (xt < xt_hi) : (xt += 1) {
                 renderTileRecurse(&ctx, tape, 0, xt, yt, zt);
             }
         }
@@ -121,8 +144,12 @@ pub fn render(
 const RenderCtx = struct {
     out_pixels: []u32,
     out_gbuffer: []f32,
-    width: u32,
-    height: u32,
+    full_w: u32,
+    full_h: u32,
+    tile_x: u32,
+    tile_y: u32,
+    tile_w: u32,
+    tile_h: u32,
     ir: *const MathIR,
     slots: []const f64,
     view_half_w: f32,
@@ -132,6 +159,12 @@ const RenderCtx = struct {
     image_depth_vox: u32,
     max_level: u32,
 };
+
+/// Maps a (full-image) screen pixel into the tile-relative output buffer
+/// index. Caller must guarantee `(px, py)` is inside the sub-rect.
+inline fn outputIdx(ctx: *const RenderCtx, px: u32, py: u32) usize {
+    return @as(usize, py - ctx.tile_y) * @as(usize, ctx.tile_w) + @as(usize, px - ctx.tile_x);
+}
 
 fn initBuffers(pixels: []u32, gbuffer: []f32, total: usize) void {
     const inf = std.math.inf(f32);
@@ -157,12 +190,12 @@ inline fn colorByte(v: f32) u8 {
 // Pixel → camera-local (u, v) using full-image NDC. Top of image (py=0)
 // maps to +v; bottom to -v. Pixel center is offset by 0.5.
 inline fn pixelToCameraU(ctx: *const RenderCtx, px: f32) f32 {
-    const w: f32 = @floatFromInt(ctx.width);
+    const w: f32 = @floatFromInt(ctx.full_w);
     return (px / w * 2.0 - 1.0) * ctx.view_half_w;
 }
 
 inline fn pixelToCameraV(ctx: *const RenderCtx, py: f32) f32 {
-    const h: f32 = @floatFromInt(ctx.height);
+    const h: f32 = @floatFromInt(ctx.full_h);
     return (1.0 - py / h * 2.0) * ctx.view_half_h;
 }
 
@@ -182,25 +215,40 @@ fn renderTileRecurse(
     tz: u32,
 ) void {
     const size = TILE_SIZES[level];
-    const px_lo = tx * size;
-    const py_lo = ty * size;
+    // FULL screen-space extent of this tile (clipped to the image).
+    // Used for interval testing — over-conservative if the tile bleeds
+    // outside the sub-rect, but always safe.
+    const full_px_lo = tx * size;
+    const full_py_lo = ty * size;
     const vt_lo = tz * size;
-    const px_hi = @min(px_lo + size, ctx.width);
-    const py_hi = @min(py_lo + size, ctx.height);
+    const full_px_hi = @min(full_px_lo + size, ctx.full_w);
+    const full_py_hi = @min(full_py_lo + size, ctx.full_h);
     const vt_hi = @min(vt_lo + size, ctx.image_depth_vox);
-    if (px_lo >= px_hi or py_lo >= py_hi or vt_lo >= vt_hi) return;
+    if (full_px_lo >= full_px_hi or full_py_lo >= full_py_hi or vt_lo >= vt_hi) return;
 
-    // Camera-local extents — directly axis-aligned in tape input space.
-    const u_lo = pixelToTu(ctx, px_lo);
-    const u_hi = pixelToTu(ctx, px_hi);
-    // py_lo (top of tile) maps to higher v; flip sign.
-    const v_hi = pixelToTv(ctx, py_lo);
-    const v_lo = pixelToTv(ctx, py_hi);
+    // Pixel-write extent: clip to the requested sub-rect. Tiles entirely
+    // outside the sub-rect contribute nothing and exit immediately.
+    const sub_x_hi = ctx.tile_x + ctx.tile_w;
+    const sub_y_hi = ctx.tile_y + ctx.tile_h;
+    const px_lo = @max(full_px_lo, ctx.tile_x);
+    const py_lo = @max(full_py_lo, ctx.tile_y);
+    const px_hi = @min(full_px_hi, sub_x_hi);
+    const py_hi = @min(full_py_hi, sub_y_hi);
+    if (px_lo >= px_hi or py_lo >= py_hi) return;
+
+    // Camera-local extents over the FULL tile (not the clipped one) —
+    // the interval test is correct that way; recursing in over-large
+    // ambiguous regions is wasteful but correct. The clipped px/py
+    // bounds are only used when stamping/scanning pixel writes.
+    const u_lo = pixelToTu(ctx, full_px_lo);
+    const u_hi = pixelToTu(ctx, full_px_hi);
+    const v_hi = pixelToTv(ctx, full_py_lo);
+    const v_lo = pixelToTv(ctx, full_py_hi);
     const t_lo = ctx.near + @as(f32, @floatFromInt(vt_lo)) * ctx.pixel_world;
     const t_hi = ctx.near + @as(f32, @floatFromInt(vt_hi)) * ctx.pixel_world;
 
-    // Depth-skip: if every pixel in the tile already has a closer hit
-    // than t_lo (the tile's nearest face), nothing here can contribute.
+    // Depth-skip: if every pixel in the (clipped) tile already has a
+    // closer hit than t_lo, nothing here can contribute.
     if (allPixelsCloserThan(ctx, px_lo, px_hi, py_lo, py_hi, t_lo)) return;
 
     const box: Box3 = .{
@@ -265,10 +313,9 @@ fn allPixelsCloserThan(
 ) bool {
     var py: u32 = py_lo;
     while (py < py_hi) : (py += 1) {
-        const row: usize = @as(usize, py) * @as(usize, ctx.width);
         var px: u32 = px_lo;
         while (px < px_hi) : (px += 1) {
-            const idx = row + px;
+            const idx = outputIdx(ctx, px, py);
             if (ctx.out_gbuffer[idx * 4 + 3] > t_lo) return false;
         }
     }
@@ -313,10 +360,9 @@ fn stampTileBlock(
 
     var py: u32 = py_lo;
     while (py < py_hi) : (py += 1) {
-        const row: usize = @as(usize, py) * @as(usize, ctx.width);
         var px: u32 = px_lo;
         while (px < px_hi) : (px += 1) {
-            const idx = row + px;
+            const idx = outputIdx(ctx, px, py);
             // Only stamp if the tile-center is closer than any existing
             // hit. Front-to-back tile order guarantees we get the closer
             // hit when multiple tiles cover the same pixel.
@@ -351,7 +397,6 @@ fn emitLeafSamples(
     var py: u32 = py_lo;
     while (py < py_hi) : (py += 1) {
         const v = pixelToCameraV(ctx, @as(f32, @floatFromInt(py)) + 0.5);
-        const row: usize = @as(usize, py) * @as(usize, ctx.width);
 
         var px_base: u32 = px_lo;
         while (px_base < px_hi) : (px_base += 4) {
@@ -364,7 +409,7 @@ fn emitLeafSamples(
                 const lane_offset: u32 = @min(@as(u32, l), lane_count - 1);
                 const lane_px = px_base + lane_offset;
                 u_arr[l] = pixelToCameraU(ctx, @as(f32, @floatFromInt(lane_px)) + 0.5);
-                idx_arr[l] = row + lane_px;
+                idx_arr[l] = outputIdx(ctx, lane_px, py);
                 t_db_arr[l] = ctx.out_gbuffer[idx_arr[l] * 4 + 3];
             }
             const u_vec: F4 = u_arr;
@@ -391,21 +436,27 @@ fn emitLeafSamples(
                 if (@reduce(.And, hit_t != inf_v)) break;
             }
 
+            // Batched-Grad path: one tape walk computes (∂x, ∂y, ∂z) for
+            // all 4 lanes at once. Lanes that didn't hit (t_hit = inf)
+            // are evaluated too — wasted work for those lanes, but we
+            // skip writing them. Net savings: ~3-4× fewer tape walks
+            // versus per-hit `decodeRegEvalGrad`.
+            const grad4 = m.decodeRegEvalGrad4(
+                tape, ctx.ir, ctx.slots,
+                u_vec, v_vec, hit_t,
+                grad4_slots[0..],
+            );
+            const dx_arr: [4]f32 = grad4.dx;
+            const dy_arr: [4]f32 = grad4.dy;
+            const dz_arr: [4]f32 = grad4.dz;
             const hit_t_arr: [4]f32 = hit_t;
             var l: u32 = 0;
             while (l < lane_count) : (l += 1) {
                 const t_hit = hit_t_arr[l];
                 if (t_hit == std.math.inf(f32)) continue;
-                const u = u_arr[l];
-                // evalGrad takes the same camera-local point; the tape
-                // chain-rules through the camera wrapper, so the returned
-                // partials are w.r.t. (wcx, wcy, wcz). Those are the
-                // partials we want for screen-space normals.
-                const p = Vec3{ .x = u, .y = v, .z = t_hit };
-                const grad = m.decodeRegEvalGrad(tape, ctx.ir, ctx.slots, p);
-                const gx = grad[1];
-                const gy = grad[2];
-                const gz = grad[3];
+                const gx = dx_arr[l];
+                const gy = dy_arr[l];
+                const gz = dz_arr[l];
                 const gmag = @sqrt(gx * gx + gy * gy + gz * gz);
                 var nx: f32 = 0;
                 var ny: f32 = 1;

@@ -421,3 +421,333 @@ pub fn decodeRegEvalGrad(tape: *const RegTape, ir: *const MathIR, slots: []const
     }
     return @splat(0);
 }
+
+// ── Batched (4-hit) forward-mode Grad ─────────────────────────────────────
+//
+// `Grad4` holds 4 hits' (value, ∂/∂x, ∂/∂y, ∂/∂z) — each field is an F4
+// where lane `l` corresponds to hit `l`. Per-op rules apply across lanes
+// in SIMD-4, so one tape walk produces 4 hits' analytical gradients.
+// Used by the per-pixel leaf hot loop in `cpu_render.zig`, where each
+// SIMD-4 z-scan group can yield up to 4 hits — this evaluator amortises
+// the per-tape-walk overhead 4× over independent `decodeRegEvalGrad`
+// calls.
+//
+// Lanes are independent: the result for lane `l` is identical to a
+// single-point `decodeRegEvalGrad` at lane `l`'s (x[l], y[l], z[l]). The
+// caller is free to leave invalid lanes undefined; the evaluator never
+// faults on them as long as the tape doesn't divide by exactly zero or
+// take √ of a strictly-negative scalar in the value lane. (`fSqrt` /
+// `fDiv` mask such lanes to zero, matching the scalar grad behaviour.)
+
+pub const F4g = @Vector(4, f32);
+
+pub const Grad4 = struct {
+    v: F4g,
+    dx: F4g,
+    dy: F4g,
+    dz: F4g,
+};
+
+inline fn g4Zero() F4g {
+    return @splat(0);
+}
+inline fn g4One() F4g {
+    return @splat(1);
+}
+inline fn g4Splat(s: f32) F4g {
+    return @splat(s);
+}
+inline fn g4Const(s: f32) Grad4 {
+    return .{ .v = @splat(s), .dx = g4Zero(), .dy = g4Zero(), .dz = g4Zero() };
+}
+
+inline fn g4Neg(a: Grad4) Grad4 {
+    return .{ .v = -a.v, .dx = -a.dx, .dy = -a.dy, .dz = -a.dz };
+}
+inline fn g4Add(a: Grad4, b: Grad4) Grad4 {
+    return .{ .v = a.v + b.v, .dx = a.dx + b.dx, .dy = a.dy + b.dy, .dz = a.dz + b.dz };
+}
+inline fn g4Sub(a: Grad4, b: Grad4) Grad4 {
+    return .{ .v = a.v - b.v, .dx = a.dx - b.dx, .dy = a.dy - b.dy, .dz = a.dz - b.dz };
+}
+inline fn g4Mul(a: Grad4, b: Grad4) Grad4 {
+    return .{
+        .v = a.v * b.v,
+        .dx = a.v * b.dx + b.v * a.dx,
+        .dy = a.v * b.dy + b.v * a.dy,
+        .dz = a.v * b.dz + b.v * a.dz,
+    };
+}
+inline fn g4Div(a: Grad4, b: Grad4) Grad4 {
+    const zero = g4Zero();
+    const nonzero: @Vector(4, bool) = b.v != zero;
+    const safe_b = @select(f32, nonzero, b.v, g4One());
+    const inv = g4One() / safe_b;
+    const inv2 = inv * inv;
+    return .{
+        .v = @select(f32, nonzero, a.v * inv, zero),
+        .dx = @select(f32, nonzero, (a.dx * b.v - a.v * b.dx) * inv2, zero),
+        .dy = @select(f32, nonzero, (a.dy * b.v - a.v * b.dy) * inv2, zero),
+        .dz = @select(f32, nonzero, (a.dz * b.v - a.v * b.dz) * inv2, zero),
+    };
+}
+inline fn g4Abs(a: Grad4) Grad4 {
+    const zero = g4Zero();
+    const pos: @Vector(4, bool) = a.v > zero;
+    const neg: @Vector(4, bool) = a.v < zero;
+    return .{
+        .v = @select(f32, pos, a.v, @select(f32, neg, -a.v, zero)),
+        .dx = @select(f32, pos, a.dx, @select(f32, neg, -a.dx, zero)),
+        .dy = @select(f32, pos, a.dy, @select(f32, neg, -a.dy, zero)),
+        .dz = @select(f32, pos, a.dz, @select(f32, neg, -a.dz, zero)),
+    };
+}
+inline fn g4Sqrt(a: Grad4) Grad4 {
+    const zero = g4Zero();
+    const pos: @Vector(4, bool) = a.v > zero;
+    const sv = @sqrt(@max(a.v, zero));
+    const safe_sv = @select(f32, pos, sv, g4One());
+    const k = g4Splat(0.5) / safe_sv;
+    return .{
+        .v = @select(f32, pos, sv, zero),
+        .dx = @select(f32, pos, a.dx * k, zero),
+        .dy = @select(f32, pos, a.dy * k, zero),
+        .dz = @select(f32, pos, a.dz * k, zero),
+    };
+}
+inline fn g4Square(a: Grad4) Grad4 {
+    const two_v = g4Splat(2.0) * a.v;
+    return .{
+        .v = a.v * a.v,
+        .dx = two_v * a.dx,
+        .dy = two_v * a.dy,
+        .dz = two_v * a.dz,
+    };
+}
+inline fn g4Min(a: Grad4, b: Grad4) Grad4 {
+    const a_wins: @Vector(4, bool) = a.v <= b.v;
+    return .{
+        .v = @select(f32, a_wins, a.v, b.v),
+        .dx = @select(f32, a_wins, a.dx, b.dx),
+        .dy = @select(f32, a_wins, a.dy, b.dy),
+        .dz = @select(f32, a_wins, a.dz, b.dz),
+    };
+}
+inline fn g4Max(a: Grad4, b: Grad4) Grad4 {
+    const a_wins: @Vector(4, bool) = a.v >= b.v;
+    return .{
+        .v = @select(f32, a_wins, a.v, b.v),
+        .dx = @select(f32, a_wins, a.dx, b.dx),
+        .dy = @select(f32, a_wins, a.dy, b.dy),
+        .dz = @select(f32, a_wins, a.dz, b.dz),
+    };
+}
+inline fn g4Atan2(a: Grad4, b: Grad4) Grad4 {
+    // Value lane is per-lane scalar atan2; partials vectorise.
+    const y_arr: [4]f32 = a.v;
+    const x_arr: [4]f32 = b.v;
+    var v_arr: [4]f32 = undefined;
+    inline for (0..4) |i| v_arr[i] = math.atan2(y_arr[i], x_arr[i]);
+    const v_out: F4g = v_arr;
+
+    const zero = g4Zero();
+    const r2 = b.v * b.v + a.v * a.v;
+    const nz: @Vector(4, bool) = r2 != zero;
+    const safe_r2 = @select(f32, nz, r2, g4One());
+    const inv = g4One() / safe_r2;
+    return .{
+        .v = v_out,
+        .dx = @select(f32, nz, (b.v * a.dx - a.v * b.dx) * inv, zero),
+        .dy = @select(f32, nz, (b.v * a.dy - a.v * b.dy) * inv, zero),
+        .dz = @select(f32, nz, (b.v * a.dz - a.v * b.dz) * inv, zero),
+    };
+}
+
+// Per-lane scalar fallback for ops whose batched form isn't worth
+// implementing (transcendentals, comparisons, intrinsic ops). The
+// caller pays a 4× overhead on these versus the native batched ops, but
+// they're rare in lowered SDF tapes.
+fn g4UnaryPerLane(op: Unary, a: Grad4) Grad4 {
+    var out: Grad4 = undefined;
+    const av: [4]f32 = a.v;
+    const adx: [4]f32 = a.dx;
+    const ady: [4]f32 = a.dy;
+    const adz: [4]f32 = a.dz;
+    var v_arr: [4]f32 = undefined;
+    var dx_arr: [4]f32 = undefined;
+    var dy_arr: [4]f32 = undefined;
+    var dz_arr: [4]f32 = undefined;
+    inline for (0..4) |i| {
+        const lane: Grad = .{ av[i], adx[i], ady[i], adz[i] };
+        const r = gUnary(op, lane);
+        v_arr[i] = r[0];
+        dx_arr[i] = r[1];
+        dy_arr[i] = r[2];
+        dz_arr[i] = r[3];
+    }
+    out.v = v_arr;
+    out.dx = dx_arr;
+    out.dy = dy_arr;
+    out.dz = dz_arr;
+    return out;
+}
+
+fn g4BinaryPerLane(op: Binary, a: Grad4, b: Grad4) Grad4 {
+    var out: Grad4 = undefined;
+    const av: [4]f32 = a.v;
+    const adx: [4]f32 = a.dx;
+    const ady: [4]f32 = a.dy;
+    const adz: [4]f32 = a.dz;
+    const bv: [4]f32 = b.v;
+    const bdx: [4]f32 = b.dx;
+    const bdy: [4]f32 = b.dy;
+    const bdz: [4]f32 = b.dz;
+    var v_arr: [4]f32 = undefined;
+    var dx_arr: [4]f32 = undefined;
+    var dy_arr: [4]f32 = undefined;
+    var dz_arr: [4]f32 = undefined;
+    inline for (0..4) |i| {
+        const la: Grad = .{ av[i], adx[i], ady[i], adz[i] };
+        const lb: Grad = .{ bv[i], bdx[i], bdy[i], bdz[i] };
+        const r = gBinary(op, la, lb);
+        v_arr[i] = r[0];
+        dx_arr[i] = r[1];
+        dy_arr[i] = r[2];
+        dz_arr[i] = r[3];
+    }
+    out.v = v_arr;
+    out.dx = dx_arr;
+    out.dy = dy_arr;
+    out.dz = dz_arr;
+    return out;
+}
+
+fn g4Unary(op: Unary, a: Grad4) Grad4 {
+    return switch (op) {
+        .neg => g4Neg(a),
+        .abs => g4Abs(a),
+        .sqrt => g4Sqrt(a),
+        .square => g4Square(a),
+        else => g4UnaryPerLane(op, a),
+    };
+}
+
+fn g4Binary(op: Binary, a: Grad4, b: Grad4) Grad4 {
+    return switch (op) {
+        .add => g4Add(a, b),
+        .sub => g4Sub(a, b),
+        .mul => g4Mul(a, b),
+        .div => g4Div(a, b),
+        .min => g4Min(a, b),
+        .max => g4Max(a, b),
+        .atan2 => g4Atan2(a, b),
+        else => g4BinaryPerLane(op, a, b),
+    };
+}
+
+fn g4Intrinsic(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, axis: [3]Grad4) Grad4 {
+    // 4 lanes of (x, y, z) → 4 lanes of grad, each computed via per-lane
+    // central differences (same as scalar grad).
+    var out: Grad4 = undefined;
+    const xv: [4]f32 = axis[0].v;
+    const yv: [4]f32 = axis[1].v;
+    const zv: [4]f32 = axis[2].v;
+    var v_arr: [4]f32 = undefined;
+    var dx_arr: [4]f32 = undefined;
+    var dy_arr: [4]f32 = undefined;
+    var dz_arr: [4]f32 = undefined;
+    inline for (0..4) |i| {
+        const ax_lane: [3]Grad = .{
+            .{ xv[i], axis[0].dx[i], axis[0].dy[i], axis[0].dz[i] },
+            .{ yv[i], axis[1].dx[i], axis[1].dy[i], axis[1].dz[i] },
+            .{ zv[i], axis[2].dx[i], axis[2].dy[i], axis[2].dz[i] },
+        };
+        const r = gIntrinsic(ir, intrinsic, slots, ax_lane);
+        v_arr[i] = r[0];
+        dx_arr[i] = r[1];
+        dy_arr[i] = r[2];
+        dz_arr[i] = r[3];
+    }
+    out.v = v_arr;
+    out.dx = dx_arr;
+    out.dy = dy_arr;
+    out.dz = dz_arr;
+    return out;
+}
+
+pub fn decodeRegEvalGrad4(
+    tape: *const RegTape,
+    ir: *const MathIR,
+    slots: []const f64,
+    x: F4g,
+    y: F4g,
+    z: F4g,
+    values: []Grad4,
+) Grad4 {
+    var axes: [64][3]Grad4 = undefined;
+    const zero = g4Zero();
+    const one = g4One();
+    axes[0] = .{
+        .{ .v = x, .dx = one, .dy = zero, .dz = zero },
+        .{ .v = y, .dx = zero, .dy = one, .dz = zero },
+        .{ .v = z, .dx = zero, .dy = zero, .dz = one },
+    };
+    var ap: usize = 1;
+
+    var ip: usize = 0;
+    while (ip < tape.instruction_count) : (ip += 1) {
+        const op: Op = @enumFromInt(tape.opcodes[ip]);
+        const dst = tape.dst[ip];
+        const a = tape.src_a[ip];
+        const b = tape.src_b[ip];
+        const c = tape.src_c[ip];
+        const aux = tape.aux[ip];
+
+        switch (op) {
+            .load_x => values[dst] = axes[ap - 1][0],
+            .load_y => values[dst] = axes[ap - 1][1],
+            .load_z => values[dst] = axes[ap - 1][2],
+            .load_slot => values[dst] = g4Const(@floatCast(eval.slotValue(slots, aux))),
+            .load_const => values[dst] = g4Const(@floatCast(tape.immediates[@intCast(aux)])),
+            .unary => values[dst] = g4Unary(@enumFromInt(aux), values[a]),
+            .binary => values[dst] = g4Binary(@enumFromInt(aux), values[a], values[b]),
+            .enter_remap_axes => {
+                axes[ap] = .{ values[a], values[b], values[c] };
+                ap += 1;
+            },
+            .enter_remap_affine => {
+                const af = ir.affines[@intCast(aux)];
+                const cur = axes[ap - 1];
+                const m00 = values[@intCast(af.m00.id)];
+                const m01 = values[@intCast(af.m01.id)];
+                const m02 = values[@intCast(af.m02.id)];
+                const m03 = values[@intCast(af.m03.id)];
+                const m10 = values[@intCast(af.m10.id)];
+                const m11 = values[@intCast(af.m11.id)];
+                const m12 = values[@intCast(af.m12.id)];
+                const m13 = values[@intCast(af.m13.id)];
+                const m20 = values[@intCast(af.m20.id)];
+                const m21 = values[@intCast(af.m21.id)];
+                const m22 = values[@intCast(af.m22.id)];
+                const m23 = values[@intCast(af.m23.id)];
+                axes[ap] = .{
+                    g4Add(g4Add(g4Add(g4Mul(m00, cur[0]), g4Mul(m01, cur[1])), g4Mul(m02, cur[2])), m03),
+                    g4Add(g4Add(g4Add(g4Mul(m10, cur[0]), g4Mul(m11, cur[1])), g4Mul(m12, cur[2])), m13),
+                    g4Add(g4Add(g4Add(g4Mul(m20, cur[0]), g4Mul(m21, cur[1])), g4Mul(m22, cur[2])), m23),
+                };
+                ap += 1;
+            },
+            .exit_remap => {
+                values[dst] = values[a];
+                ap -= 1;
+            },
+            .intrinsic => {
+                const intrinsic = ir.intrinsics[@intCast(aux)];
+                values[dst] = g4Intrinsic(ir, intrinsic, slots, axes[ap - 1]);
+            },
+            .copy_slot => values[dst] = values[a],
+            .return_ => return values[a],
+        }
+    }
+    return Grad4{ .v = g4Zero(), .dx = g4Zero(), .dy = g4Zero(), .dz = g4Zero() };
+}

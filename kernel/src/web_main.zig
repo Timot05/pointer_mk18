@@ -23,25 +23,16 @@ const m = @import("math_domain.zig");
 const scene_decode = @import("scene_decode.zig");
 const cpu_render = @import("cpu_render.zig");
 
-/// Largest full-canvas dimensions we support. Beyond this `render_voxels`
-/// returns 0. The host renders at devicePixelRatio × renderScale, so a
-/// 1920×1080 logical canvas on a retina display becomes 3840×2160 physical
-/// pixels at idle. Sized for 4K-ish retina to avoid surprising rejections.
-pub const MAX_W: u32 = 4096;
-pub const MAX_H: u32 = 2304;
-
 /// Largest tile (width or height). Mirrors the host's MAX_TILE = 1024 in
-/// `viewer/Kernel/Background.fs`.
+/// `viewer/Kernel/Background.fs`. The host splits any canvas larger than
+/// this into multiple tiles and dispatches each as a separate render.
 pub const MAX_TILE_DIM: u32 = 1024;
 
-// Scratch — `cpu_render.render` writes the entire full_w × full_h frame
-// into these. We then copy just the requested tile sub-rect out.
-var full_pixels: [MAX_W * MAX_H]u32 = undefined;
-var full_gbuffer: [MAX_W * MAX_H * 4]f32 = undefined;
-
-// Host-visible gbuffer. Tile-packed: contains the most-recently-rendered
-// tile's `tile_w * tile_h * 4` floats starting at offset 0, in row-major
-// order. The host reads via `gbuffer_ptr` + `gbufferView(tileW, tileH)`.
+// Tile-sized output buffers. `cpu_render.render` now does proper per-tile
+// rendering (writes only the requested sub-rect at tile-relative
+// indexing), so the kernel only needs storage for one tile's worth of
+// pixels — not the entire canvas. Host reads `gbuffer` via `gbuffer_ptr`.
+var pixels: [MAX_TILE_DIM * MAX_TILE_DIM]u32 = undefined;
 var gbuffer: [MAX_TILE_DIM * MAX_TILE_DIM * 4]f32 = undefined;
 
 var camera_buffer: [12]f32 align(4) = undefined;
@@ -106,14 +97,15 @@ pub export fn gbuffer_ptr() [*]f32 {
     return @ptrCast(&gbuffer);
 }
 
-/// Render a tile sub-rect of a `full_w × full_h` image and pack the result
-/// into the host-visible `gbuffer` as `tile_w × tile_h × (nx, ny, nz, wcz)`.
-/// Returns `tile_w * tile_h` on success, 0 on bad input or unloaded scene.
+/// Render the requested tile sub-rect of a `full_w × full_h` image into
+/// the host-visible `gbuffer`, packed as `tile_w × tile_h × (nx, ny, nz,
+/// wcz)`. Returns `tile_w * tile_h` on success, 0 on bad input or
+/// unloaded scene.
 ///
-/// Wasteful first cut: renders the entire full frame on every call, then
-/// copies just the tile sub-rect. The host tiles a typical canvas into
-/// 1–4 pieces, so this is 1–4× the optimal work — a real per-tile path is
-/// a future optimization.
+/// `cpu_render.render` writes only this tile's pixels (no full-frame
+/// scratch) — the work scales with `tile_w × tile_h`, not the whole
+/// canvas. After rendering, we negate the depth lane in place to convert
+/// mk21's ascending-t convention to mk18's ascending-wcz convention.
 pub export fn render_voxels(
     tile_w: u32, tile_h: u32,
     full_w: u32, full_h: u32,
@@ -124,46 +116,30 @@ pub export fn render_voxels(
 ) u32 {
     if (!scene_loaded) return 0;
     if (full_w == 0 or full_h == 0) return 0;
-    if (full_w > MAX_W or full_h > MAX_H) return 0;
     if (tile_w == 0 or tile_h == 0) return 0;
     if (tile_w > MAX_TILE_DIM or tile_h > MAX_TILE_DIM) return 0;
     if (tile_x + tile_w > full_w) return 0;
     if (tile_y + tile_h > full_h) return 0;
 
-    const full_total: usize = @as(usize, full_w) * @as(usize, full_h);
+    const tile_total: usize = @as(usize, tile_w) * @as(usize, tile_h);
     cpu_render.render(
-        full_pixels[0..full_total],
-        full_gbuffer[0 .. full_total * 4],
-        full_w,
-        full_h,
+        pixels[0..tile_total],
+        gbuffer[0 .. tile_total * 4],
+        full_w, full_h,
+        tile_x, tile_y, tile_w, tile_h,
         &scene_tape,
         &math_ir,
         &.{},
-        view_half_w,
-        view_half_h,
-        -half,
-        half,
+        view_half_w, view_half_h,
+        -half, half,
         level,
     );
 
-    // Copy the tile sub-rect into the host-visible gbuffer, packed as
-    // tile_w × tile_h × (nx, ny, nz, wcz). Negate the depth lane: mk21
-    // stores ascending-t (away from eye) but mk18's WGSL expects
-    // ascending-wcz (closer to camera). Miss pixels (t = +inf) become
-    // wcz = -inf, which the shader discards.
-    var ty: u32 = 0;
-    while (ty < tile_h) : (ty += 1) {
-        const src_pixel_row: usize = @as(usize, tile_y + ty) * @as(usize, full_w) + @as(usize, tile_x);
-        const dst_pixel_row: usize = @as(usize, ty) * @as(usize, tile_w);
-        var tx: u32 = 0;
-        while (tx < tile_w) : (tx += 1) {
-            const src = (src_pixel_row + tx) * 4;
-            const dst = (dst_pixel_row + tx) * 4;
-            gbuffer[dst + 0] = full_gbuffer[src + 0];
-            gbuffer[dst + 1] = full_gbuffer[src + 1];
-            gbuffer[dst + 2] = full_gbuffer[src + 2];
-            gbuffer[dst + 3] = -full_gbuffer[src + 3];
-        }
+    // mk21's renderer stores depth as t (positive = away from eye); mk18's
+    // WGSL expects wcz (positive = closer). Negate in place.
+    var i: usize = 0;
+    while (i < tile_total) : (i += 1) {
+        gbuffer[i * 4 + 3] = -gbuffer[i * 4 + 3];
     }
 
     return tile_w * tile_h;

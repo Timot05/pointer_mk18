@@ -55,8 +55,10 @@ pub const Choice = math_reg_tape.Choice;
 pub const simplifyTape = math_reg_tape.simplifyTape;
 
 pub const Grad = math_grad.Grad;
+pub const Grad4 = math_grad.Grad4;
 pub const decodeRegEvalF32 = math_grad.decodeRegEvalF32;
 pub const decodeRegEvalGrad = math_grad.decodeRegEvalGrad;
+pub const decodeRegEvalGrad4 = math_grad.decodeRegEvalGrad4;
 
 pub const F4 = math_simd_eval.F4;
 pub const decodeRegEvalF4 = math_simd_eval.decodeRegEvalF4;

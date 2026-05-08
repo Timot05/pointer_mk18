@@ -16,6 +16,8 @@
     <Compile Include="CpuLmSolverTests.fs" />
     <Compile Include="EditorTests.fs" />
     <Compile Include="SketchAuthoringTests.fs" />
+    <Compile Include="LangTests.fs" />
+    <Compile Include="NotebookTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

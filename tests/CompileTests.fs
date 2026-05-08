@@ -373,10 +373,10 @@ let ``SketchCompile supports frame line distance to projected frame origin`` () 
     Assert.True(graph.Outputs.Length > 0)
 
 [<Fact>]
-let ``FromSketch with SelectionLoop None compiles to FSketch with 4 line segments`` () =
+let ``FromSketch with SelectionAllLoops compiles to FSketch with 4 line segments`` () =
     let r =
         pipeline [ action "sk" (Sketch(None, XY, squareSketch))
-                   action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
+                   action "f" (FromSketch(Some "sk", false, SelectionAllLoops)) ]
     let f = surfaceFor "f" r.Surfaces
     match f.Field with
     | FSketch { Primitives = prims; Closed = true; Flip = false } ->
@@ -405,7 +405,7 @@ let ``FromSketch with SelectionElements compiles lines in the given order`` () =
 let ``FSketch primitive slots match the sketch's pre-allocated point slots`` () =
     let r =
         pipeline [ action "sk" (Sketch(None, XY, squareSketch))
-                   action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
+                   action "f" (FromSketch(Some "sk", false, SelectionAllLoops)) ]
     let f = surfaceFor "f" r.Surfaces
     // Grab the first segment and verify its start-point slots coincide
     // with sketch "sk"'s authored point slots for one of the corners.
@@ -426,7 +426,7 @@ let ``FromSketch with a Sketch origin wraps FSketch in FTranslate`` () =
         pipeline [ action "o" Origin
                    action "tf" (Translate(Some "o", 5.0, 0.0, 0.0))
                    action "sk" (Sketch(Some "tf", XY, squareSketch))
-                   action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
+                   action "f" (FromSketch(Some "sk", false, SelectionAllLoops)) ]
     let f = surfaceFor "f" r.Surfaces
     match f.Field with
     | FTranslate(xSlot, _, _, FSketch _) ->
@@ -439,7 +439,7 @@ let ``FromSketch on YZ sketch plane applies plane rotations`` () =
         buildElements
             [ action "o" Origin
               action "sk" (Sketch(Some "o", YZ, squareSketch))
-              action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
+              action "f" (FromSketch(Some "sk", false, SelectionAllLoops)) ]
         |> fun result -> result.Elements
     match Map.find "f" elements with
     | ERotate(_, 0.0, 0.0, 1.0, angleZ, ERotate(_, 1.0, 0.0, 0.0, angleX, EFromSketch("f", "sk", _, _, false))) when abs (angleZ - quarterTurn) < 1e-9 && abs (angleX - quarterTurn) < 1e-9 -> ()
@@ -452,7 +452,7 @@ let ``FromSketch applies plane rotation before translated sketch origin`` () =
             [ action "o" Origin
               action "tf" (Translate(Some "o", 5.0, 0.0, 0.0))
               action "sk" (Sketch(Some "tf", XZ, squareSketch))
-              action "f" (FromSketch(Some "sk", false, SelectionLoop None)) ]
+              action "f" (FromSketch(Some "sk", false, SelectionAllLoops)) ]
         |> fun result -> result.Elements
     match Map.find "f" elements with
     | ETranslate("tf", 5.0, 0.0, 0.0, ERotate(_, 1.0, 0.0, 0.0, angleX, EFromSketch("f", "sk", _, _, false))) when abs (angleX - quarterTurn) < 1e-9 -> ()

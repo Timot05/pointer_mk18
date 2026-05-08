@@ -20,6 +20,21 @@
     <Compile Include="core\Sketch\Sketch.fs" />
     <Compile Include="core\Sketch\SketchLoops.fs" />
 
+    <!-- core / Lang (DSL: lexer, parser, evaluator, math IR target).
+         Self-contained — depends only on core/Math + core/Sketch (Sketch.fs).
+         Lives before Editor.Domain so Document can store Notebook.Block list. -->
+    <Compile Include="core\Lang\MathIr.fs" />
+    <Compile Include="core\Lang\Token.fs" />
+    <Compile Include="core\Lang\Ast.fs" />
+    <Compile Include="core\Lang\Lexer.fs" />
+    <Compile Include="core\Lang\Parser.fs" />
+    <Compile Include="core\Lang\Value.fs" />
+    <Compile Include="core\Lang\Builtins.fs" />
+    <Compile Include="core\Lang\Eval.fs" />
+    <Compile Include="core\Lang\Notebook.fs" />
+    <Compile Include="core\Lang\NotebookEval.fs" />
+    <Compile Include="core\Lang\MathIrCodec.fs" />
+
     <!-- core / Editor (domain + type check) -->
     <Compile Include="core\Editor\Domain.fs" />
     <Compile Include="core\Editor\TypeCheck.fs" />
@@ -34,19 +49,6 @@
 
     <!-- core / Sketch (compile uses solvers) -->
     <Compile Include="core\Sketch\SketchCompile.fs" />
-
-    <!-- core / Lang (DSL: lexer, parser, evaluator, math IR target).
-         Self-contained — no dependency on Editor / Field. -->
-    <Compile Include="core\Lang\MathIr.fs" />
-    <Compile Include="core\Lang\Token.fs" />
-    <Compile Include="core\Lang\Ast.fs" />
-    <Compile Include="core\Lang\Lexer.fs" />
-    <Compile Include="core\Lang\Parser.fs" />
-    <Compile Include="core\Lang\Value.fs" />
-    <Compile Include="core\Lang\Builtins.fs" />
-    <Compile Include="core\Lang\Eval.fs" />
-    <Compile Include="core\Lang\Notebook.fs" />
-    <Compile Include="core\Lang\NotebookEval.fs" />
 
     <!-- core / Editor (slot table / element / frames) -->
     <Compile Include="core\Editor\SlotTable.fs" />
@@ -80,6 +82,8 @@
     <Compile Include="ui\Icons.fs" />
     <Compile Include="ui\TopBar.fs" />
     <Compile Include="ui\ActionList.fs" />
+    <Compile Include="ui\BlockList.fs" />
+    <Compile Include="ui\ScriptEditor.fs" />
     <Compile Include="ui\SketchAuthoringPanel.fs" />
     <Compile Include="ui\CommandPalette.fs" />
     <Compile Include="ui\Shortcuts.fs" />

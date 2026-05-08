@@ -92,35 +92,22 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 // immediately — otherwise we'd wait for the next store
                 // dispatch to trigger the subscription below.
                 let background : Kernel.Background.Background option ref = ref None
-                let mutable lastCompiled : obj = null
-                let mutable lastSlotValues : obj = null
-                // Doc reference changes on every action edit, including
-                // visibility toggles that leave Compiled / SlotValues
-                // untouched.
-                let mutable lastDoc : obj = null
+                let mutable lastNotebookBytes : obj option = None
+                /// Push the latest MathIR bytes (from `RunNotebook`) to the
+                /// kernel. No-op if the user hasn't run the notebook yet.
                 let pushIr (bg: Kernel.Background.Background) =
                     let state = AppStore.store.State
-                    // A surface renders iff its action has
-                    // `VIsosurface` visibility.
-                    let enabledActionIds =
-                        state.Doc.Actions
-                        |> List.choose (fun a ->
-                            if a.Visibility = VIsosurface then Some a.Id else None)
-                        |> Set.ofList
-                    let surfaces =
-                        state.Compiled.Surfaces
-                        |> List.filter (fun s -> Set.contains s.ActionId enabledActionIds)
-                    match Kernel.FieldToIr.build surfaces state.SlotValues with
-                    | Some bytes -> Kernel.Background.updateIr bg bytes
-                    | None -> Kernel.Background.clear bg
-                    lastCompiled <- box state.Compiled
-                    lastSlotValues <- box state.SlotValues
-                    lastDoc <- box state.Doc
+                    match state.LastNotebookBytes with
+                    | Some bytes ->
+                        Kernel.Background.updateIr bg bytes
+                        lastNotebookBytes <- Some bytes
+                    | None ->
+                        Kernel.Background.clear bg
+                        lastNotebookBytes <- None
                 Kernel.Background.create scene
                 |> Promise.iter (fun bg ->
                     background.Value <- Some bg
-                    if AppStore.store.State.ViewerMode = IntervalKernel then
-                        pushIr bg)
+                    pushIr bg)
 
                 // Adaptive render-resolution scale. Dropped to
                 // `LOW_RES_SCALE` while the camera's moving so the heavy
@@ -162,9 +149,6 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 let mutable pickableById : Map<int, Pickable> = Map.empty
                 let onStoreChange () =
                     let state = AppStore.store.State
-                    let compiled = box state.Compiled
-                    let slots = box state.SlotValues
-                    let compiledChanged = compiled <> lastCompiled
                     let model = ViewerPipeline.viewerModel state
                     pickableById <-
                         (model.Pickables
@@ -173,24 +157,24 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                          @ HalfPlaneGizmo.ephemeralPickablesForState state
                         |> List.map (fun p -> Pickable.pickId p, p)
                         |> Map.ofList
-                    // IR depends on topology (Compiled), values
-                    // (SlotValues — replaced on every drag/edit), *and*
-                    // the Doc (display toggles don't touch the first two).
-                    // Only push to the kernel when that mode is active —
-                    // in Raymarch mode the kernel's output is unused and
-                    // running it is both wasteful and a source of worker
-                    // crashes on edge-case IR.
-                    let doc = box state.Doc
-                    if state.ViewerMode = IntervalKernel
-                       && (compiledChanged || slots <> lastSlotValues || doc <> lastDoc) then
+                    // Notebook-driven push: every successful `RunNotebook`
+                    // refreshes `state.LastNotebookBytes`. Compare by
+                    // reference; mismatch → upload to the kernel worker
+                    // pool. Action-graph push is gone (action lowering
+                    // pipeline is dormant; FieldNode no longer flows).
+                    let nbBytes = state.LastNotebookBytes
+                    let bytesChanged =
+                        match lastNotebookBytes, nbBytes with
+                        | Some a, Some b -> not (obj.ReferenceEquals(a, b))
+                        | None, None -> false
+                        | _ -> true
+                    if bytesChanged then
                         match background.Value with
                         | Some bg -> pushIr bg
                         | None ->
                             // Background not mounted yet; pushIr runs on
-                            // create-resolve below and captures current state.
-                            lastCompiled <- compiled
-                            lastSlotValues <- slots
-                            lastDoc <- doc
+                            // create-resolve and captures current state.
+                            lastNotebookBytes <- nbBytes
                 Store.subscribe AppStore.store onStoreChange
                 onStoreChange ()
 

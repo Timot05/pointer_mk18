@@ -28,7 +28,7 @@ let render
 
     let layout = Dom.el "div" "layout"
     let leftHost = Dom.el "div" "panel-host panel-host-actions"
-    leftHost.appendChild (ActionList.render dispatch doc :> Node) |> ignore
+    leftHost.appendChild (BlockList.render dispatch doc :> Node) |> ignore
     layout.appendChild (leftHost :> Node) |> ignore
 
     let center = Dom.el "div" "panel panel-center"

@@ -195,7 +195,10 @@ let renderFrame
         | Some _, Some frameOffset ->
             let isActiveEditSketch =
                 viewState.SketchUi.EditMode
-                && state.Doc.SelectedId = Some sketch.Id
+                && (state.Doc.SelectedId = Some sketch.Id
+                    || (match state.Doc.SelectedBlockId with
+                        | Some bid -> Server.SketchAuthoring.blockSketchId bid = sketch.Id
+                        | None -> false))
 
             // Per-sketch buffer slot lookup — each category resolves to
             // this sketch's own `Slot` so sketches can't stomp each

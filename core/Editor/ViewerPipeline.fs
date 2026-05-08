@@ -181,7 +181,7 @@ module ViewerPipeline =
                    Path = r.Path
                    Slot = s |})
 
-        let sketches =
+        let actionSketches =
             state.Doc.Actions
             |> List.choose (fun a ->
                 match a.Kind with
@@ -200,6 +200,32 @@ module ViewerPipeline =
                           Sketch = sk
                           Graph = graph }
                 | _ -> None)
+
+        // SketchBlocks: same shape, synthetic id, identity origin (None).
+        // The 3D viewer's render loop iterates this list to draw the
+        // sketch grid + entities, so without these entries a SketchBlock
+        // is invisible in the viewport.
+        let blockSketches =
+            state.Doc.Blocks
+            |> List.choose (fun b ->
+                match b.Kind with
+                | Server.Lang.Notebook.SketchBlock data ->
+                    let sketchOrigin = Editor.resolveSketchTransform state None data.Plane
+
+                    let ctx: SketchCompileContext =
+                        { SketchOrigin = sketchOrigin
+                          Frames = Editor.resolvedFrames state }
+
+                    let graph = SketchCompile.compile data.Sketch ctx
+
+                    Some
+                        { Id = SketchAuthoring.blockSketchId b.Id
+                          Origin = None
+                          Sketch = data.Sketch
+                          Graph = graph }
+                | _ -> None)
+
+        let sketches = actionSketches @ blockSketches
 
         { Surfaces = state.Compiled.Surfaces
           // Raymarcher is retired. Fields kept on the record to avoid a
@@ -222,7 +248,7 @@ module ViewerPipeline =
                  | _ ->
                      current))
 
-        let sketchLoops =
+        let actionSketchLoops =
             state.Doc.Actions
             |> List.choose (fun action ->
                 match action.Kind with
@@ -235,6 +261,26 @@ module ViewerPipeline =
                         { SketchId = action.Id
                           Loops = loops }
                 | _ -> None)
+
+        // SketchBlock sketches: same shape, synthetic id, raw coord values
+        // (no slot table). resolveSketchEntities returns the entities
+        // unchanged (slot lookup misses → falls through to entity literal).
+        let blockSketchLoops =
+            state.Doc.Blocks
+            |> List.choose (fun b ->
+                match b.Kind with
+                | Server.Lang.Notebook.SketchBlock data ->
+                    let synthId = SketchAuthoring.blockSketchId b.Id
+                    let liveEntities = resolveSketchEntities state.Compiled.Slots effectiveParams synthId data.Sketch
+                    let loops =
+                        SketchLoops.detectLoops liveEntities
+                        |> List.map (fun l -> { Id = l.Id; EntityIds = l.EntityIds })
+                    Some
+                        { SketchId = synthId
+                          Loops = loops }
+                | _ -> None)
+
+        let sketchLoops = actionSketchLoops @ blockSketchLoops
 
         let isDraggable =
             function
@@ -252,12 +298,28 @@ module ViewerPipeline =
             | _ -> Editor.belongsToActiveSketch state target
 
         let visibleDimensionSketchIds =
-            match state.SketchEditMode, state.Doc.SelectedId with
-            | true, Some selectedId ->
-                match state.Doc.Actions |> List.tryFind (fun a -> a.Id = selectedId) with
-                | Some { Kind = Sketch _ } -> [ selectedId ]
-                | _ -> []
-            | _ -> []
+            if not state.SketchEditMode then []
+            else
+                let blockId =
+                    match state.Doc.SelectedBlockId with
+                    | Some bid ->
+                        state.Doc.Blocks
+                        |> List.tryFind (fun b -> b.Id = bid)
+                        |> Option.bind (fun b ->
+                            match b.Kind with
+                            | Server.Lang.Notebook.SketchBlock _ ->
+                                Some (SketchAuthoring.blockSketchId bid)
+                            | _ -> None)
+                    | None -> None
+                match blockId with
+                | Some id -> [ id ]
+                | None ->
+                    match state.Doc.SelectedId with
+                    | Some selectedId ->
+                        match state.Doc.Actions |> List.tryFind (fun a -> a.Id = selectedId) with
+                        | Some { Kind = Sketch _ } -> [ selectedId ]
+                        | _ -> []
+                    | None -> []
 
         let frames =
             state.Doc.Actions
@@ -269,7 +331,7 @@ module ViewerPipeline =
                     |> Option.map (fun t -> { Id = a.Id; Transform = t })
                 | _ -> None)
 
-        let sketchTransforms =
+        let actionSketchTransforms =
             state.Doc.Actions
             |> List.choose (fun a ->
                 match a.Kind with
@@ -278,6 +340,18 @@ module ViewerPipeline =
                         { Id = a.Id
                           Transform = Editor.resolveSketchTransform state origin plane }
                 | _ -> None)
+
+        let blockSketchTransforms =
+            state.Doc.Blocks
+            |> List.choose (fun b ->
+                match b.Kind with
+                | Server.Lang.Notebook.SketchBlock data ->
+                    Some
+                        { Id = SketchAuthoring.blockSketchId b.Id
+                          Transform = Editor.resolveSketchTransform state None data.Plane }
+                | _ -> None)
+
+        let sketchTransforms = actionSketchTransforms @ blockSketchTransforms
 
         // An action is "visible" iff its Visibility is not VHidden.
         // Exposed as a lookup table so consumers don't re-scan actions.

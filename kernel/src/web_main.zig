@@ -1,26 +1,26 @@
-// Browser entry point — exports match mk18's host contract
-// (`pointer_mk18/viewer/Kernel/Wasm.fs`) so mk21's renderer can drop in as
-// the kernel WASM without F# host changes.
+// Browser entry point.
 //
 // Flow:
-//   1. Host writes serialized Field IR bytes into `ir_upload_buffer` (via
+//   1. Host writes serialized MathIR bytes into `ir_upload_buffer` (via
 //      `ir_upload_buffer_ptr`), then calls `ir_upload(byte_len)`. We
-//      decode, lower (`field_lower`), wrap with an identity camera frame,
-//      compile to a reg-tape, and bind a `MutableCamera`.
+//      decode straight into our `MathIR` instance, wrap with an identity
+//      camera frame, compile to a reg-tape, and bind a `MutableCamera`.
+//      No Field-IR lowering step — the F# host (`Server.Lang.MathIrCodec`)
+//      ships MathIR-shaped bytes directly.
 //   2. Host writes 12 f32s into `camera_buffer` (eye, basis_x, basis_y,
-//      basis_z), then calls `set_camera`. We invert basis_z's sign — mk18
-//      and mk21 disagree on its meaning (mk18: −forward, mk21: +forward).
+//      basis_z), then calls `set_camera`. We invert basis_z's sign — the
+//      F# host's convention is "larger wcz = closer to camera"; the
+//      renderer's is "smaller t = closer" — so we flip basis_z here.
 //   3. Host calls `render_voxels(tile_w, tile_h, full_w, full_h, tile_x,
-//      tile_y, ...)`: a sub-rect of a full image. We render the full
-//      frame into `full_gbuffer`, then copy the tile sub-rect into the
-//      host-visible `gbuffer` (packed tile_w × tile_h, depth lane
-//      negated so mk18's WGSL sees ascending-wcz = closer).
+//      tile_y, ...)`: a sub-rect of a full image. We render only that
+//      tile into the host-visible `gbuffer` (packed tile_w × tile_h,
+//      depth lane negated so the WGSL viewer sees ascending-wcz = closer).
 //
-// Mesh exports are stubs (mk21 has no meshing in this round).
+// Mesh exports are stubs (no meshing in this round).
 
 const std = @import("std");
 const m = @import("math_domain.zig");
-const scene_decode = @import("scene_decode.zig");
+const math_ir_decode = @import("math_ir_decode.zig");
 const cpu_render = @import("cpu_render.zig");
 
 /// Largest tile (width or height). Mirrors the host's MAX_TILE = 1024 in
@@ -45,25 +45,28 @@ var scene_loaded: bool = false;
 // ── IR upload ────────────────────────────────────────────────────────────
 
 pub export fn ir_upload_buffer_ptr() [*]u8 {
-    return scene_decode.uploadBufferPtr();
+    return math_ir_decode.uploadBufferPtr();
 }
 
-/// 0 = ok, 1 = bad version, 2 = too many nodes, 3 = too many prims,
-/// 4 = truncated, 5 = bad kind, 6 = lowering failed.
+/// 0 = ok, 1 = bad magic, 2 = bad version, 3 = too many nodes, 4 = too many
+/// affines, 5 = too many intrinsics, 6 = too many primitives, 7 = truncated,
+/// 8 = bad kind, 9 = camera/tape build failed.
 pub export fn ir_upload(byte_len: usize) u32 {
-    const parsed = scene_decode.decode(byte_len) catch |e| return switch (e) {
-        scene_decode.Error.BadVersion => 1,
-        scene_decode.Error.TooManyNodes => 2,
-        scene_decode.Error.TooManyPrims => 3,
-        scene_decode.Error.Truncated => 4,
-        scene_decode.Error.BadKind => 5,
+    math_ir = .{};
+    const root = math_ir_decode.decodeInto(byte_len, &math_ir) catch |e| return switch (e) {
+        math_ir_decode.Error.BadMagic => 1,
+        math_ir_decode.Error.BadVersion => 2,
+        math_ir_decode.Error.TooManyNodes => 3,
+        math_ir_decode.Error.TooManyAffines => 4,
+        math_ir_decode.Error.TooManyIntrinsics => 5,
+        math_ir_decode.Error.TooManyPrimitives => 6,
+        math_ir_decode.Error.Truncated => 7,
+        math_ir_decode.Error.BadKind => 8,
     };
 
-    math_ir = .{};
-    const root = m.lowerField(&parsed, &math_ir) catch return 6;
-    const wrapped = m.wrapWithCameraFrame(&math_ir, root, m.CameraFrame.identity) catch return 6;
-    scene_tape = m.compileToRegTape(&math_ir, wrapped.wrapped_root) catch return 6;
-    mutable_camera = m.MutableCamera.bind(wrapped.nodes, &scene_tape) catch return 6;
+    const wrapped = m.wrapWithCameraFrame(&math_ir, root, m.CameraFrame.identity) catch return 9;
+    scene_tape = m.compileToRegTape(&math_ir, wrapped.wrapped_root) catch return 9;
+    mutable_camera = m.MutableCamera.bind(wrapped.nodes, &scene_tape) catch return 9;
     scene_loaded = true;
     return 0;
 }

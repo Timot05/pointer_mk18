@@ -113,7 +113,18 @@ type EditorState =
       /// appears at the bottom of the action list for quickly adding
       /// an action template with its defaults.
       ActionPickerOpen: bool
-      ViewerMode: ViewerMode }
+      ViewerMode: ViewerMode
+      /// Notebook-mode state. If Some, the script editor modal is mounted
+      /// on this block id. Set by `OpenScriptEditor`, cleared by
+      /// `CloseScriptEditor` or `DeleteBlock`.
+      OpenedScriptBlockId: Server.Lang.Notebook.BlockId option
+      /// Last notebook eval error message, or None. Surfaced by the
+      /// ScriptEditor + BlockList panels.
+      LastNotebookError: string option
+      /// Cached MathIR bytes from the last successful `RunNotebook`.
+      /// Viewer.fs subscribes to this and uploads on ref-change.
+      /// `obj` boxes a JS Uint8Array (Fable interop).
+      LastNotebookBytes: obj option }
 
 type SerializedModel =
     { Name: string
@@ -222,6 +233,26 @@ type Message =
     | LoadModel of SerializedModel
     | ClearModel
     | SetViewerMode of ViewerMode
+    // ── Notebook / blocks ─────────────────────────────────────────────────
+    /// Add an empty Script block at the end of the list, name "block_<n>",
+    /// open the script editor on it, and select it.
+    | AddScriptBlock
+    /// Add an empty Sketch block (XY plane, no entities). Selected but
+    /// the script editor stays closed.
+    | AddSketchBlock
+    | SelectBlock of Server.Lang.Notebook.BlockId
+    | OpenScriptEditor of Server.Lang.Notebook.BlockId
+    | CloseScriptEditor
+    | UpdateBlockSource of Server.Lang.Notebook.BlockId * string
+    | UpdateBlockInputs of Server.Lang.Notebook.BlockId * (string * string) list
+    | RenameBlock of Server.Lang.Notebook.BlockId * string
+    | DeleteBlock of Server.Lang.Notebook.BlockId
+    /// Replace a sketch block's `ActionSketch` payload (used by
+    /// SketchAuthoring tools, gizmo drag commits, dimension edits).
+    | UpdateSketchBlockSketch of Server.Lang.Notebook.BlockId * ActionSketch
+    /// Re-evaluate the notebook → MathIR → bytes; either set
+    /// `LastNotebookBytes` (for Viewer.fs to upload) or `LastNotebookError`.
+    | RunNotebook
 
 module Editor =
 
@@ -304,9 +335,27 @@ module Editor =
         | ConcentricConstraint -> "Concentric"
         | FixedConstraint -> "Fixed"
 
+    /// Compile the seed notebook into MathIR bytes so the kernel renders
+    /// something on first frame instead of a blank canvas. Failure here
+    /// just produces an empty initial state — the user sees the seed
+    /// blocks in the sidebar and can hit Run manually.
+    let private compileInitialNotebook (blocks: Server.Lang.Notebook.Block list) (nextId: Server.Lang.Notebook.BlockId) =
+        let nb : Server.Lang.Notebook.Notebook = { NextId = nextId; Blocks = blocks }
+        match Server.Lang.NotebookEval.compileView nb None with
+        | Ok(ir, root) ->
+            // MathIrCodec uses Fable-only Uint8Array bindings; on .NET
+            // (xUnit tests) those throw. Skip silently — tests don't need
+            // the rendered bytes.
+            try
+                Some (Server.Lang.MathIrCodec.serialize ir root), None
+            with _ ->
+                None, None
+        | Error msg -> None, Some msg
+
     let initState () =
         let doc = Document.emptyDocument ()
-        let compiled = Pipeline.compile doc.Actions
+        let compiled = Pipeline.compile doc.Actions doc.Blocks
+        let initialBytes, initialError = compileInitialNotebook doc.Blocks doc.NextBlockId
         { Doc = doc
           Compiled = compiled
           SlotValues = Array.copy compiled.Slots.Values
@@ -332,7 +381,10 @@ module Editor =
           EditingInputInitial = None
           RefPickIdx = 0
           ActionPickerOpen = false
-          ViewerMode = Raymarch }
+          ViewerMode = IntervalKernel
+          OpenedScriptBlockId = None
+          LastNotebookError = initialError
+          LastNotebookBytes = initialBytes }
 
     let isSlotBackedActionParamField =
         function
@@ -414,29 +466,56 @@ module Editor =
         state.Compiled.Frames
         |> Map.map (fun _ chain -> Frames.foldChain state.Compiled.Slots state.SlotValues chain)
 
-    /// ID of the sketch currently being edited, if any.
+    /// ID of the sketch currently being edited, if any. Returns either a
+    /// real action id (for legacy Sketch actions) or a synthetic
+    /// `@block_<n>` id (for SketchBlocks); both round-trip through
+    /// `SketchAuthoring.withUpdatedSketch` correctly.
     let activeSketchEditId (state: EditorState) =
-        match state.SketchEditMode, state.Doc.SelectedId with
-        | true, Some id ->
-            state.Doc.Actions
-            |> List.tryFind (fun a -> a.Id = id)
-            |> Option.bind (fun a -> match a.Kind with Sketch _ -> Some id | _ -> None)
-        | _ -> None
+        if not state.SketchEditMode then None
+        else
+            match state.Doc.SelectedBlockId with
+            | Some bid ->
+                state.Doc.Blocks
+                |> List.tryFind (fun b -> b.Id = bid)
+                |> Option.bind (fun b ->
+                    match b.Kind with
+                    | Server.Lang.Notebook.SketchBlock _ ->
+                        Some (SketchAuthoring.blockSketchId bid)
+                    | _ -> None)
+                |> function
+                   | Some _ as r -> r
+                   | None ->
+                        state.Doc.SelectedId
+                        |> Option.bind (fun id ->
+                            state.Doc.Actions
+                            |> List.tryFind (fun a -> a.Id = id)
+                            |> Option.bind (fun a -> match a.Kind with Sketch _ -> Some id | _ -> None))
+            | None ->
+                state.Doc.SelectedId
+                |> Option.bind (fun id ->
+                    state.Doc.Actions
+                    |> List.tryFind (fun a -> a.Id = id)
+                    |> Option.bind (fun a -> match a.Kind with Sketch _ -> Some id | _ -> None))
 
     /// Ids of frame actions that appear before the active sketch — the
-    /// frame origins the sketch is allowed to reference.
+    /// frame origins the sketch is allowed to reference. Block-sourced
+    /// sketches have no upstream action context yet (they live at the
+    /// world origin in their declared plane), so this is empty for them.
     let sketchEditFrameIds (state: EditorState) : Set<string> =
         match activeSketchEditId state with
         | None -> Set.empty
+        | Some sketchId when sketchId.StartsWith "@block_" -> Set.empty
         | Some sketchId ->
-            let i = state.Doc.Actions |> List.findIndex (fun a -> a.Id = sketchId)
-            state.Doc.Actions
-            |> List.take i
-            |> List.choose (fun a ->
-                match Map.tryFind a.Id state.Compiled.TypeMap with
-                | Some FieldType.Frame -> Some a.Id
-                | _ -> None)
-            |> Set.ofList
+            match state.Doc.Actions |> List.tryFindIndex (fun a -> a.Id = sketchId) with
+            | None -> Set.empty
+            | Some i ->
+                state.Doc.Actions
+                |> List.take i
+                |> List.choose (fun a ->
+                    match Map.tryFind a.Id state.Compiled.TypeMap with
+                    | Some FieldType.Frame -> Some a.Id
+                    | _ -> None)
+                |> Set.ofList
 
     /// True when `target` belongs to the actively-edited sketch: either its
     /// own geometry (point/line/circle/arc/loop/dimension) or a frame origin
@@ -476,15 +555,30 @@ module Editor =
         | _ -> actionId
 
     /// Resolve a sketch id to its content + origin transform in the current
-    /// compiled state. Used as a lookup callback by SketchAuthoring.
+    /// compiled state. Used as a lookup callback by SketchAuthoring. Also
+    /// handles synthetic `@block_<n>` ids for SketchBlock-sourced sketches —
+    /// those have an identity transform (no upstream frame chain yet).
     let trySketchContext (state: EditorState) (sketchId: string) =
-        state.Doc.Actions
-        |> List.tryFind (fun action -> action.Id = sketchId)
-        |> Option.bind (fun action ->
-            match action.Kind with
-            | Sketch(origin, plane, sketch) ->
-                Some(sketch, resolveSketchTransform state origin plane)
-            | _ -> None)
+        if sketchId.StartsWith "@block_" then
+            let rest = sketchId.Substring 7
+            match System.Int32.TryParse rest with
+            | true, bid ->
+                state.Doc.Blocks
+                |> List.tryFind (fun b -> b.Id = bid)
+                |> Option.bind (fun b ->
+                    match b.Kind with
+                    | Server.Lang.Notebook.SketchBlock data ->
+                        Some(data.Sketch, resolveSketchTransform state None data.Plane)
+                    | _ -> None)
+            | _ -> None
+        else
+            state.Doc.Actions
+            |> List.tryFind (fun action -> action.Id = sketchId)
+            |> Option.bind (fun action ->
+                match action.Kind with
+                | Sketch(origin, plane, sketch) ->
+                    Some(sketch, resolveSketchTransform state origin plane)
+                | _ -> None)
 
     let formatErrors (errs: TypeError list) =
         errs |> List.map (fun e ->
@@ -589,7 +683,7 @@ module Editor =
             RefPickIdx = refPickIdx }
 
     let recompileState (state: EditorState) =
-        let compiled = Pipeline.compile state.Doc.Actions
+        let compiled = Pipeline.compile state.Doc.Actions state.Doc.Blocks
         // Visibility is bound to the output type (Field vs Frame etc).
         // When a ref rewire flips the type — e.g. a Translate switches
         // from wrapping a field to wrapping a frame — snap the
@@ -1626,11 +1720,140 @@ module Editor =
                         |> List.tryFind (fun a -> a.Id = "origin")
                         |> Option.orElseWith (fun () -> model.Actions |> List.tryHead)
                         |> Option.map (fun a -> a.Id)
-                    loadDoc { Name = model.Name; Actions = model.Actions; SelectedId = selectedId } state
+                    loadDoc {
+                        Name = model.Name
+                        Actions = model.Actions
+                        SelectedId = selectedId
+                        Blocks = []
+                        NextBlockId = 0
+                        SelectedBlockId = None
+                    } state
                 | ClearModel ->
                     loadDoc (Document.emptyDocument ()) state
                 | SetViewerMode mode ->
                     { state with ViewerMode = mode }
+                // ── Notebook / blocks ────────────────────────────────────
+                | AddScriptBlock ->
+                    let id = state.Doc.NextBlockId
+                    let block : Server.Lang.Notebook.Block = {
+                        Id = id
+                        Name = sprintf "block_%d" id
+                        Kind = Server.Lang.Notebook.ScriptBlock {
+                            Source = ""
+                            Inputs = []
+                        }
+                    }
+                    { state with
+                        Doc = {
+                            state.Doc with
+                                Blocks = state.Doc.Blocks @ [ block ]
+                                NextBlockId = id + 1
+                                SelectedBlockId = Some id
+                        }
+                        OpenedScriptBlockId = Some id }
+                | AddSketchBlock ->
+                    let id = state.Doc.NextBlockId
+                    let block : Server.Lang.Notebook.Block = {
+                        Id = id
+                        Name = sprintf "sketch_%d" id
+                        Kind = Server.Lang.Notebook.SketchBlock {
+                            Sketch = ActionSketch.empty
+                            Plane = SketchPlane.defaults
+                        }
+                    }
+                    { state with
+                        Doc = {
+                            state.Doc with
+                                Blocks = state.Doc.Blocks @ [ block ]
+                                NextBlockId = id + 1
+                                SelectedBlockId = Some id
+                        }
+                        // Drop straight into sketch-edit mode on a fresh
+                        // SketchBlock — same QoL as adding a sketch action.
+                        SketchEditMode = true }
+                | SelectBlock id ->
+                    let block = state.Doc.Blocks |> List.tryFind (fun b -> b.Id = id)
+                    let opened, sketchEdit =
+                        match block with
+                        | Some b ->
+                            match b.Kind with
+                            | Server.Lang.Notebook.ScriptBlock _ -> Some id, false
+                            | Server.Lang.Notebook.SketchBlock _ -> None, true
+                        | None -> None, state.SketchEditMode
+                    { state with
+                        Doc = { state.Doc with SelectedBlockId = Some id }
+                        OpenedScriptBlockId = opened
+                        SketchEditMode = sketchEdit }
+                | OpenScriptEditor id ->
+                    { state with OpenedScriptBlockId = Some id }
+                | CloseScriptEditor ->
+                    { state with OpenedScriptBlockId = None }
+                | UpdateBlockSource(id, src) ->
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> id then b
+                            else
+                                match b.Kind with
+                                | Server.Lang.Notebook.ScriptBlock s ->
+                                    { b with Kind = Server.Lang.Notebook.ScriptBlock { s with Source = src } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                | UpdateBlockInputs(id, inputs) ->
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> id then b
+                            else
+                                match b.Kind with
+                                | Server.Lang.Notebook.ScriptBlock s ->
+                                    { b with Kind = Server.Lang.Notebook.ScriptBlock { s with Inputs = inputs } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                | RenameBlock(id, newName) ->
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b -> if b.Id = id then { b with Name = newName } else b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                | DeleteBlock id ->
+                    let blocks = state.Doc.Blocks |> List.filter (fun b -> b.Id <> id)
+                    let selectedBlock =
+                        if state.Doc.SelectedBlockId = Some id then None
+                        else state.Doc.SelectedBlockId
+                    let opened =
+                        if state.OpenedScriptBlockId = Some id then None
+                        else state.OpenedScriptBlockId
+                    { state with
+                        Doc = {
+                            state.Doc with
+                                Blocks = blocks
+                                SelectedBlockId = selectedBlock
+                        }
+                        OpenedScriptBlockId = opened }
+                | UpdateSketchBlockSketch(id, sketch) ->
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> id then b
+                            else
+                                match b.Kind with
+                                | Server.Lang.Notebook.SketchBlock data ->
+                                    { b with Kind = Server.Lang.Notebook.SketchBlock { data with Sketch = sketch } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                | RunNotebook ->
+                    let nb : Server.Lang.Notebook.Notebook = {
+                        NextId = state.Doc.NextBlockId
+                        Blocks = state.Doc.Blocks
+                    }
+                    match Server.Lang.NotebookEval.compileView nb None with
+                    | Ok(ir, root) ->
+                        let bytes = Server.Lang.MathIrCodec.serialize ir root
+                        { state with
+                            LastNotebookBytes = Some bytes
+                            LastNotebookError = None }
+                    | Error msg ->
+                        { state with LastNotebookError = Some msg }
             let effects =
                 match message with
                 | SetActionSlotValue _

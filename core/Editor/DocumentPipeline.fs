@@ -20,7 +20,12 @@ type DocumentView =
       RefOptions: Map<string, string list>
       SketchLoops: Map<string, SketchLoopView list>
       TypeMap: Map<ActionId, FieldType>
-      Errors: ActionErrorView list }
+      Errors: ActionErrorView list
+      // Notebook-mode fields
+      Blocks: Server.Lang.Notebook.Block list
+      SelectedBlockId: Server.Lang.Notebook.BlockId option
+      OpenedScriptBlockId: Server.Lang.Notebook.BlockId option
+      LastNotebookError: string option }
 
 module DocumentPipeline =
 
@@ -71,7 +76,11 @@ module DocumentPipeline =
           RefOptions = refOptions
           SketchLoops = sketchLoops
           TypeMap = tm
-          Errors = errors }
+          Errors = errors
+          Blocks = state.Doc.Blocks
+          SelectedBlockId = state.Doc.SelectedBlockId
+          OpenedScriptBlockId = state.OpenedScriptBlockId
+          LastNotebookError = state.LastNotebookError }
 
     let paletteView (state: EditorState) =
         Palette.toState state.PaletteSession state.Compiled.TypeMap state.Doc

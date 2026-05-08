@@ -690,13 +690,20 @@ let update (pc: PickCompute) (state: EditorState) (viewState: ViewerState) =
 
     // Sketches addressed by id, for fast entity / constraint lookup
     // inside the per-sketch loop below.
-    let sketchById =
+    let actionSketches =
         state.Doc.Actions
         |> List.choose (fun a ->
             match a.Kind with
             | Sketch(_, _, s) -> Some (a.Id, s)
             | _ -> None)
-        |> Map.ofList
+    let blockSketches =
+        state.Doc.Blocks
+        |> List.choose (fun b ->
+            match b.Kind with
+            | Server.Lang.Notebook.SketchBlock data ->
+                Some (Server.SketchAuthoring.blockSketchId b.Id, data.Sketch)
+            | _ -> None)
+    let sketchById = (actionSketches @ blockSketches) |> Map.ofList
     let loopsBySketch =
         viewState.SketchLoops
         |> List.map (fun sl -> sl.SketchId, sl.Loops)

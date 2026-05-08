@@ -4,8 +4,6 @@ const math_reg_tape = @import("math_reg_tape.zig");
 const math_grad = @import("math_grad.zig");
 const math_simd_eval = @import("math_simd_eval.zig");
 const camera_frame = @import("camera_frame.zig");
-const scene_decode = @import("scene_decode.zig");
-const field_lower = @import("field_lower.zig");
 
 pub const Axis = math_ir.Axis;
 pub const Plane = math_ir.Plane;
@@ -69,11 +67,3 @@ pub const WrappedCamera = camera_frame.WrappedCamera;
 pub const MutableCamera = camera_frame.MutableCamera;
 pub const wrapWithCameraFrame = camera_frame.wrapWithCameraFrame;
 
-pub const FieldNode = scene_decode.Node;
-pub const FieldPrimitive = scene_decode.Primitive;
-pub const FieldSketchPrimitive = scene_decode.SketchPrimitive2d;
-pub const FieldAxis = scene_decode.Axis;
-pub const FieldBooleanOp = scene_decode.BooleanOp;
-pub const FieldUnaryOp = scene_decode.UnaryOp;
-pub const ParsedScene = scene_decode.ParsedScene;
-pub const lowerField = field_lower.lower;

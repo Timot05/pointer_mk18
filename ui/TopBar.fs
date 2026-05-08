@@ -122,5 +122,8 @@ let render
     fileMenu.appendChild (fileDropdown :> Node) |> ignore
     topbar.appendChild (fileMenu :> Node) |> ignore
     topbar.appendChild (Dom.el "span" "topbar-spacer" :> Node) |> ignore
-    topbar.appendChild (renderViewerModeToggle dispatch :> Node) |> ignore
+    // Renderer-mode toggle suppressed: GPU raymarcher is dormant in
+    // notebook mode (it consumes FieldNode which is no longer produced).
+    // The toggle (and SetViewerMode message) stay defined for the day we
+    // wire a MathIR-aware GPU consumer.
     topbar

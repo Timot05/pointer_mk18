@@ -174,8 +174,11 @@ type ViewerMode =
 
 type Document =
     { Name: string
-      Actions: DocAction list
-      SelectedId: string option }
+      Actions: DocAction list                         // legacy, unused — kept for compile compat
+      SelectedId: string option                       // legacy, unused
+      Blocks: Server.Lang.Notebook.Block list
+      NextBlockId: Server.Lang.Notebook.BlockId
+      SelectedBlockId: Server.Lang.Notebook.BlockId option }
 
 module Document =
 
@@ -620,6 +623,9 @@ module Document =
     let defaultDocument () : Document =
         { Name = "untitled"
           SelectedId = Some "origin"
+          Blocks = []
+          NextBlockId = 0
+          SelectedBlockId = None
           Actions =
             [ act "origin" "origin" Origin
               actWith "cyl1" "cylinder" (Cylinder(radius = 10.0, height = 40.0)) VHidden
@@ -650,9 +656,30 @@ module Document =
               act "frame1" "frame" (Translate(child = Some "origin", x = 18.0, y = 6.0, z = 12.0))
               act "from1" "from-sketch" (FromSketch(child = Some "sketch1", flip = false, selection = SelectionAllLoops)) ] }
 
+    /// Boot-time notebook: a two-block demo that exercises both the
+    /// `@output` → `@input` cross-block wire and the `@view` builtin. The
+    /// canvas stays empty until the user clicks Run; the seed just gives
+    /// them something to read and tweak.
+    let private defaultBlocks : Server.Lang.Notebook.Block list =
+        [ { Id = 0
+            Name = "params"
+            Kind = Server.Lang.Notebook.ScriptBlock {
+                Source = "@output(\"r\", 1.0)"
+                Inputs = []
+            } }
+          { Id = 1
+            Name = "shape"
+            Kind = Server.Lang.Notebook.ScriptBlock {
+                Source = "@view(@sphere(@input(\"radius\")))"
+                Inputs = [ "radius", "params" ]
+            } } ]
+
     let emptyDocument () : Document =
         { Name = "untitled"
           SelectedId = Some "origin"
+          Blocks = defaultBlocks
+          NextBlockId = 2
+          SelectedBlockId = None
           Actions = [ act "origin" "origin" Origin ] }
 
     // Stress document — extends the default doc with three distinct

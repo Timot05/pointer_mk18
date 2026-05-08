@@ -203,7 +203,7 @@ module Pipeline =
 
     // ── Full pipeline ─────────────────────────────────────────────────────
 
-    let compile (actions: DocAction list) : PipelineResult =
+    let compile (actions: DocAction list) (blocks: Server.Lang.Notebook.Block list) : PipelineResult =
         let tc = TypeCheck.typecheck actions
         let typeMap = tc.Typed |> List.map (fun t -> t.Id, t.Output) |> Map.ofList
 
@@ -218,11 +218,30 @@ module Pipeline =
         // contribute entity/constraint slots.
         actions |> List.fold (allocActionSlots typeMap) b |> ignore
 
-        let pickables = buildPickables b actions typeMap
+        // SketchBlock-owned slots, keyed under the synthetic
+        // `@block_<n>` action id. Lets the existing pickable + slot
+        // lookup paths address block sketch entities the same way they
+        // address action sketch entities.
+        for block in blocks do
+            match block.Kind with
+            | Server.Lang.Notebook.SketchBlock data ->
+                allocSketchSlots b (Server.SketchAuthoring.blockSketchId block.Id) data.Sketch
+            | _ -> ()
+
+        let actionPickables = buildPickables b actions typeMap
+
+        let counter = ref (List.length actionPickables)
+        let blockPickables =
+            blocks
+            |> List.collect (fun block ->
+                match block.Kind with
+                | Server.Lang.Notebook.SketchBlock data ->
+                    buildSketchPickables b counter (Server.SketchAuthoring.blockSketchId block.Id) data.Sketch
+                | _ -> [])
 
         { Surfaces = surfaces
           TypeMap = typeMap
           Errors = tc.Errors
           Slots = SlotTable.toTable b
-          Pickables = pickables
+          Pickables = actionPickables @ blockPickables
           Frames = buildResult.Frames }

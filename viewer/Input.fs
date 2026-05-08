@@ -76,9 +76,28 @@ let private activeEditSketchId (state: EditorState) : ActionId option =
     let vs = ViewerPipeline.viewerState state
     if not vs.SketchUi.EditMode then None
     else
-        state.Doc.SelectedId
-        |> Option.filter (fun id ->
-            vs.SketchTransforms |> List.exists (fun t -> t.Id = id))
+        // SketchBlock selection takes priority — when a SketchBlock is
+        // selected, its synthetic id (`@block_<n>`) is in SketchTransforms
+        // and the existing tool/cursor pipeline handles it identically.
+        let blockId =
+            match state.Doc.SelectedBlockId with
+            | Some bid ->
+                state.Doc.Blocks
+                |> List.tryFind (fun b -> b.Id = bid)
+                |> Option.bind (fun b ->
+                    match b.Kind with
+                    | Server.Lang.Notebook.SketchBlock _ ->
+                        let sid = SketchAuthoring.blockSketchId bid
+                        if vs.SketchTransforms |> List.exists (fun t -> t.Id = sid) then Some sid
+                        else None
+                    | _ -> None)
+            | None -> None
+        match blockId with
+        | Some _ -> blockId
+        | None ->
+            state.Doc.SelectedId
+            |> Option.filter (fun id ->
+                vs.SketchTransforms |> List.exists (fun t -> t.Id = id))
 
 /// Install mouse/dblclick/wheel handlers on the canvas. The `hooks` carry
 /// the async GPU pick (which the render module can't expose without

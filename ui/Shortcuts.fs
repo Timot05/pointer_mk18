@@ -59,9 +59,21 @@ let private selectedAction (doc: DocumentView) : DocAction option =
     doc.SelectedId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id))
 
 let private selectedIsSketch (doc: DocumentView) : bool =
-    match selectedAction doc with
-    | Some { Kind = Sketch _ } -> true
-    | _ -> false
+    let blockIsSketch =
+        match doc.SelectedBlockId with
+        | Some bid ->
+            doc.Blocks
+            |> List.tryFind (fun b -> b.Id = bid)
+            |> Option.exists (fun b ->
+                match b.Kind with
+                | Server.Lang.Notebook.SketchBlock _ -> true
+                | _ -> false)
+        | None -> false
+    if blockIsSketch then true
+    else
+        match selectedAction doc with
+        | Some { Kind = Sketch _ } -> true
+        | _ -> false
 
 /// Flat ordered list of keyboard-navigable rows. Each row is
 /// `(actionId, focusIdx)` where `focusIdx = 0` is the action's own

@@ -59,29 +59,82 @@ module SketchAuthoring =
         { Action: DocAction
           Sketch: ActionSketch }
 
-    let trySelectedSketch (doc: Document) =
-        match doc.SelectedId with
-        | None -> None
-        | Some id ->
-            doc.Actions
-            |> List.tryFind (fun action -> action.Id = id)
-            |> Option.bind (fun action ->
-                match action.Kind with
-                | Sketch(_, _, sketch) -> Some { Action = action; Sketch = sketch }
-                | _ -> None)
+    /// Tagged-id format for a sketch sourced from a Notebook SketchBlock.
+    /// Real action ids are simple lowercase identifiers; the `@block_`
+    /// prefix is unique enough to disambiguate without a separate type.
+    let blockSketchId (bid: Server.Lang.Notebook.BlockId) : string =
+        sprintf "@block_%d" bid
 
-    let withUpdatedSketch (doc: Document) (actionId: string) (nextSketch: ActionSketch) =
-        match doc.Actions |> List.tryFind (fun action -> action.Id = actionId) with
-        | Some action ->
-            let nextAction =
-                { action with
-                    Kind =
-                        match action.Kind with
-                        | Sketch(origin, plane, _) -> Sketch(origin, plane, nextSketch)
-                        | other -> other }
-            Document.updateAction actionId nextAction doc
+    let private tryParseBlockId (sketchId: string) : Server.Lang.Notebook.BlockId option =
+        if sketchId.StartsWith "@block_" then
+            let rest = sketchId.Substring 7
+            match System.Int32.TryParse rest with
+            | true, bid -> Some bid
+            | _ -> None
+        else None
+
+    /// Look up the active sketch. SketchBlocks (selected via
+    /// `Doc.SelectedBlockId`) take priority over selected Sketch actions
+    /// — when a SketchBlock is selected, the panel + tools edit it
+    /// instead. The returned `Action` is synthetic for blocks (with id
+    /// `blockSketchId bid`); `withUpdatedSketch` recognizes the id format
+    /// and routes the write to the right place.
+    let trySelectedSketch (doc: Document) =
+        let blockSketch =
+            match doc.SelectedBlockId with
+            | None -> None
+            | Some bid ->
+                doc.Blocks
+                |> List.tryFind (fun b -> b.Id = bid)
+                |> Option.bind (fun b ->
+                    match b.Kind with
+                    | Server.Lang.Notebook.SketchBlock data ->
+                        let synthetic : DocAction = {
+                            Id = blockSketchId bid
+                            Name = Some b.Name
+                            Kind = Sketch(None, data.Plane, data.Sketch)
+                            Visibility = VVisible
+                        }
+                        Some { Action = synthetic; Sketch = data.Sketch }
+                    | _ -> None)
+        match blockSketch with
+        | Some _ -> blockSketch
         | None ->
-            doc
+            match doc.SelectedId with
+            | None -> None
+            | Some id ->
+                doc.Actions
+                |> List.tryFind (fun action -> action.Id = id)
+                |> Option.bind (fun action ->
+                    match action.Kind with
+                    | Sketch(_, _, sketch) -> Some { Action = action; Sketch = sketch }
+                    | _ -> None)
+
+    let withUpdatedSketch (doc: Document) (sketchId: string) (nextSketch: ActionSketch) =
+        match tryParseBlockId sketchId with
+        | Some bid ->
+            let blocks =
+                doc.Blocks
+                |> List.map (fun b ->
+                    if b.Id <> bid then b
+                    else
+                        match b.Kind with
+                        | Server.Lang.Notebook.SketchBlock data ->
+                            { b with Kind = Server.Lang.Notebook.SketchBlock { data with Sketch = nextSketch } }
+                        | _ -> b)
+            { doc with Blocks = blocks }
+        | None ->
+            match doc.Actions |> List.tryFind (fun action -> action.Id = sketchId) with
+            | Some action ->
+                let nextAction =
+                    { action with
+                        Kind =
+                            match action.Kind with
+                            | Sketch(origin, plane, _) -> Sketch(origin, plane, nextSketch)
+                            | other -> other }
+                Document.updateAction sketchId nextAction doc
+            | None ->
+                doc
 
     let removeConstraintAt (index: int) (sketch: ActionSketch) =
         { sketch with

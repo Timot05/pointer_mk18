@@ -17,7 +17,7 @@ let hidden id kind : DocAction =
     { Id = id; Name = None; Kind = kind; Visibility = VHidden }
 
 let pipeline (actions: DocAction list) =
-    let result = Pipeline.compile actions
+    let result = Pipeline.compile actions []
     if result.Errors.Length > 0 then failwithf "Pipeline errors: %A" result.Errors
     result
 
@@ -295,8 +295,8 @@ let ``SlotTable.update returns false on miss`` () =
 [<Fact>]
 let ``Slot indices are stable across compiles`` () =
     let actions = [ action "s" (Sphere 5.0); action "c" (Cylinder(3.0, 10.0)) ]
-    let r1 = Pipeline.compile actions
-    let r2 = Pipeline.compile actions
+    let r1 = Pipeline.compile actions []
+    let r2 = Pipeline.compile actions []
     Assert.Equal<Map<SlotRef, Slot>>(r1.Slots.Index, r2.Slots.Index)
 
 // ── FSketch / FromSketch tests ───────────────────────────────────────────
@@ -522,8 +522,8 @@ let ``PickLoop.entityIds matches detectLoops output`` () =
 [<Fact>]
 let ``Pickable list is stable across compiles of the same input`` () =
     let actions = (Document.defaultDocument()).Actions
-    let r1 = Pipeline.compile actions
-    let r2 = Pipeline.compile actions
+    let r1 = Pipeline.compile actions []
+    let r2 = Pipeline.compile actions []
     // Same count + same ordered list of variants + ids
     Assert.Equal(r1.Pickables.Length, r2.Pickables.Length)
     let key (p: Pickable) =

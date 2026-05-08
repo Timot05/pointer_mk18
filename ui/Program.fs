@@ -101,25 +101,15 @@ let private renderInto (root: Browser.Types.HTMLElement) =
     root.appendChild shell |> ignore
 
 let private actionListSignature (doc: DocumentView) =
-    let actionErrors =
-        doc.Errors
-        |> List.map (fun e -> e.ActionId)
-        |> Set.ofList
-    // Expansion set + the inline action-picker flag both reshape the
-    // action list, so fold them into the signature. EditFocusIdx only
-    // changes row classes but still requires a re-render to apply.
-    let expandedSig = doc.ExpandedActionIds
-    let pickerSig = doc.ActionPickerOpen
-    let focusSig = doc.EditFocusIdx
-    let editingSig = doc.EditingInputField
-    let refPickSig = doc.RefPickIdx
-    doc.Actions
-    |> List.map (fun a ->
-        a.Id,
-        a.Name,
-        a.Visibility,
-        Set.contains a.Id actionErrors)
-    |> fun rows -> sprintf "%A|%b|%d|%A|%d|%A" expandedSig pickerSig focusSig editingSig refPickSig rows
+    // Block-list signature: id, name, kind tag, plus selection + error.
+    let kindTag (k: Server.Lang.Notebook.BlockKind) =
+        match k with
+        | Server.Lang.Notebook.ScriptBlock _ -> "script"
+        | Server.Lang.Notebook.SketchBlock _ -> "sketch"
+    let rows =
+        doc.Blocks
+        |> List.map (fun b -> b.Id, b.Name, kindTag b.Kind)
+    sprintf "%A|%A|%A" doc.SelectedBlockId doc.LastNotebookError rows
 
 let private uiSignature (state: EditorState) =
     sprintf
@@ -160,11 +150,12 @@ let private onStateChange (root: Browser.Types.HTMLElement) () =
         renderInto root
     else
         if actionListChanged || selectionChanged then
-            ActionList.syncPanel root dispatch doc
+            BlockList.syncPanel root dispatch doc
         if selectionChanged then
             SketchAuthoringPanel.syncOverlay root dispatch doc
-        if slotValuesChanged then
-            ActionList.syncSubtitles root doc
+
+    // Modal: ScriptEditor mounts when a ScriptBlock is OpenedScriptBlockId.
+    ScriptEditor.sync dispatch doc
 
     lastCompiled <- state.Compiled
     lastSlotValues <- state.SlotValues

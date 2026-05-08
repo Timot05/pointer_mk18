@@ -32,7 +32,7 @@ let private getKernel () =
 let private exportCompiledState (state: EditorState) (_childId: string) =
     // Visibility state is irrelevant for mesh export — the compiled
     // surfaces are generated from the raw action graph.
-    Pipeline.compile state.Doc.Actions
+    Pipeline.compile state.Doc.Actions state.Doc.Blocks
 
 let private overlayLiveSlotValues (source: SlotTable) (liveValues: float array) (target: SlotTable) =
     let values = Array.copy target.Values

@@ -85,12 +85,8 @@ type EditorState =
       /// Block IDs whose inline input rows are currently expanded under
       /// the block list.
       ExpandedBlockIds: Set<Server.Lang.Notebook.BlockId>
-      /// Notebook-mode state. If Some, the script editor modal is mounted
-      /// on this block id. Set by `OpenScriptEditor`, cleared by
-      /// `CloseScriptEditor` or `DeleteBlock`.
-      OpenedScriptBlockId: Server.Lang.Notebook.BlockId option
       /// Last notebook eval error message, or None. Surfaced by the
-      /// ScriptEditor + BlockList panels.
+      /// BlockList panel.
       LastNotebookError: string option
       /// Cached MathIR bytes from the last successful `RunNotebook`.
       /// Viewer.fs subscribes to this and uploads on ref-change.
@@ -259,7 +255,6 @@ module Editor =
           ConstraintPlacementDraft = None
           ConstraintPlacementCursor = None
           ExpandedBlockIds = Set.empty
-          OpenedScriptBlockId = None
           LastNotebookError = nbResult.Summary
           LastNotebookBytes = nbResult.Bytes
           NotebookBlockErrors = nbResult.BlockErrors

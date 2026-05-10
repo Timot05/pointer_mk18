@@ -5,9 +5,9 @@ open PointerMk18.Ui
 open Browser.Types
 
 // ---------------------------------------------------------------------------
-// Overall layout: top bar + two-panel layout (actions / viewport). The old
-// properties panel was removed once every editable field became inline
-// under its action row in edit mode (see ActionList.renderInputRow).
+// Overall layout: top bar + two-panel layout (block list / viewport).
+// Inline scalar / ref editors live under each block row in BlockList; there
+// is no separate properties panel.
 //
 // The `viewerHost` is created once at app startup and re-parented on every
 // render. WebGPU canvas state persists across detach/reattach, so the

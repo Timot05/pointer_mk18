@@ -62,8 +62,8 @@ let private writeSketchUniforms
 
 /// Render one frame. Call from a requestAnimationFrame loop in Viewer.
 /// The 3D field is produced by the Zig-WASM voxel kernel (`background`).
-/// The GPU raymarcher path was retired alongside the action graph — its
-/// file (`Raymarch.fs`) stays on disk for future block-targeted work.
+/// The GPU raymarcher was retired alongside the action graph and its
+/// source files have been deleted.
 let renderFrame
         (scene: Scene.Scene)
         (toolCursor: (ActionId * float * float) option)

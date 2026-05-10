@@ -27,9 +27,18 @@ module BlockSpec =
     let private user (name: string) : Ident =
         { Name = name; IdentKind = User; Span = noSpan }
 
+    let private internal' (name: string) : Ident =
+        { Name = name; IdentKind = Internal; Span = noSpan }
+
     let private mk (node: ExprNode) : Expr = { Node = node; Span = noSpan }
 
     let private varE (name: string) : Expr = mk (EVar (user name))
+
+    /// `@name` reference — resolves through `Builtins.dispatch` at eval
+    /// time. Used for spec bodies whose math isn't expressible in pure
+    /// AST (e.g. `from-sketch` needs to walk a `VSketch` payload and
+    /// emit MathIR primitives — that's a builtin).
+    let private internalE (name: string) : Expr = mk (EVar (internal' name))
 
     let private nE (n: float) : Expr = mk (ENumber n)
     let private axE (a: Axis) : Expr = mk (EAxis a)
@@ -180,6 +189,16 @@ module BlockSpec =
                     body
           ScalarDefaults = Map.ofList [ "amount", 0.1 ] }
 
+    /// `from-sketch sketch` — lower a 2D sketch to a 3D field via the
+    /// kernel's SketchPath intrinsic. Body delegates to `@from_sketch`
+    /// because the lowering needs to walk the sketch's primitive list
+    /// (not expressible in pure AST).
+    let private fromSketchSpec : BlockSpec =
+        let body = mk (EApply(internalE "from_sketch", varE "sketch"))
+        { Name = "from-sketch"
+          Body = lambda [ "sketch", Type.Sketch ] body
+          ScalarDefaults = Map.empty }
+
     do register sphereSpec
     do register boxSpec
     do register cylinderSpec
@@ -188,6 +207,7 @@ module BlockSpec =
     do register intersectSpec
     do register subtractSpec
     do register thickenSpec
+    do register fromSketchSpec
 
     // ── Lookups ────────────────────────────────────────────────────────────
 

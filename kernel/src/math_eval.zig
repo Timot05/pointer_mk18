@@ -86,6 +86,18 @@ fn slotPoint2(slots: []const f64, p: SlotPoint2) Vec2 {
     return v2(slotValue(slots, p.x), slotValue(slots, p.y));
 }
 
+/// Sketch primitive coords used to be slot-indexed. The MathIR-direct
+/// wire format has no slot table; instead, primitive coord fields hold
+/// node ids that point at `Const` nodes carrying the actual f64. These
+/// helpers do the lookup; signature mirrors `slotValue` / `slotPoint2`.
+fn nodeValue(ir: *const MathIR, id: i32) f64 {
+    return ir.nodes[@intCast(id)].value;
+}
+
+fn nodePoint2(ir: *const MathIR, p: SlotPoint2) Vec2 {
+    return v2(nodeValue(ir, p.x), nodeValue(ir, p.y));
+}
+
 fn planePoint(p: Vec3, plane: Plane) Vec2 {
     return switch (plane) {
         .xy => v2(p.x, p.y),
@@ -238,12 +250,12 @@ fn quadraticCurveDist(p: Vec2, p0: Vec2, p1: Vec2, p2: Vec2) f64 {
     return best;
 }
 
-pub fn evalSketchDistance(primitive: SketchPrimitive, slots: []const f64, p: Vec3, plane: Plane) f64 {
+pub fn evalSketchDistance(ir: *const MathIR, primitive: SketchPrimitive, p: Vec3, plane: Plane) f64 {
     const q = planePoint(p, plane);
     return switch (primitive.kind) {
-        .line_segment => segDist(q, slotPoint2(slots, primitive.p0), slotPoint2(slots, primitive.p1)),
-        .bezier_quadratic => quadraticCurveDist(q, slotPoint2(slots, primitive.p0), slotPoint2(slots, primitive.p1), slotPoint2(slots, primitive.p2)),
-        .circle => circleCurveDist(q, slotPoint2(slots, primitive.p0), slotValue(slots, primitive.radius)),
+        .line_segment => segDist(q, nodePoint2(ir, primitive.p0), nodePoint2(ir, primitive.p1)),
+        .bezier_quadratic => quadraticCurveDist(q, nodePoint2(ir, primitive.p0), nodePoint2(ir, primitive.p1), nodePoint2(ir, primitive.p2)),
+        .circle => circleCurveDist(q, nodePoint2(ir, primitive.p0), nodeValue(ir, primitive.radius)),
         else => math.nan(f64),
     };
 }
@@ -256,13 +268,13 @@ fn segmentWindingAngle(p: Vec2, a: Vec2, b: Vec2) f64 {
     return math.atan2(v0x * v1y - v0y * v1x, v0x * v1x + v0y * v1y);
 }
 
-fn primitiveWindingAngle(primitive: SketchPrimitive, slots: []const f64, q: Vec2) f64 {
+fn primitiveWindingAngle(ir: *const MathIR, primitive: SketchPrimitive, q: Vec2) f64 {
     return switch (primitive.kind) {
-        .line_segment => segmentWindingAngle(q, slotPoint2(slots, primitive.p0), slotPoint2(slots, primitive.p1)),
+        .line_segment => segmentWindingAngle(q, nodePoint2(ir, primitive.p0), nodePoint2(ir, primitive.p1)),
         .bezier_quadratic => blk: {
-            const p0 = slotPoint2(slots, primitive.p0);
-            const p1 = slotPoint2(slots, primitive.p1);
-            const p2 = slotPoint2(slots, primitive.p2);
+            const p0 = nodePoint2(ir, primitive.p0);
+            const p1 = nodePoint2(ir, primitive.p1);
+            const p2 = nodePoint2(ir, primitive.p2);
             var total: f64 = 0.0;
             var prev = bezierQuadraticPoint(0.0, p0, p1, p2);
             var i: usize = 1;
@@ -277,21 +289,21 @@ fn primitiveWindingAngle(primitive: SketchPrimitive, slots: []const f64, q: Vec2
     };
 }
 
-fn sketchPathDist(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, p: Vec3) f64 {
+fn sketchPathDist(ir: *const MathIR, intrinsic: Intrinsic, p: Vec3) f64 {
     const q = planePoint(p, intrinsic.plane);
     var unsigned: f64 = 1.0e30;
     var winding: f64 = 0.0;
     var i: usize = 0;
     while (i < @as(usize, @intCast(intrinsic.primitive_count))) : (i += 1) {
         const primitive = ir.primitives[@as(usize, @intCast(intrinsic.primitive_start)) + i];
-        unsigned = min(unsigned, evalSketchDistance(primitive, slots, p, intrinsic.plane));
-        winding += primitiveWindingAngle(primitive, slots, q);
+        unsigned = min(unsigned, evalSketchDistance(ir, primitive, p, intrinsic.plane));
+        winding += primitiveWindingAngle(ir, primitive, q);
     }
     var signed = unsigned;
     if (intrinsic.closed) {
         if (intrinsic.primitive_count == 1 and ir.primitives[@intCast(intrinsic.primitive_start)].kind == .circle) {
             const c = ir.primitives[@intCast(intrinsic.primitive_start)];
-            signed = v2Len(v2Sub(q, slotPoint2(slots, c.p0))) - slotValue(slots, c.radius);
+            signed = v2Len(v2Sub(q, nodePoint2(ir, c.p0))) - nodeValue(ir, c.radius);
         } else if (absFloat(winding) > math.pi) {
             signed = -unsigned;
         }
@@ -299,10 +311,10 @@ fn sketchPathDist(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, p
     return if (intrinsic.flip) -signed else signed;
 }
 
-pub fn evalIntrinsicPoint(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, p: Vec3) f64 {
+pub fn evalIntrinsicPoint(ir: *const MathIR, intrinsic: Intrinsic, _: []const f64, p: Vec3) f64 {
     return switch (intrinsic.kind) {
-        .sketch_distance => evalSketchDistance(ir.primitives[@intCast(intrinsic.primitive_start)], slots, p, intrinsic.plane),
-        .sketch_path => sketchPathDist(ir, intrinsic, slots, p),
+        .sketch_distance => evalSketchDistance(ir, ir.primitives[@intCast(intrinsic.primitive_start)], p, intrinsic.plane),
+        .sketch_path => sketchPathDist(ir, intrinsic, p),
         .curve_distance_along => math.nan(f64),
     };
 }

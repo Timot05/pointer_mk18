@@ -35,7 +35,11 @@ type DocumentView =
       /// handler uses this to gate ref drops by type compatibility:
       /// only blocks whose output type matches the dragged ref's
       /// expected input type accept the drop.
-      BlockOutputs: Map<Server.Lang.Notebook.BlockId, Server.Lang.Type.T> }
+      BlockOutputs: Map<Server.Lang.Notebook.BlockId, Server.Lang.Type.T>
+      /// Active click-to-pick target — `Some(blockId, paramName)` when
+      /// the user has clicked a ref bubble and is choosing an upstream
+      /// block. BlockList styles compatible rows as click targets.
+      EditingBlockRef: (Server.Lang.Notebook.BlockId * string) option }
 
 module DocumentPipeline =
 
@@ -93,7 +97,8 @@ module DocumentPipeline =
           ExpandedBlockIds = state.ExpandedBlockIds
           LastNotebookError = state.LastNotebookError
           BlockErrors = state.NotebookBlockErrors
-          BlockOutputs = state.NotebookBlockOutputs }
+          BlockOutputs = state.NotebookBlockOutputs
+          EditingBlockRef = state.EditingBlockRef }
 
     let paletteView (state: EditorState) =
         Palette.toState state.PaletteSession state.Compiled.TypeMap state.Doc

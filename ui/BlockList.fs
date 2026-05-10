@@ -137,14 +137,36 @@ let private renderRefBubble
         (paramName: string)
         (paramType: Type.T)
         (currentRef: Notebook.BlockId option) : HTMLElement =
-    let bubble = Dom.el "button" "wire-bubble"
-    bubble?``type`` <- "button"
+    let bubble = Dom.el "div" "wire-bubble"
     bubble?draggable <- true
-    bubble.textContent <-
+
+    let isPicking =
+        doc.EditingBlockRef = Some(block.Id, paramName)
+    if currentRef.IsSome then bubble.classList.add "is-assigned"
+    if isPicking then bubble.classList.add "is-picking"
+
+    // Body: name when wired, empty when not. The picking-state outline
+    // comes from the parent bubble's CSS class.
+    let label = Dom.el "span" "wire-bubble-label"
+    label.textContent <-
         match currentRef with
         | Some id -> upstreamBlockName doc id
-        | None -> paramName
-    if currentRef.IsSome then bubble.classList.add "is-assigned"
+        | None -> ""
+    bubble.appendChild (label :> Node) |> ignore
+
+    // × close — only rendered when wired. Clicking unwires; the
+    // bubble-level click below ignores the event so unwire is the only
+    // result.
+    if currentRef.IsSome then
+        let close = Dom.elText "button" "wire-bubble-x" "×"
+        close?``type`` <- "button"
+        close.title <- "Disconnect"
+        close.addEventListener (
+            "click",
+            fun ev ->
+                ev.stopPropagation ()
+                dispatch (SetBlockArg(block.Id, paramName, Notebook.ArgRef None)))
+        bubble.appendChild (close :> Node) |> ignore
 
     bubble.addEventListener (
         "dragstart",
@@ -158,12 +180,15 @@ let private renderRefBubble
             de.dataTransfer.setData (wireTypeMime paramType, "1") |> ignore
             ev.stopPropagation ())
 
-    if currentRef.IsSome then
-        bubble.addEventListener (
-            "click",
-            fun ev ->
-                ev.stopPropagation ()
-                dispatch (SetBlockArg(block.Id, paramName, Notebook.ArgRef None)))
+    // Bubble click semantics:
+    //  - Wired: clicks on the bubble body do nothing — unwire is via × only.
+    //  - Unwired: enter (or toggle) pick mode.
+    bubble.addEventListener (
+        "click",
+        fun ev ->
+            ev.stopPropagation ()
+            if currentRef.IsNone then
+                dispatch (BeginPickBlockRef(block.Id, paramName)))
     bubble
 
 // ── Inline input row (reuses `.input-row`) ─────────────────────────────────
@@ -204,18 +229,42 @@ let private renderInputRow
 
 // ── Block row (reuses `.action-row` + `.action-main`) ──────────────────────
 
-let private isUpstreamOf
+/// Expected `Type.T` for a (sourceBlockId, paramName) — the param the
+/// user is currently picking a ref for. Lifts from the source block's
+/// spec via `BlockSpec.typedInterface`. Returns `None` if the source
+/// no longer exists or has no such param (defensive — the pick-mode
+/// state could survive a block delete).
+let private expectedRefType
         (doc: DocumentView)
         (sourceBlockId: Notebook.BlockId)
+        (paramName: string) : Type.T option =
+    doc.Blocks
+    |> List.tryFind (fun b -> b.Id = sourceBlockId)
+    |> Option.bind (fun b ->
+        match b.Body with
+        | Notebook.NativeBody(specName, _) -> BlockSpec.tryFind specName
+        | _ -> None)
+    |> Option.map BlockSpec.typedInterface
+    |> Option.bind (fun ti ->
+        ti.Params
+        |> List.tryFind (fun p -> p.Name = paramName)
+        |> Option.map (fun p -> p.Type))
+
+/// Is `candidate` a valid commit target for the current pick? Type
+/// compatible and not the source itself. DAG ordering isn't enforced
+/// here — `SetBlockArg` auto-reorders so the source ends up upstream
+/// of its targets, so any type-compatible non-self block works.
+let private isValidPickTarget
+        (doc: DocumentView)
+        (sourceBlockId: Notebook.BlockId)
+        (paramName: string)
         (candidate: Notebook.BlockId) : bool =
-    let mutable seenCandidate = false
-    let mutable valid = false
-    for b in doc.Blocks do
-        if not valid then
-            if b.Id = candidate then seenCandidate <- true
-            elif b.Id = sourceBlockId && seenCandidate then valid <- true
-            elif b.Id = sourceBlockId then valid <- false
-    valid
+    if candidate = sourceBlockId then false
+    else
+        match expectedRefType doc sourceBlockId paramName,
+              Map.tryFind candidate doc.BlockOutputs with
+        | Some expected, Some actual -> expected = actual
+        | _ -> false
 
 let private renderRow
         (dispatch: Message -> unit)
@@ -224,6 +273,14 @@ let private renderRow
 
     let row = Dom.el "div" "action-row"
     if doc.SelectedBlockId = Some block.Id then row.classList.add "is-selected"
+
+    // Pick-mode: highlight rows that are valid commit targets.
+    let pickTarget =
+        match doc.EditingBlockRef with
+        | Some(srcId, paramName) when isValidPickTarget doc srcId paramName block.Id ->
+            Some(srcId, paramName)
+        | _ -> None
+    if pickTarget.IsSome then row.classList.add "is-pick-target"
 
     // Per-block typecheck errors → `.has-error` styling + tooltip. The
     // map is populated by `recompileNotebook` on every block edit.
@@ -343,11 +400,21 @@ let private renderRow
                 if parts.Length = 2 then
                     match System.Int32.TryParse parts.[0] with
                     | true, sourceId when sourceId <> block.Id ->
-                        if isUpstreamOf doc sourceId block.Id then
-                            dispatch (SetBlockArg(sourceId, parts.[1], Notebook.ArgRef (Some block.Id)))
+                        // No upstream check — SetBlockArg auto-reorders
+                        // the dragged source into upstream position.
+                        dispatch (SetBlockArg(sourceId, parts.[1], Notebook.ArgRef (Some block.Id)))
                     | _ -> ())
 
-    row.addEventListener ("click", fun _ -> dispatch (SelectBlock block.Id))
+    row.addEventListener (
+        "click",
+        fun _ ->
+            // In pick mode: commit if this row is a valid target;
+            // otherwise leave pick state alone (user can still select).
+            match pickTarget with
+            | Some(srcId, paramName) ->
+                dispatch (SetBlockArg(srcId, paramName, Notebook.ArgRef (Some block.Id)))
+            | None ->
+                dispatch (SelectBlock block.Id))
 
     row
 
@@ -489,7 +556,27 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     let list = Dom.el "div" "block-list"
     for block in doc.Blocks do
         list.appendChild (renderRow dispatch doc block :> Node) |> ignore
+        // Append param-input rows for expanded blocks. Siblings of the
+        // action-row, same pattern ActionList uses — the CSS rotates
+        // the caret and indents the input rows under their parent.
+        if Set.contains block.Id doc.ExpandedBlockIds then
+            match specOf block, block.Body with
+            | Some spec, Notebook.NativeBody(_, args) ->
+                let typed = BlockSpec.typedInterface spec
+                for param in typed.Params do
+                    list.appendChild (renderInputRow dispatch doc block param args :> Node) |> ignore
+            | _ -> ()
     panel.appendChild (list :> Node) |> ignore
+
+    // Panel-level summary. Surfaces compile failures (typecheck errors
+    // not anchored to a block, eval errors, serialise failures) so a
+    // blank canvas always has a corresponding message in the sidebar
+    // rather than failing silently.
+    match doc.LastNotebookError with
+    | Some msg ->
+        let banner = Dom.elText "div" "panel-error" msg
+        panel.appendChild (banner :> Node) |> ignore
+    | None -> ()
 
     panel
 

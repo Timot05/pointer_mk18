@@ -119,9 +119,10 @@ let private actionListSignature (doc: DocumentView) =
             sprintf "%s(%s)" name argDigest
         | Server.Lang.Notebook.SketchBody _ -> "sketch"
     let rows = doc.Blocks |> List.map (fun b -> b.Id, b.Name, bodyTag b.Body)
-    sprintf "%A|%A|%A"
+    sprintf "%A|%A|%A|%A"
         doc.SelectedBlockId
         doc.ExpandedBlockIds
+        doc.EditingBlockRef
         rows
 
 let private uiSignature (state: EditorState) =

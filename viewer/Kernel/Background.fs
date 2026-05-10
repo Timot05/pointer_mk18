@@ -307,6 +307,13 @@ let private handleResponse (bg: Background) (slot: WorkerSlot) (data: obj) =
             post slot.Handle
                 {| kind = "camera"; values = cameraValues bg.Scene.Camera |}
     | "ir-done" ->
+        // The kernel returns a status code from `ir_upload` (0 = ok, 1
+        // = bad magic, 7 = truncated, etc.). On failure the scene
+        // never renders — surface to the console so a blank canvas
+        // doesn't pass silently.
+        let code : int = data?code
+        if code <> 0 then
+            console.warn (sprintf "kernel ir_upload failed: code=%d" code)
         // Worker is now fully initialized. Kick off the first tile.
         dispatch bg slot
     | "rendered" ->

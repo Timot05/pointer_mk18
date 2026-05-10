@@ -1300,6 +1300,84 @@ body {
   font-style: italic;
 }
 
+/* Wire bubble: the input-row chip that represents a `Field`/`Sketch`/
+   `Frame` ref slot. Three states:
+     • empty (no `is-assigned`, no `is-picking`): dashed pill, dim.
+     • picking: solid accent border + tinted bg, cursor changes to pointer.
+     • assigned: filled chip with the upstream name + an `×` close. */
+.wire-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 80px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px dashed var(--border);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition: background 80ms, border-color 80ms, color 80ms;
+}
+
+.wire-bubble:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.wire-bubble.is-picking {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.wire-bubble.is-assigned {
+  border-style: solid;
+  border-color: var(--border);
+  background: var(--bg-surface);
+  color: var(--text);
+  cursor: default;
+}
+
+.wire-bubble-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-bubble-x {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  margin-right: -4px;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.wire-bubble-x:hover {
+  color: var(--text);
+  background: var(--bg-surface-hover);
+}
+
+.action-row.is-pick-target {
+  background: var(--accent-soft);
+  cursor: pointer;
+}
+
+.action-row.is-pick-target:hover {
+  background: var(--bg-surface-hover);
+}
+
 /* Ref-pick arrow overlay. Drawn inside .actions-list so it scrolls
    with the content. Elements are positioned using offsetTop/Left,
    which are relative to .actions-list (position: relative). */

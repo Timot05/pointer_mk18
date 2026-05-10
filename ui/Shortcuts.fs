@@ -327,6 +327,11 @@ let register
                     | Some _, Some(_, ActionList.RefDisplay _) -> true
                     | _ -> false
                 match ke.key with
+                | "Escape" when doc.EditingBlockRef.IsSome ->
+                    // Cancel block-ref pick mode (clicked a wire bubble,
+                    // didn't pick a target).
+                    e.preventDefault ()
+                    dispatch CancelPickBlockRef
                 | "Escape" when doc.EditingInputField.IsSome ->
                     // Cancel the current input sub-edit, keep the row focused.
                     e.preventDefault ()

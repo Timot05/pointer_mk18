@@ -197,6 +197,78 @@ module Builtins =
     let private rotateCall (ctx: EvalContext) (span: Span) (_args: ArgValue list) =
         evalError span "@rotate is not yet implemented in this round"
 
+    // -- from_sketch -------------------------------------------------------------
+    //
+    // Lower a `VSketch` to a `VField` by emitting one MathIR primitive per
+    // line/circle entity (point coords backed by Const nodes — the kernel
+    // reads them via `nodeValue`/`nodePoint2`) and wrapping with a
+    // SketchPath intrinsic. Arcs and beziers are skipped this round; the
+    // kernel's `evalSketchDistance` doesn't support arcs, so emitting them
+    // would just NaN-pollute the field.
+
+    let private planeMap (p: Server.SketchPlane) : MathIr.Plane =
+        match p with
+        | Server.XY -> MathIr.Plane.XY
+        | Server.XZ -> MathIr.Plane.XZ
+        | Server.YZ -> MathIr.Plane.YZ
+
+    let private fromSketchImpl
+            (ctx: EvalContext)
+            (span: Span)
+            (sv: SketchValue) : Result<MathIr.Expr, EvalError> =
+        let ir = ctx.Ir
+        // Resolve point ids → (x_node_id, y_node_id). Each REPoint becomes
+        // two Const nodes; the SlotPoint2 holds those node ids. The
+        // kernel-side `nodePoint2` reads `ir.nodes[id].value`.
+        let pointTable =
+            sv.Sketch.Entities
+            |> List.choose (function
+                | Server.REPoint(id, x, y) ->
+                    let pt = ir.Point2((ir.Constant x).Id, (ir.Constant y).Id)
+                    Some (id, pt)
+                | _ -> None)
+            |> Map.ofList
+
+        // First primitive id is allocated as we push them; remember the
+        // start so the SketchPath intrinsic can range-encode them.
+        let primitiveStart = ir.Primitives.Count
+
+        let mutable count = 0
+        for entity in sv.Sketch.Entities do
+            match entity with
+            | Server.RELine(_, startId, endId) ->
+                match Map.tryFind startId pointTable, Map.tryFind endId pointTable with
+                | Some s, Some e ->
+                    ir.LineSegment(s, e) |> ignore
+                    count <- count + 1
+                | _ -> ()
+            | Server.RECircle(_, centerId, radius) ->
+                match Map.tryFind centerId pointTable with
+                | Some c ->
+                    let rExpr = ir.Constant radius
+                    ir.Circle(c, rExpr.Id) |> ignore
+                    count <- count + 1
+                | None -> ()
+            | _ -> ()
+
+        if count = 0 then
+            evalError span "@from_sketch: sketch produced no renderable primitives"
+        else
+            // Emit a closed SketchPath spanning the just-pushed range. The
+            // kernel resolves "inside" by sampling winding angle; closed
+            // ⇒ negative inside.
+            Ok (ir.SketchPath(planeMap sv.Plane, primitiveStart, count, true, false))
+
+    let private fromSketchCall (ctx: EvalContext) (span: Span) (args: ArgValue list) =
+        let pos = positionals args
+        let named = namedMap args
+        requireArg span pos named 0 "sketch" >>= fun sv ->
+            match sv with
+            | VSketch s ->
+                fromSketchImpl ctx span s
+                |> Result.map VField
+            | _ -> evalError span "@from_sketch: argument must be a sketch"
+
     /// Dispatch table for `@name(...)` calls (excluding the input/output/view
     /// specials, which the evaluator routes directly to `ctx.Specials`).
     let dispatch
@@ -214,6 +286,7 @@ module Builtins =
         | "intersect" -> booleanCall "intersect" intersectImpl ctx span args
         | "thicken" -> thickenCall ctx span args
         | "rotate" -> rotateCall ctx span args
+        | "from_sketch" -> fromSketchCall ctx span args
         | _ -> evalError span (sprintf "unknown builtin @%s" name)
 
     /// Positional arities for the curried `@name` form. `print` / `debug`
@@ -229,6 +302,7 @@ module Builtins =
         | "union" | "subtract" | "intersect" -> Some 2
         | "thicken" -> Some 2
         | "rotate" -> Some 4
+        | "from_sketch" -> Some 1
         | "print" -> Some 2
         | "debug" -> Some 1
         | _ -> None

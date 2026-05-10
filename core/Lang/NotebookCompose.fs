@@ -274,13 +274,30 @@ module NotebookCompose =
         | Ok _ ->
             match evaluate notebook composed with
             | Ok { Ir = ir; Value = VField root } ->
-                let bytes =
-                    try Some (MathIrCodec.serialize ir root)
-                    with _ -> None
-                { Bytes = bytes
-                  BlockErrors = Map.empty
-                  BlockOutputs = composed.BlockOutputs
-                  Summary = None }
+                // Serialise to wire bytes. On .NET (xUnit tests) the
+                // Fable Uint8Array binding throws — surface that
+                // explicitly so a failure here doesn't masquerade as
+                // "no render root" with a blank canvas.
+                try
+                    let bytes = MathIrCodec.serialize ir root
+                    { Bytes = Some bytes
+                      BlockErrors = Map.empty
+                      BlockOutputs = composed.BlockOutputs
+                      Summary = None }
+                with ex ->
+                    // Raw JS errors don't carry a .NET-shaped Type; calling
+                    // GetType() on them throws inside the catch. Stick to
+                    // the JS-safe `string ex` (Fable maps that to
+                    // `String(ex)` which falls back to the JS error's own
+                    // toString — that contains the constructor name +
+                    // message).
+                    let detail =
+                        try string ex
+                        with _ -> "<introspection failed>"
+                    { Bytes = None
+                      BlockErrors = Map.empty
+                      BlockOutputs = composed.BlockOutputs
+                      Summary = Some (sprintf "serialise failed: %s" detail) }
             | Ok _ ->
                 { Bytes = None
                   BlockErrors = Map.empty

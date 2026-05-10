@@ -136,7 +136,13 @@ type EditorState =
       /// Per-block resolved output type from the last `recompileNotebook`.
       /// Used for ref-drop type filtering — the BlockList drag-over
       /// handler consults this to gate drops by `Type.T` compatibility.
-      NotebookBlockOutputs: Map<Server.Lang.Notebook.BlockId, Server.Lang.Type.T> }
+      NotebookBlockOutputs: Map<Server.Lang.Notebook.BlockId, Server.Lang.Type.T>
+      /// Click-to-pick state for block ref inputs. When `Some(blockId,
+      /// paramName)`, the BlockList renders that bubble as the active
+      /// pick target and treats subsequent clicks on type-compatible
+      /// upstream rows as a wire commit. Cleared by Escape, by clicking
+      /// the same bubble again, or once the pick commits.
+      EditingBlockRef: (Server.Lang.Notebook.BlockId * string) option }
 
 type SerializedModel =
     { Name: string
@@ -267,6 +273,12 @@ type Message =
     /// Replace a sketch block's `ActionSketch` payload (used by
     /// SketchAuthoring tools, gizmo drag commits, dimension edits).
     | UpdateSketchBlockSketch of Server.Lang.Notebook.BlockId * ActionSketch
+    /// Click-to-pick: enter pick mode for a block ref input. The
+    /// BlockList highlights compatible upstream rows; the next click on
+    /// such a row commits via `SetBlockArg` and exits pick mode.
+    | BeginPickBlockRef of Server.Lang.Notebook.BlockId * paramName: string
+    /// Leave pick mode without committing (Escape, click same bubble).
+    | CancelPickBlockRef
 
 module Editor =
 
@@ -393,7 +405,8 @@ module Editor =
           LastNotebookError = nbResult.Summary
           LastNotebookBytes = nbResult.Bytes
           NotebookBlockErrors = nbResult.BlockErrors
-          NotebookBlockOutputs = nbResult.BlockOutputs }
+          NotebookBlockOutputs = nbResult.BlockOutputs
+          EditingBlockRef = None }
 
     let isSlotBackedActionParamField =
         function
@@ -863,24 +876,39 @@ module Editor =
         |> List.tryHead
 
     let applyDeleteIntent (state: EditorState) =
-        if state.SketchEditMode then
+        // Sketch edit mode with entities highlighted: delete the entities.
+        if state.SketchEditMode && not state.SelectedTargets.IsEmpty then
             match SketchAuthoring.trySelectedSketch state.Doc with
-            | Some ctx when not state.SelectedTargets.IsEmpty ->
+            | Some ctx ->
                 let nextDoc =
                     SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.deleteTargets state.SelectedTargets ctx.Sketch)
                 { state with Doc = nextDoc }
                 |> clearTransient
                 |> recompileState
-            | _ ->
-                state
+            | None -> state
         else
-            match state.Doc.SelectedId with
-            | Some id when id <> "origin" ->
-                { state with Doc = Document.removeAction id state.Doc }
+            // No entities highlighted — fall through to block / action delete.
+            match state.Doc.SelectedBlockId with
+            | Some bid ->
+                let blocks = state.Doc.Blocks |> List.filter (fun b -> b.Id <> bid)
+                { state with
+                    Doc =
+                        { state.Doc with
+                            Blocks = blocks
+                            SelectedBlockId = None }
+                    SketchEditMode = false
+                    EditingBlockRef = None }
                 |> clearTransient
+                |> recompileNotebook
                 |> recompileState
-            | _ ->
-                state
+            | None ->
+                match state.Doc.SelectedId with
+                | Some id when id <> "origin" ->
+                    { state with Doc = Document.removeAction id state.Doc }
+                    |> clearTransient
+                    |> recompileState
+                | _ ->
+                    state
 
     let paletteMaybeBuild (state: EditorState) =
         let paletteState = Palette.toState state.PaletteSession state.Compiled.TypeMap state.Doc
@@ -1824,7 +1852,7 @@ module Editor =
                         Doc = { state.Doc with SelectedBlockId = Some id }
                         SketchEditMode = sketchEdit }
                 | SetBlockArg(id, paramName, newArg) ->
-                    let blocks =
+                    let updated =
                         state.Doc.Blocks
                         |> List.map (fun b ->
                             if b.Id <> id then b
@@ -1834,7 +1862,33 @@ module Editor =
                                     let nextArgs = Map.add paramName newArg args
                                     { b with Body = Server.Lang.Notebook.NativeBody(specName, nextArgs) }
                                 | _ -> b)
-                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    // If the new arg is a ref to a downstream block, hoist
+                    // that block to sit just before the target so the
+                    // notebook stays a DAG without forcing the user to
+                    // think about declaration order.
+                    let blocks =
+                        match newArg with
+                        | Server.Lang.Notebook.ArgRef (Some refId) ->
+                            let idxOf bid =
+                                updated
+                                |> List.tryFindIndex (fun b -> b.Id = bid)
+                            match idxOf refId, idxOf id with
+                            | Some refIdx, Some tgtIdx when refIdx > tgtIdx ->
+                                // Pull `refId` out and reinsert just before `id`.
+                                let refBlock = updated.[refIdx]
+                                let withoutRef =
+                                    updated |> List.filter (fun b -> b.Id <> refId)
+                                let newTgtIdx =
+                                    withoutRef |> List.findIndex (fun b -> b.Id = id)
+                                let before, after = List.splitAt newTgtIdx withoutRef
+                                before @ [ refBlock ] @ after
+                            | _ -> updated
+                        | _ -> updated
+                    // SetBlockArg commits a pick (or any other arg edit);
+                    // either way, exit pick mode if we were in it.
+                    { state with
+                        Doc = { state.Doc with Blocks = blocks }
+                        EditingBlockRef = None }
                     |> recompileNotebook
                 | ExpandBlock id ->
                     { state with ExpandedBlockIds = Set.add id state.ExpandedBlockIds }
@@ -1883,6 +1937,15 @@ module Editor =
                                 | _ -> b)
                     { state with Doc = { state.Doc with Blocks = blocks } }
                     |> recompileNotebook
+                | BeginPickBlockRef(id, paramName) ->
+                    // Toggle: clicking the same bubble cancels.
+                    let next =
+                        match state.EditingBlockRef with
+                        | Some(prevId, prevName) when prevId = id && prevName = paramName -> None
+                        | _ -> Some(id, paramName)
+                    { state with EditingBlockRef = next }
+                | CancelPickBlockRef ->
+                    { state with EditingBlockRef = None }
             let effects =
                 match message with
                 | SetActionSlotValue _

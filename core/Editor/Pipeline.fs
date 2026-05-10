@@ -223,8 +223,8 @@ module Pipeline =
         // lookup paths address block sketch entities the same way they
         // address action sketch entities.
         for block in blocks do
-            match block.Kind with
-            | Server.Lang.Notebook.SketchBlock data ->
+            match block.Body with
+            | Server.Lang.Notebook.SketchBody data ->
                 allocSketchSlots b (Server.SketchAuthoring.blockSketchId block.Id) data.Sketch
             | _ -> ()
 
@@ -234,8 +234,8 @@ module Pipeline =
         let blockPickables =
             blocks
             |> List.collect (fun block ->
-                match block.Kind with
-                | Server.Lang.Notebook.SketchBlock data ->
+                match block.Body with
+                | Server.Lang.Notebook.SketchBody data ->
                     buildSketchPickables b counter (Server.SketchAuthoring.blockSketchId block.Id) data.Sketch
                 | _ -> [])
 

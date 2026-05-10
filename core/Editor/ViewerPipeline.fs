@@ -208,8 +208,8 @@ module ViewerPipeline =
         let blockSketches =
             state.Doc.Blocks
             |> List.choose (fun b ->
-                match b.Kind with
-                | Server.Lang.Notebook.SketchBlock data ->
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data ->
                     let sketchOrigin = Editor.resolveSketchTransform state None data.Plane
 
                     let ctx: SketchCompileContext =
@@ -268,8 +268,8 @@ module ViewerPipeline =
         let blockSketchLoops =
             state.Doc.Blocks
             |> List.choose (fun b ->
-                match b.Kind with
-                | Server.Lang.Notebook.SketchBlock data ->
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data ->
                     let synthId = SketchAuthoring.blockSketchId b.Id
                     let liveEntities = resolveSketchEntities state.Compiled.Slots effectiveParams synthId data.Sketch
                     let loops =
@@ -306,8 +306,8 @@ module ViewerPipeline =
                         state.Doc.Blocks
                         |> List.tryFind (fun b -> b.Id = bid)
                         |> Option.bind (fun b ->
-                            match b.Kind with
-                            | Server.Lang.Notebook.SketchBlock _ ->
+                            match b.Body with
+                            | Server.Lang.Notebook.SketchBody _ ->
                                 Some (SketchAuthoring.blockSketchId bid)
                             | _ -> None)
                     | None -> None
@@ -344,8 +344,8 @@ module ViewerPipeline =
         let blockSketchTransforms =
             state.Doc.Blocks
             |> List.choose (fun b ->
-                match b.Kind with
-                | Server.Lang.Notebook.SketchBlock data ->
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data ->
                     Some
                         { Id = SketchAuthoring.blockSketchId b.Id
                           Transform = Editor.resolveSketchTransform state None data.Plane }

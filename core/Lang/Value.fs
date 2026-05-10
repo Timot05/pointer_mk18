@@ -51,12 +51,24 @@ module Value =
         | VCurve of CurveValue
         | VRecord of (string * Value) list
         | VClosure of Closure
+        | VBuiltin of BuiltinValue
         | VUnit
 
     and Closure = {
         Param: string
         Body: Expr
         Captured: Env
+    }
+
+    // Curried builtin handle. Bound under the bare name (e.g. `sphere`) in
+    // every fresh env. Each application via `EApply` accumulates one positional
+    // arg; once `AccArgs.Length = Arity` the dispatch path fires. Specials
+    // (view/output/input/print/debug) route through `ctx.Specials`; the rest
+    // route through `Builtins.dispatchPositional`.
+    and BuiltinValue = {
+        Name: string
+        Arity: int
+        AccArgs: Value list
     }
 
     /// Parented environment. Lookups walk the parent chain; bindings only
@@ -82,13 +94,11 @@ module Value =
     let envBind (env: Env) (name: string) (value: Value) =
         env.Bindings.[name] <- value
 
-    /// Hooks for the @input / @output / @view / @print / @debug specials.
-    /// Notebook-driver-supplied; the standalone test harness ships a stub
-    /// that records calls or returns errors.
+    /// Hooks for the imperative specials (`@print`, `@debug`). Notebook-
+    /// driver-supplied; the standalone test harness ships a stub that
+    /// records calls or returns errors. Block-level I/O (`let import` /
+    /// `let pub`) is no longer routed through this record.
     type Specials = {
-        Input:  Span -> string -> Result<Value, EvalError>
-        Output: Span -> string -> Value -> Result<Value, EvalError>
-        View:   Span -> Value -> Result<Value, EvalError>
         Print:  Span -> string -> Value -> Result<Value, EvalError>
         Debug:  Span -> Value -> Result<Value, EvalError>
     }
@@ -96,9 +106,6 @@ module Value =
     /// Specials that error on every call — used when no notebook context
     /// is available.
     let unboundSpecials : Specials = {
-        Input  = fun sp _      -> evalError sp "@input not bound (no notebook context)"
-        Output = fun sp _ _    -> evalError sp "@output not bound (no notebook context)"
-        View   = fun sp _      -> evalError sp "@view not bound (no notebook context)"
         Print  = fun sp _ _    -> evalError sp "@print not bound (no notebook context)"
         Debug  = fun sp _      -> evalError sp "@debug not bound (no notebook context)"
     }

@@ -179,6 +179,12 @@ body {
   grid-template-columns: 260px 1fr;
 }
 
+/* When the script editor side-panel is mounted, slot a column between
+   the block list and the viewer. */
+.layout.has-script-editor {
+  grid-template-columns: 260px 480px 1fr;
+}
+
 .panel-host {
   min-width: 0;
   min-height: 0;
@@ -1609,12 +1615,10 @@ body {
 
 /* ── BlockList panel ──────────────────────────────────────────────── */
 
-.block-list-actions {
-  display: flex;
-  gap: 6px;
-  padding: 8px;
-  border-bottom: 1px solid var(--border);
-}
+/* Reuses the action-row / action-main / action-expand / action-title /
+   action-subtitle / input-row* / action-picker* / wire-bubble /
+   visibility-badge styles defined above. The block list only needs the
+   container layout. */
 
 .block-list {
   flex: 1 1 auto;
@@ -1622,14 +1626,8 @@ body {
   padding: 4px 0;
 }
 
-.block-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  cursor: pointer;
-  font-size: 12px;
-  border-left: 2px solid transparent;
+.block-output-name {
+  font-family: "IBM Plex Mono", monospace;
 }
 
 .block-row:hover {
@@ -1685,34 +1683,19 @@ body {
   white-space: pre-wrap;
 }
 
-/* ── ScriptEditor modal ───────────────────────────────────────────── */
+/* ── ScriptEditor side panel ──────────────────────────────────────── */
 
-.script-editor-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.script-editor-modal {
-  background: var(--bg-page);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  width: 720px;
-  max-width: 90vw;
-  max-height: 80vh;
+.script-editor-panel {
   display: flex;
   flex-direction: column;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  min-height: 0;
+  background: var(--bg-page);
 }
 
 .script-editor-header {
   display: flex;
   align-items: center;
-  padding: 12px 16px;
+  padding: 12px 12px 10px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -1730,70 +1713,24 @@ body {
   padding: 0 6px;
 }
 
-.script-editor-textarea {
-  width: 100%;
-  min-height: 240px;
-  padding: 12px 16px;
-  background: var(--bg-surface);
-  color: var(--text);
-  border: 0;
+/* CodeMirror host — fills available vertical space; the .cm-editor inside
+   gets `height: 100%` so its scroller takes over. */
+.script-editor-cm-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
   border-bottom: 1px solid var(--border);
+}
+
+.script-editor-cm-host .cm-editor {
+  flex: 1 1 auto;
+  min-height: 0;
   font-family: "IBM Plex Mono", monospace;
   font-size: 13px;
-  line-height: 1.5;
-  resize: vertical;
-  outline: none;
-  box-sizing: border-box;
 }
 
-.script-editor-inputs {
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-}
-
-.script-editor-inputs-header {
-  color: var(--text-muted);
-  margin-bottom: 6px;
-}
-
-.script-editor-input-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-
-.script-editor-input-name,
-.script-editor-input-expr {
-  flex: 1 1 auto;
-  padding: 3px 6px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  color: var(--text);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 11px;
-}
-
-.script-editor-input-eq { color: var(--text-faint); }
-
-.script-editor-input-delete {
-  background: transparent;
-  border: 0;
-  color: var(--text-faint);
-  cursor: pointer;
-}
-
-.script-editor-input-add {
-  background: transparent;
-  border: 1px dashed var(--border);
-  color: var(--text-muted);
-  padding: 4px 8px;
-  border-radius: 2px;
-  cursor: pointer;
-  font-size: 11px;
-  margin-top: 4px;
+.script-editor-cm-host .cm-scroller {
+  font-family: inherit;
 }
 
 .script-editor-error {

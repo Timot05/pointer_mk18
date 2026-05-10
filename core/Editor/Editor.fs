@@ -89,6 +89,10 @@ type EditorState =
       /// collapses it (see Shortcuts.fs). `normalizeState` trims any
       /// ids whose action no longer exists.
       ExpandedActionIds: Set<ActionId>
+      /// Block IDs whose inline input rows are currently expanded under
+      /// the block list. One row per `let import` declaration discovered
+      /// in the script source.
+      ExpandedBlockIds: Set<Server.Lang.Notebook.BlockId>
       /// Row within the currently-selected action that has keyboard
       /// focus. `0` = the action row itself; `1..N` = the N input rows
       /// (only meaningful while the selected action is in
@@ -124,7 +128,15 @@ type EditorState =
       /// Cached MathIR bytes from the last successful `RunNotebook`.
       /// Viewer.fs subscribes to this and uploads on ref-change.
       /// `obj` boxes a JS Uint8Array (Fable interop).
-      LastNotebookBytes: obj option }
+      LastNotebookBytes: obj option
+      /// Per-block typecheck errors from the last `recompileNotebook`.
+      /// Indexed by `BlockId`; entry-list never empty when present.
+      /// Surfaced as `.has-error` row styling + tooltip in BlockList.
+      NotebookBlockErrors: Map<Server.Lang.Notebook.BlockId, string list>
+      /// Per-block resolved output type from the last `recompileNotebook`.
+      /// Used for ref-drop type filtering — the BlockList drag-over
+      /// handler consults this to gate drops by `Type.T` compatibility.
+      NotebookBlockOutputs: Map<Server.Lang.Notebook.BlockId, Server.Lang.Type.T> }
 
 type SerializedModel =
     { Name: string
@@ -233,26 +245,28 @@ type Message =
     | LoadModel of SerializedModel
     | ClearModel
     | SetViewerMode of ViewerMode
-    // ── Notebook / blocks ─────────────────────────────────────────────────
-    /// Add an empty Script block at the end of the list, name "block_<n>",
-    /// open the script editor on it, and select it.
-    | AddScriptBlock
-    /// Add an empty Sketch block (XY plane, no entities). Selected but
-    /// the script editor stays closed.
+    // ── Typed-block notebook ─────────────────────────────────────────────
+    /// Add a native block instantiating the named `BlockSpec` (e.g.
+    /// "sphere", "translate"). Defaults from the spec populate scalar
+    /// args; refs default to unwired.
+    | AddNativeBlock of specName: string
+    /// Add an empty Sketch block (XY plane, no entities).
     | AddSketchBlock
     | SelectBlock of Server.Lang.Notebook.BlockId
-    | OpenScriptEditor of Server.Lang.Notebook.BlockId
-    | CloseScriptEditor
-    | UpdateBlockSource of Server.Lang.Notebook.BlockId * string
-    | UpdateBlockInputs of Server.Lang.Notebook.BlockId * (string * string) list
+    /// Replace a single named arg on a block (scalar drag-edit, or
+    /// rewiring a ref bubble).
+    | SetBlockArg of Server.Lang.Notebook.BlockId * paramName: string * Server.Lang.Notebook.BlockArg
+    | ExpandBlock of Server.Lang.Notebook.BlockId
+    | CollapseBlock of Server.Lang.Notebook.BlockId
     | RenameBlock of Server.Lang.Notebook.BlockId * string
     | DeleteBlock of Server.Lang.Notebook.BlockId
+    /// Cycle the block's `Visibility` through Hidden → Visible → FieldLines
+    /// → Isosurface → Hidden. The badge in the block list is the visible
+    /// trigger; the keyboard shortcut hooks the same message.
+    | CycleBlockVisibility of Server.Lang.Notebook.BlockId
     /// Replace a sketch block's `ActionSketch` payload (used by
     /// SketchAuthoring tools, gizmo drag commits, dimension edits).
     | UpdateSketchBlockSketch of Server.Lang.Notebook.BlockId * ActionSketch
-    /// Re-evaluate the notebook → MathIR → bytes; either set
-    /// `LastNotebookBytes` (for Viewer.fs to upload) or `LastNotebookError`.
-    | RunNotebook
 
 module Editor =
 
@@ -335,27 +349,19 @@ module Editor =
         | ConcentricConstraint -> "Concentric"
         | FixedConstraint -> "Fixed"
 
-    /// Compile the seed notebook into MathIR bytes so the kernel renders
-    /// something on first frame instead of a blank canvas. Failure here
-    /// just produces an empty initial state — the user sees the seed
-    /// blocks in the sidebar and can hit Run manually.
-    let private compileInitialNotebook (blocks: Server.Lang.Notebook.Block list) (nextId: Server.Lang.Notebook.BlockId) =
+    /// Compile the notebook end-to-end: typecheck, eval, serialise. The
+    /// returned `CompileResult` carries the kernel bytes (when the whole
+    /// pipeline succeeds), per-block error and output-type maps, and a
+    /// panel-level summary message. Used both for the initial seed and
+    /// for every block-mutating reducer step via `recompileNotebook`.
+    let private compileNotebook (blocks: Server.Lang.Notebook.Block list) (nextId: Server.Lang.Notebook.BlockId) : Server.Lang.NotebookCompose.CompileResult =
         let nb : Server.Lang.Notebook.Notebook = { NextId = nextId; Blocks = blocks }
-        match Server.Lang.NotebookEval.compileView nb None with
-        | Ok(ir, root) ->
-            // MathIrCodec uses Fable-only Uint8Array bindings; on .NET
-            // (xUnit tests) those throw. Skip silently — tests don't need
-            // the rendered bytes.
-            try
-                Some (Server.Lang.MathIrCodec.serialize ir root), None
-            with _ ->
-                None, None
-        | Error msg -> None, Some msg
+        Server.Lang.NotebookCompose.compile nb
 
     let initState () =
         let doc = Document.emptyDocument ()
         let compiled = Pipeline.compile doc.Actions doc.Blocks
-        let initialBytes, initialError = compileInitialNotebook doc.Blocks doc.NextBlockId
+        let nbResult = compileNotebook doc.Blocks doc.NextBlockId
         { Doc = doc
           Compiled = compiled
           SlotValues = Array.copy compiled.Slots.Values
@@ -376,6 +382,7 @@ module Editor =
           ConstraintPlacementDraft = None
           ConstraintPlacementCursor = None
           ExpandedActionIds = Set.empty
+          ExpandedBlockIds = Set.empty
           EditFocusIdx = 0
           EditingInputField = None
           EditingInputInitial = None
@@ -383,8 +390,10 @@ module Editor =
           ActionPickerOpen = false
           ViewerMode = IntervalKernel
           OpenedScriptBlockId = None
-          LastNotebookError = initialError
-          LastNotebookBytes = initialBytes }
+          LastNotebookError = nbResult.Summary
+          LastNotebookBytes = nbResult.Bytes
+          NotebookBlockErrors = nbResult.BlockErrors
+          NotebookBlockOutputs = nbResult.BlockOutputs }
 
     let isSlotBackedActionParamField =
         function
@@ -478,8 +487,8 @@ module Editor =
                 state.Doc.Blocks
                 |> List.tryFind (fun b -> b.Id = bid)
                 |> Option.bind (fun b ->
-                    match b.Kind with
-                    | Server.Lang.Notebook.SketchBlock _ ->
+                    match b.Body with
+                    | Server.Lang.Notebook.SketchBody _ ->
                         Some (SketchAuthoring.blockSketchId bid)
                     | _ -> None)
                 |> function
@@ -566,8 +575,8 @@ module Editor =
                 state.Doc.Blocks
                 |> List.tryFind (fun b -> b.Id = bid)
                 |> Option.bind (fun b ->
-                    match b.Kind with
-                    | Server.Lang.Notebook.SketchBlock data ->
+                    match b.Body with
+                    | Server.Lang.Notebook.SketchBody data ->
                         Some(data.Sketch, resolveSketchTransform state None data.Plane)
                     | _ -> None)
             | _ -> None
@@ -677,10 +686,24 @@ module Editor =
             ConstraintPlacementCursor = constraintPlacementCursor
             ConstraintPlacementDraft = constraintPlacementDraft
             ExpandedActionIds = expandedActionIds
+            ExpandedBlockIds = state.ExpandedBlockIds
             EditFocusIdx = editFocusIdx
             EditingInputField = editingInputField
             EditingInputInitial = editingInputInitial
             RefPickIdx = refPickIdx }
+
+    /// Re-run the notebook compose+typecheck+evaluate pipeline against
+    /// the current `Doc.Blocks` and refresh the cached error/output/bytes
+    /// fields. Called by every reducer arm that mutates blocks so the UI
+    /// (BlockList row styling, ref-drop type filter) and the kernel push
+    /// (Viewer subscribes to `LastNotebookBytes`) stay in sync.
+    let recompileNotebook (state: EditorState) : EditorState =
+        let nbResult = compileNotebook state.Doc.Blocks state.Doc.NextBlockId
+        { state with
+            LastNotebookError = nbResult.Summary
+            LastNotebookBytes = nbResult.Bytes
+            NotebookBlockErrors = nbResult.BlockErrors
+            NotebookBlockOutputs = nbResult.BlockOutputs }
 
     let recompileState (state: EditorState) =
         let compiled = Pipeline.compile state.Doc.Actions state.Doc.Blocks
@@ -810,6 +833,7 @@ module Editor =
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None
             ExpandedActionIds = Set.empty
+            ExpandedBlockIds = Set.empty
             EditFocusIdx = 0
             EditingInputField = None
             EditingInputInitial = None
@@ -1732,34 +1756,51 @@ module Editor =
                     loadDoc (Document.emptyDocument ()) state
                 | SetViewerMode mode ->
                     { state with ViewerMode = mode }
-                // ── Notebook / blocks ────────────────────────────────────
-                | AddScriptBlock ->
+                // ── Typed-block notebook ──────────────────────────────────
+                | AddNativeBlock specName ->
+                    let spec = Server.Lang.BlockSpec.find specName
+                    // Seed every declared parameter with a default. Scalars
+                    // pull from the spec's default map (or 0.0); refs start
+                    // unwired.
+                    let typed = Server.Lang.BlockSpec.typedInterface spec
+                    let args =
+                        typed.Params
+                        |> List.map (fun p ->
+                            let arg =
+                                match p.Type with
+                                | Server.Lang.Type.Scalar ->
+                                    let v =
+                                        match Map.tryFind p.Name spec.ScalarDefaults with
+                                        | Some d -> d
+                                        | None -> 0.0
+                                    Server.Lang.Notebook.ArgScalar v
+                                | _ -> Server.Lang.Notebook.ArgRef None
+                            p.Name, arg)
+                        |> Map.ofList
                     let id = state.Doc.NextBlockId
                     let block : Server.Lang.Notebook.Block = {
                         Id = id
-                        Name = sprintf "block_%d" id
-                        Kind = Server.Lang.Notebook.ScriptBlock {
-                            Source = ""
-                            Inputs = []
-                        }
+                        Name = sprintf "%s_%d" specName id
+                        Body = Server.Lang.Notebook.NativeBody(specName, args)
+                        Visibility = Server.Lang.Notebook.VVisible
                     }
                     { state with
                         Doc = {
                             state.Doc with
                                 Blocks = state.Doc.Blocks @ [ block ]
                                 NextBlockId = id + 1
-                                SelectedBlockId = Some id
-                        }
-                        OpenedScriptBlockId = Some id }
+                                SelectedBlockId = Some id } }
+                    |> recompileNotebook
                 | AddSketchBlock ->
                     let id = state.Doc.NextBlockId
                     let block : Server.Lang.Notebook.Block = {
                         Id = id
                         Name = sprintf "sketch_%d" id
-                        Kind = Server.Lang.Notebook.SketchBlock {
+                        Body = Server.Lang.Notebook.SketchBody {
                             Sketch = ActionSketch.empty
                             Plane = SketchPlane.defaults
                         }
+                        Visibility = Server.Lang.Notebook.VVisible
                     }
                     { state with
                         Doc = {
@@ -1768,92 +1809,80 @@ module Editor =
                                 NextBlockId = id + 1
                                 SelectedBlockId = Some id
                         }
-                        // Drop straight into sketch-edit mode on a fresh
-                        // SketchBlock — same QoL as adding a sketch action.
                         SketchEditMode = true }
+                    |> recompileNotebook
                 | SelectBlock id ->
                     let block = state.Doc.Blocks |> List.tryFind (fun b -> b.Id = id)
-                    let opened, sketchEdit =
+                    let sketchEdit =
                         match block with
                         | Some b ->
-                            match b.Kind with
-                            | Server.Lang.Notebook.ScriptBlock _ -> Some id, false
-                            | Server.Lang.Notebook.SketchBlock _ -> None, true
-                        | None -> None, state.SketchEditMode
+                            match b.Body with
+                            | Server.Lang.Notebook.SketchBody _ -> true
+                            | _ -> false
+                        | None -> state.SketchEditMode
                     { state with
                         Doc = { state.Doc with SelectedBlockId = Some id }
-                        OpenedScriptBlockId = opened
                         SketchEditMode = sketchEdit }
-                | OpenScriptEditor id ->
-                    { state with OpenedScriptBlockId = Some id }
-                | CloseScriptEditor ->
-                    { state with OpenedScriptBlockId = None }
-                | UpdateBlockSource(id, src) ->
+                | SetBlockArg(id, paramName, newArg) ->
                     let blocks =
                         state.Doc.Blocks
                         |> List.map (fun b ->
                             if b.Id <> id then b
                             else
-                                match b.Kind with
-                                | Server.Lang.Notebook.ScriptBlock s ->
-                                    { b with Kind = Server.Lang.Notebook.ScriptBlock { s with Source = src } }
+                                match b.Body with
+                                | Server.Lang.Notebook.NativeBody(specName, args) ->
+                                    let nextArgs = Map.add paramName newArg args
+                                    { b with Body = Server.Lang.Notebook.NativeBody(specName, nextArgs) }
                                 | _ -> b)
                     { state with Doc = { state.Doc with Blocks = blocks } }
-                | UpdateBlockInputs(id, inputs) ->
-                    let blocks =
-                        state.Doc.Blocks
-                        |> List.map (fun b ->
-                            if b.Id <> id then b
-                            else
-                                match b.Kind with
-                                | Server.Lang.Notebook.ScriptBlock s ->
-                                    { b with Kind = Server.Lang.Notebook.ScriptBlock { s with Inputs = inputs } }
-                                | _ -> b)
-                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
+                | ExpandBlock id ->
+                    { state with ExpandedBlockIds = Set.add id state.ExpandedBlockIds }
+                | CollapseBlock id ->
+                    { state with ExpandedBlockIds = Set.remove id state.ExpandedBlockIds }
                 | RenameBlock(id, newName) ->
                     let blocks =
                         state.Doc.Blocks
                         |> List.map (fun b -> if b.Id = id then { b with Name = newName } else b)
                     { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
                 | DeleteBlock id ->
                     let blocks = state.Doc.Blocks |> List.filter (fun b -> b.Id <> id)
                     let selectedBlock =
                         if state.Doc.SelectedBlockId = Some id then None
                         else state.Doc.SelectedBlockId
-                    let opened =
-                        if state.OpenedScriptBlockId = Some id then None
-                        else state.OpenedScriptBlockId
                     { state with
                         Doc = {
                             state.Doc with
                                 Blocks = blocks
-                                SelectedBlockId = selectedBlock
-                        }
-                        OpenedScriptBlockId = opened }
+                                SelectedBlockId = selectedBlock } }
+                    |> recompileNotebook
+                | CycleBlockVisibility id ->
+                    let nextVis (v: Server.Lang.Notebook.BlockVisibility) =
+                        match v with
+                        | Server.Lang.Notebook.VHidden     -> Server.Lang.Notebook.VVisible
+                        | Server.Lang.Notebook.VVisible    -> Server.Lang.Notebook.VFieldLines
+                        | Server.Lang.Notebook.VFieldLines -> Server.Lang.Notebook.VIsosurface
+                        | Server.Lang.Notebook.VIsosurface -> Server.Lang.Notebook.VHidden
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id = id then { b with Visibility = nextVis b.Visibility }
+                            else b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
                 | UpdateSketchBlockSketch(id, sketch) ->
                     let blocks =
                         state.Doc.Blocks
                         |> List.map (fun b ->
                             if b.Id <> id then b
                             else
-                                match b.Kind with
-                                | Server.Lang.Notebook.SketchBlock data ->
-                                    { b with Kind = Server.Lang.Notebook.SketchBlock { data with Sketch = sketch } }
+                                match b.Body with
+                                | Server.Lang.Notebook.SketchBody data ->
+                                    { b with Body = Server.Lang.Notebook.SketchBody { data with Sketch = sketch } }
                                 | _ -> b)
                     { state with Doc = { state.Doc with Blocks = blocks } }
-                | RunNotebook ->
-                    let nb : Server.Lang.Notebook.Notebook = {
-                        NextId = state.Doc.NextBlockId
-                        Blocks = state.Doc.Blocks
-                    }
-                    match Server.Lang.NotebookEval.compileView nb None with
-                    | Ok(ir, root) ->
-                        let bytes = Server.Lang.MathIrCodec.serialize ir root
-                        { state with
-                            LastNotebookBytes = Some bytes
-                            LastNotebookError = None }
-                    | Error msg ->
-                        { state with LastNotebookError = Some msg }
+                    |> recompileNotebook
             let effects =
                 match message with
                 | SetActionSlotValue _

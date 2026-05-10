@@ -23,15 +23,28 @@ module Ast =
         Span: Span
     }
 
-    type UnaryOp = Neg
+    type UnaryOp =
+        | Neg
+        | Sqrt
+        | Abs
+        | Square
+        | Sin
+        | Cos
+        | Tan
 
     type BinaryOp =
         | Add
         | Sub
         | Mul
         | Div
+        | Min
+        | Max
         | Pipe
         | Compose
+
+    /// Spatial axis — for the in-AST `EAxis` node that resolves to the
+    /// MathIR `Var` (the kernel's per-sample x / y / z position).
+    type Axis = AxisX | AxisY | AxisZ
 
     type Literal =
         | LNumber of float
@@ -48,7 +61,11 @@ module Ast =
         | EVar of Ident
         | EPath of Ident list
         | EStackTop
-        | ELambda of Ident * Expr
+        // `ELambda` carries an optional type *hint* on its parameter.
+        // Hand-built specs always supply `Some`; user-source lambdas leave
+        // it `None` and the typechecker infers (or errors with
+        // `MissingTypeAnnotation`) in pure-infer position.
+        | ELambda of param: Ident * paramAnno: Type.T option * body: Expr
         | EApply of Expr * Expr
         | EBlock of Stmt list
         | EList of Expr list
@@ -56,6 +73,14 @@ module Ast =
         | ECall of callee: Ident * args: Arg list
         | EUnary of UnaryOp * Expr
         | EBinary of op: BinaryOp * left: Expr * right: Expr
+        // Spatial axis variable — `AxisX` / `AxisY` / `AxisZ`. At eval time
+        // resolves to the kernel's per-sample position component.
+        | EAxis of Axis
+        // Coordinate remap: evaluate `target` in a frame where the kernel's
+        // (x, y, z) substitution is replaced by (newX, newY, newZ).
+        // Equivalent to MathIR's `RemapAxes` node — used by translate-style
+        // blocks to shift the sample point before delegating.
+        | ERemapAxes of target: Expr * newX: Expr * newY: Expr * newZ: Expr
         | EMatch of subject: Expr * arms: MatchArm list
 
     and Arg =
@@ -72,6 +97,14 @@ module Ast =
 
     and Stmt =
         | SLet of Ident list * Expr
+        // `import x` — declares an external binding wired in by the
+        // notebook driver before this block runs. No default value; if the
+        // wire is missing, usages of `x` error as `unbound identifier`.
+        | SImport of Ident
+        // `export x = e` — like `SLet [x] e`, but the notebook driver
+        // collects this binding as one of the block's outputs after eval.
+        // The magic name `view` routes to the view slot instead of outputs.
+        | SExport of Ident * Expr
         | SExpr of Expr
         | SDup of Span
         | SSwap of Span
@@ -85,5 +118,7 @@ module Ast =
             match names with
             | n :: _ -> mergeSpan n.Span value.Span
             | [] -> value.Span
+        | SImport id -> id.Span
+        | SExport(name, value) -> mergeSpan name.Span value.Span
         | SExpr e -> e.Span
         | SDup sp | SSwap sp | SRotate sp -> sp

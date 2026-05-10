@@ -699,8 +699,8 @@ let update (pc: PickCompute) (state: EditorState) (viewState: ViewerState) =
     let blockSketches =
         state.Doc.Blocks
         |> List.choose (fun b ->
-            match b.Kind with
-            | Server.Lang.Notebook.SketchBlock data ->
+            match b.Body with
+            | Server.Lang.Notebook.SketchBody data ->
                 Some (Server.SketchAuthoring.blockSketchId b.Id, data.Sketch)
             | _ -> None)
     let sketchById = (actionSketches @ blockSketches) |> Map.ofList

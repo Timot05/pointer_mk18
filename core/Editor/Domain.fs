@@ -656,23 +656,16 @@ module Document =
               act "frame1" "frame" (Translate(child = Some "origin", x = 18.0, y = 6.0, z = 12.0))
               act "from1" "from-sketch" (FromSketch(child = Some "sketch1", flip = false, selection = SelectionAllLoops)) ] }
 
-    /// Boot-time notebook: a two-block demo that exercises both the
-    /// `@output` → `@input` cross-block wire and the `@view` builtin. The
-    /// canvas stays empty until the user clicks Run; the seed just gives
-    /// them something to read and tweak.
+    /// Boot-time notebook: a single typed-block sphere so the user has
+    /// something to drag the radius on.
     let private defaultBlocks : Server.Lang.Notebook.Block list =
         [ { Id = 0
-            Name = "params"
-            Kind = Server.Lang.Notebook.ScriptBlock {
-                Source = "@output(\"r\", 1.0)"
-                Inputs = []
-            } }
-          { Id = 1
-            Name = "shape"
-            Kind = Server.Lang.Notebook.ScriptBlock {
-                Source = "@view(@sphere(@input(\"radius\")))"
-                Inputs = [ "radius", "params" ]
-            } } ]
+            Name = "sphere"
+            Body =
+                Server.Lang.Notebook.NativeBody(
+                    "sphere",
+                    Map.ofList [ "radius", Server.Lang.Notebook.ArgScalar 1.0 ])
+            Visibility = Server.Lang.Notebook.VVisible } ]
 
     let emptyDocument () : Document =
         { Name = "untitled"

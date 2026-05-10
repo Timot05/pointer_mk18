@@ -19,6 +19,8 @@ module Token =
     type Kind =
         | Newline
         | Let
+        | Import
+        | Export
         | Open
         | Publish
         | Fun
@@ -63,6 +65,8 @@ module Token =
         match k with
         | Newline -> "newline"
         | Let -> "let"
+        | Import -> "import"
+        | Export -> "export"
         | Open -> "open"
         | Publish -> "publish"
         | Fun -> "fun"

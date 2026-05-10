@@ -27,6 +27,8 @@ module Lexer =
     let private keywordOrIdent (text: string) : Kind =
         match text with
         | "let" -> Let
+        | "import" -> Import
+        | "export" -> Export
         | "open" -> Open
         | "publish" -> Publish
         | "fun" -> Fun

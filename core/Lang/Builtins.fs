@@ -215,3 +215,26 @@ module Builtins =
         | "thicken" -> thickenCall ctx span args
         | "rotate" -> rotateCall ctx span args
         | _ -> evalError span (sprintf "unknown builtin @%s" name)
+
+    /// Positional arities for the curried `@name` form. `print` / `debug`
+    /// are routed by the evaluator through `ctx.Specials`; all other names
+    /// go through `dispatch` once saturated. `view` / `input` / `output`
+    /// were retired in favour of `let import` / `let pub` declarations.
+    let arityOf (name: string) : int option =
+        match name with
+        | "sphere" -> Some 1
+        | "box" -> Some 3
+        | "cylinder" -> Some 2
+        | "translate" -> Some 4
+        | "union" | "subtract" | "intersect" -> Some 2
+        | "thicken" -> Some 2
+        | "rotate" -> Some 4
+        | "print" -> Some 2
+        | "debug" -> Some 1
+        | _ -> None
+
+    /// Names of the specials (handled by `ctx.Specials`, not `dispatch`).
+    let isSpecial (name: string) : bool =
+        match name with
+        | "print" | "debug" -> true
+        | _ -> false

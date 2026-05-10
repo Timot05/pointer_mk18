@@ -240,8 +240,8 @@ let private trySelectedSketchFromView (doc: DocumentView) : ActionSketch option 
             doc.Blocks
             |> List.tryFind (fun b -> b.Id = bid)
             |> Option.bind (fun b ->
-                match b.Kind with
-                | Server.Lang.Notebook.SketchBlock data -> Some data.Sketch
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data -> Some data.Sketch
                 | _ -> None)
     match blockSketch with
     | Some _ -> blockSketch

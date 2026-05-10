@@ -7,15 +7,17 @@ open Server.Lang.Notebook
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-let private scriptBlock id name source inputs : Block =
+let private nativeBlock id name specName args : Block =
     { Id = id
       Name = name
-      Kind = ScriptBlock { Source = source; Inputs = inputs } }
+      Body = NativeBody(specName, Map.ofList args)
+      Visibility = VVisible }
 
 let private sketchBlockOf id name (sketch: ActionSketch) (plane: SketchPlane) : Block =
     { Id = id
       Name = name
-      Kind = SketchBlock { Sketch = sketch; Plane = plane } }
+      Body = SketchBody { Sketch = sketch; Plane = plane }
+      Visibility = VVisible }
 
 let private notebookOf (blocks: Block list) : Notebook =
     { NextId = List.length blocks; Blocks = blocks }
@@ -30,157 +32,104 @@ let private simpleLineSketch : ActionSketch =
           RELine("l0", "p0", "p1") ]
       Constraints = [] }
 
-// ─── Facts ──────────────────────────────────────────────────────────────────
+// ─── Native blocks ──────────────────────────────────────────────────────────
 
 [<Fact>]
-let ``single block with one output stitches as the block's name in scope`` () =
+let ``single sphere block produces a Field output`` () =
     let nb =
         notebookOf [
-            scriptBlock 0 "p" "@output(\"r\", 1.5)" []
+            nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.0 ]
         ]
     let result = NotebookEval.eval nb
-    Assert.Equal(1, List.length result.PerBlock)
-    let p = blockEvalOf 0 result
-    Assert.Equal(None, p.Error)
-    // single output → block.name binds the bare value
-    match Map.tryFind "p" result.Scope with
-    | Some (Value.VNumber 1.5) -> ()
-    | other -> failwithf "expected p = VNumber 1.5, got %A" other
-
-[<Fact>]
-let ``two-block wiring: q reads p's output via input wire`` () =
-    let nb =
-        notebookOf [
-            scriptBlock 0 "p" "@output(\"x\", 7)" []
-            scriptBlock 1 "q" "@input(\"v\")" [ "v", "p" ]
-        ]
-    let result = NotebookEval.eval nb
-    let q = blockEvalOf 1 result
-    Assert.Equal(None, q.Error)
-    Assert.Contains("v", q.InputsUsed)
-    // q's scope binding is the stitched value: zero outputs + one input → input value
-    match Map.tryFind "q" result.Scope with
-    | Some (Value.VNumber 7.0) -> ()
-    | other -> failwithf "expected q = VNumber 7.0, got %A" other
-
-[<Fact>]
-let ``path resolution: downstream block reads params.chord via input expression`` () =
-    let nb =
-        notebookOf [
-            scriptBlock 0 "params"
-                "@output(\"chord\", 1.0)\n@output(\"thickness\", 0.12)"
-                []
-            scriptBlock 1 "shape"
-                "@output(\"r\", @input(\"radius\"))"
-                [ "radius", "params.chord" ]
-        ]
-    let result = NotebookEval.eval nb
-    let shape = blockEvalOf 1 result
-    Assert.Equal(None, shape.Error)
-    match Map.tryFind "shape" result.Scope with
-    | Some (Value.VNumber 1.0) -> ()
-    | other -> failwithf "expected shape = VNumber 1.0 (chord), got %A" other
-
-[<Fact>]
-let ``implicit view: a single Field output becomes the block's view`` () =
-    let nb =
-        notebookOf [
-            scriptBlock 0 "shape" "@output(\"f\", @sphere(1.0))" []
-        ]
-    let result = NotebookEval.eval nb
-    let shape = blockEvalOf 0 result
-    match shape.View with
+    let be = blockEvalOf 0 result
+    Assert.Equal(None, be.Error)
+    match be.Output with
     | Some (Value.VField _) -> ()
-    | other -> failwithf "expected implicit Field view, got %A" other
+    | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]
-let ``explicit view wins over outputs`` () =
+let ``translate referencing an upstream sphere yields a RemapAxes-rooted Field`` () =
     let nb =
         notebookOf [
-            scriptBlock 0 "shape"
-                "@output(\"unused\", 1)\n@view(@sphere(2))"
-                []
+            nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.0 ]
+            nativeBlock 1 "shifted" "translate"
+                [ "x", ArgScalar 2.0
+                  "y", ArgScalar 0.0
+                  "z", ArgScalar 0.0
+                  "child", ArgRef (Some 0) ]
         ]
     let result = NotebookEval.eval nb
-    let shape = blockEvalOf 0 result
-    match shape.View with
-    | Some (Value.VField _) -> ()
-    | other -> failwithf "expected explicit Field view, got %A" other
+    let be = blockEvalOf 1 result
+    Assert.Equal(None, be.Error)
+    match be.Output with
+    | Some (Value.VField root) ->
+        let rootNode = result.Ir.Nodes.[root.Id]
+        Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
+    | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]
-let ``compileView returns the shared MathIR with a Sub-rooted sphere`` () =
-    // params has two outputs so it stitches to a Record (single-output blocks
-    // bind the bare value, which would block `params.r` path access).
+let ``union of two spheres roots a Min binary node`` () =
     let nb =
         notebookOf [
-            scriptBlock 0 "params"
-                "@output(\"r\", 1.5)\n@output(\"unused\", 0)"
-                []
-            scriptBlock 1 "shape"
-                "@view(@sphere(@input(\"radius\")))"
-                [ "radius", "params.r" ]
+            nativeBlock 0 "a" "sphere" [ "radius", ArgScalar 1.0 ]
+            nativeBlock 1 "b" "sphere" [ "radius", ArgScalar 2.0 ]
+            nativeBlock 2 "u" "union" [ "a", ArgRef (Some 0); "b", ArgRef (Some 1) ]
         ]
-    match NotebookEval.compileView nb None with
-    | Ok (ir, root) ->
-        Assert.True(ir.Nodes.Count > 0, "expected non-empty math IR")
-        let rootNode = ir.Nodes.[root.Id]
-        // sphere SDF: sqrt(x²+y²+z²) - r → root must be a Sub binary
+    let result = NotebookEval.eval nb
+    let be = blockEvalOf 2 result
+    Assert.Equal(None, be.Error)
+    match be.Output with
+    | Some (Value.VField root) ->
+        let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
-        Assert.Equal(int MathIr.Binary.Sub, rootNode.Op)
-    | Error msg -> failwithf "compileView failed: %s" msg
+        Assert.Equal(int MathIr.Binary.Min, rootNode.Op)
+    | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]
-let ``continue on error: a failing block doesn't halt the next block`` () =
+let ``unwired ref records an error but doesn't halt the notebook`` () =
     let nb =
         notebookOf [
-            scriptBlock 0 "good" "@output(\"x\", 1)" []
-            scriptBlock 1 "bad"  "@input(\"missing\")" []     // unwired @input
-            scriptBlock 2 "tail" "@output(\"y\", 2)" []
+            nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.0 ]
+            nativeBlock 1 "broken" "translate"
+                [ "x", ArgScalar 1.0
+                  "y", ArgScalar 0.0
+                  "z", ArgScalar 0.0
+                  "child", ArgRef None ]
+            nativeBlock 2 "tail" "sphere" [ "radius", ArgScalar 0.5 ]
         ]
     let result = NotebookEval.eval nb
-    Assert.Equal(3, List.length result.PerBlock)
-    let badEval = blockEvalOf 1 result
-    Assert.True(badEval.Error.IsSome, "bad block should have an error")
-    let tailEval = blockEvalOf 2 result
-    Assert.Equal(None, tailEval.Error)
-    Assert.True(Map.containsKey "good" result.Scope)
-    Assert.True(Map.containsKey "tail" result.Scope)
+    let broken = blockEvalOf 1 result
+    Assert.True(broken.Error.IsSome, "broken block should have an error")
+    let tail = blockEvalOf 2 result
+    Assert.Equal(None, tail.Error)
 
 // ─── Sketch blocks ──────────────────────────────────────────────────────────
 
 [<Fact>]
-let ``sketch block stitches as a VSketch under the block's name`` () =
+let ``sketch block surfaces as a VSketch output`` () =
     let nb = notebookOf [ sketchBlockOf 0 "outline" simpleLineSketch XY ]
     let result = NotebookEval.eval nb
-    match Map.tryFind "outline" result.Scope with
+    let be = blockEvalOf 0 result
+    match be.Output with
     | Some (Value.VSketch sv) ->
         Assert.Equal(3, List.length sv.Sketch.Entities)
         Assert.Equal(XY, sv.Plane)
-    | other -> failwithf "expected VSketch in scope, got %A" other
+    | other -> failwithf "expected VSketch, got %A" other
+
+// ─── compileView ───────────────────────────────────────────────────────────
 
 [<Fact>]
-let ``sketch block becomes its own auto-view`` () =
-    let nb = notebookOf [ sketchBlockOf 0 "outline" simpleLineSketch XZ ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 0 result
-    match be.View with
-    | Some (Value.VSketch sv) ->
-        Assert.Equal(XZ, sv.Plane)
-    | other -> failwithf "expected sketch as view, got %A" other
-
-[<Fact>]
-let ``downstream script block can read a sketch by name via input wire`` () =
+let ``compileView returns the last Field output as the render root`` () =
     let nb =
         notebookOf [
-            sketchBlockOf 0 "outline" simpleLineSketch XY
-            scriptBlock 1 "consumer" "@input(\"sk\")" [ "sk", "outline" ]
+            nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.5 ]
         ]
-    let result = NotebookEval.eval nb
-    let consumer = blockEvalOf 1 result
-    Assert.Equal(None, consumer.Error)
-    Assert.Contains("sk", consumer.InputsUsed)
-    // The sketch passes through identity-style; consumer's stitched value
-    // is the input value (zero outputs + one input → bind input).
-    match Map.tryFind "consumer" result.Scope with
-    | Some (Value.VSketch sv) -> Assert.Equal(3, List.length sv.Sketch.Entities)
-    | other -> failwithf "expected VSketch in consumer scope, got %A" other
+    match NotebookCompose.compileView nb None with
+    | Ok (ir, root) ->
+        Assert.True(ir.Nodes.Count > 0)
+        let rootNode = ir.Nodes.[root.Id]
+        Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
+        Assert.Equal(int MathIr.Binary.Sub, rootNode.Op)
+    | Error errs ->
+        let msg = errs |> List.map Typecheck.formatError |> String.concat "; "
+        failwithf "compileView failed: %s" msg

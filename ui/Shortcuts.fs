@@ -65,8 +65,8 @@ let private selectedIsSketch (doc: DocumentView) : bool =
             doc.Blocks
             |> List.tryFind (fun b -> b.Id = bid)
             |> Option.exists (fun b ->
-                match b.Kind with
-                | Server.Lang.Notebook.SketchBlock _ -> true
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody _ -> true
                 | _ -> false)
         | None -> false
     if blockIsSketch then true
@@ -287,13 +287,10 @@ let register
             if (ke.metaKey || ke.ctrlKey) && not ke.altKey && not ke.shiftKey then
                 match ke.key.ToLower() with
                 | "k" ->
-                    // Toggle the inline action picker at the bottom of
-                    // the action list.
+                    // Toggle the typed-block palette (acts as the
+                    // notebook-era replacement for the old action picker).
                     e.preventDefault ()
-                    let doc = getDoc ()
-                    if doc.ActionPickerOpen
-                    then dispatch CloseActionPicker
-                    else dispatch OpenActionPicker
+                    BlockList.togglePalette dispatch
                 | "s" ->
                     e.preventDefault ()
                     onSave ()

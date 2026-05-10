@@ -281,10 +281,12 @@ module Parser =
                     | _ ->
                         let last = List.last parts
                         mkExpr (EPath parts) (mergeSpan first.Span last.Span)
-                match baseExpr.Node, (current p).Kind with
-                | EVar callee, LParen when baseExpr.Span.Stop = (current p).Span.Start ->
-                    parseCall p callee
-                | _ -> Ok baseExpr
+                // The OCaml-flavoured `name(arg1, arg2)` call form was
+                // retired in favour of F#-style juxtaposition (`name arg1
+                // arg2`) and pipes (`arg |> name`). `parseCall` and `ECall`
+                // remain on disk as compile-compat stubs but are no longer
+                // produced from source.
+                Ok baseExpr
 
     and parseCall (p: State) (callee: Ident) : Result<Expr, ParseError> =
         let startSpan = callee.Span
@@ -435,7 +437,7 @@ module Parser =
                 let lambda =
                     List.foldBack
                         (fun (param: Ident) (acc: Expr) ->
-                            mkExpr (ELambda(param, acc)) (mergeSpan param.Span acc.Span))
+                            mkExpr (ELambda(param, None, acc)) (mergeSpan param.Span acc.Span))
                         ps body
                 Ok lambda
 
@@ -520,6 +522,25 @@ module Parser =
     and parseStmt (p: State) : Result<Stmt, ParseError> =
         skipNewlines p
         match (current p).Kind with
+        | Import ->
+            // `import <name>` — no default value, no `=`. The wire is
+            // resolved by the notebook driver from the block's Inputs map.
+            advance p |> ignore
+            parseBindingIdent p >>= fun name ->
+                if (current p).Kind = Equals then
+                    err (current p) "import declarations cannot have a default value"
+                else
+                    Ok (SImport name)
+        | Export ->
+            // `export <name> = expr` — declares an output the notebook
+            // driver collects after the block runs. The magic name `view`
+            // routes to the view slot instead of the outputs list.
+            let startTok = advance p
+            parseBindingIdent p >>= fun name ->
+                expect p Equals >>= fun _ ->
+                    parseExpr p >>= fun value ->
+                        let value = { value with Span = mergeSpan startTok.Span value.Span }
+                        Ok (SExport(name, value))
         | Let ->
             let startTok = advance p
             parseBindingIdent p >>= fun firstName ->

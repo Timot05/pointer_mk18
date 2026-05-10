@@ -25,7 +25,17 @@ type DocumentView =
       Blocks: Server.Lang.Notebook.Block list
       SelectedBlockId: Server.Lang.Notebook.BlockId option
       OpenedScriptBlockId: Server.Lang.Notebook.BlockId option
-      LastNotebookError: string option }
+      ExpandedBlockIds: Set<Server.Lang.Notebook.BlockId>
+      LastNotebookError: string option
+      /// Per-block typecheck error messages from the last notebook
+      /// recompile. BlockList rows in this map render with `.has-error`
+      /// styling and the joined messages as a tooltip.
+      BlockErrors: Map<Server.Lang.Notebook.BlockId, string list>
+      /// Per-block resolved output `Type.T`. The BlockList drag-over
+      /// handler uses this to gate ref drops by type compatibility:
+      /// only blocks whose output type matches the dragged ref's
+      /// expected input type accept the drop.
+      BlockOutputs: Map<Server.Lang.Notebook.BlockId, Server.Lang.Type.T> }
 
 module DocumentPipeline =
 
@@ -80,7 +90,10 @@ module DocumentPipeline =
           Blocks = state.Doc.Blocks
           SelectedBlockId = state.Doc.SelectedBlockId
           OpenedScriptBlockId = state.OpenedScriptBlockId
-          LastNotebookError = state.LastNotebookError }
+          ExpandedBlockIds = state.ExpandedBlockIds
+          LastNotebookError = state.LastNotebookError
+          BlockErrors = state.NotebookBlockErrors
+          BlockOutputs = state.NotebookBlockOutputs }
 
     let paletteView (state: EditorState) =
         Palette.toState state.PaletteSession state.Compiled.TypeMap state.Doc

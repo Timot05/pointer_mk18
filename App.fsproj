@@ -25,15 +25,22 @@
          Lives before Editor.Domain so Document can store Notebook.Block list. -->
     <Compile Include="core\Lang\MathIr.fs" />
     <Compile Include="core\Lang\Token.fs" />
+    <Compile Include="core\Lang\Type.fs" />
     <Compile Include="core\Lang\Ast.fs" />
+    <Compile Include="core\Lang\Tast.fs" />
+    <Compile Include="core\Lang\AstQueries.fs" />
     <Compile Include="core\Lang\Lexer.fs" />
     <Compile Include="core\Lang\Parser.fs" />
     <Compile Include="core\Lang\Value.fs" />
     <Compile Include="core\Lang\Builtins.fs" />
     <Compile Include="core\Lang\Eval.fs" />
-    <Compile Include="core\Lang\Notebook.fs" />
-    <Compile Include="core\Lang\NotebookEval.fs" />
+    <Compile Include="core\Lang\TypeExtract.fs" />
+    <Compile Include="core\Lang\BlockSpec.fs" />
+    <Compile Include="core\Lang\Typecheck.fs" />
     <Compile Include="core\Lang\MathIrCodec.fs" />
+    <Compile Include="core\Lang\Notebook.fs" />
+    <Compile Include="core\Lang\NotebookCompose.fs" />
+    <Compile Include="core\Lang\NotebookEval.fs" />
 
     <!-- core / Editor (domain + type check) -->
     <Compile Include="core\Editor\Domain.fs" />
@@ -83,7 +90,6 @@
     <Compile Include="ui\TopBar.fs" />
     <Compile Include="ui\ActionList.fs" />
     <Compile Include="ui\BlockList.fs" />
-    <Compile Include="ui\ScriptEditor.fs" />
     <Compile Include="ui\SketchAuthoringPanel.fs" />
     <Compile Include="ui\CommandPalette.fs" />
     <Compile Include="ui\Shortcuts.fs" />

@@ -101,15 +101,28 @@ let private renderInto (root: Browser.Types.HTMLElement) =
     root.appendChild shell |> ignore
 
 let private actionListSignature (doc: DocumentView) =
-    // Block-list signature: id, name, kind tag, plus selection + error.
-    let kindTag (k: Server.Lang.Notebook.BlockKind) =
-        match k with
-        | Server.Lang.Notebook.ScriptBlock _ -> "script"
-        | Server.Lang.Notebook.SketchBlock _ -> "sketch"
-    let rows =
-        doc.Blocks
-        |> List.map (fun b -> b.Id, b.Name, kindTag b.Kind)
-    sprintf "%A|%A|%A" doc.SelectedBlockId doc.LastNotebookError rows
+    // Block-list signature: id, name, body shape, plus selection.
+    // Bodies are summarised so changing a scalar arg or rewiring a ref
+    // triggers the BlockList to re-render the inline input rows.
+    let bodyTag (b: Server.Lang.Notebook.BlockBody) =
+        match b with
+        | Server.Lang.Notebook.NativeBody(name, args) ->
+            let argDigest =
+                args
+                |> Map.toList
+                |> List.map (fun (k, v) ->
+                    match v with
+                    | Server.Lang.Notebook.ArgScalar n -> sprintf "%s=%g" k n
+                    | Server.Lang.Notebook.ArgRef None -> sprintf "%s=-" k
+                    | Server.Lang.Notebook.ArgRef (Some r) -> sprintf "%s=#%d" k r)
+                |> String.concat ","
+            sprintf "%s(%s)" name argDigest
+        | Server.Lang.Notebook.SketchBody _ -> "sketch"
+    let rows = doc.Blocks |> List.map (fun b -> b.Id, b.Name, bodyTag b.Body)
+    sprintf "%A|%A|%A"
+        doc.SelectedBlockId
+        doc.ExpandedBlockIds
+        rows
 
 let private uiSignature (state: EditorState) =
     sprintf
@@ -153,9 +166,6 @@ let private onStateChange (root: Browser.Types.HTMLElement) () =
             BlockList.syncPanel root dispatch doc
         if selectionChanged then
             SketchAuthoringPanel.syncOverlay root dispatch doc
-
-    // Modal: ScriptEditor mounts when a ScriptBlock is OpenedScriptBlockId.
-    ScriptEditor.sync dispatch doc
 
     lastCompiled <- state.Compiled
     lastSlotValues <- state.SlotValues

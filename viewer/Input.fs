@@ -85,8 +85,8 @@ let private activeEditSketchId (state: EditorState) : ActionId option =
                 state.Doc.Blocks
                 |> List.tryFind (fun b -> b.Id = bid)
                 |> Option.bind (fun b ->
-                    match b.Kind with
-                    | Server.Lang.Notebook.SketchBlock _ ->
+                    match b.Body with
+                    | Server.Lang.Notebook.SketchBody _ ->
                         let sid = SketchAuthoring.blockSketchId bid
                         if vs.SketchTransforms |> List.exists (fun t -> t.Id = sid) then Some sid
                         else None

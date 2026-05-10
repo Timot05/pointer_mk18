@@ -87,8 +87,8 @@ module SketchAuthoring =
                 doc.Blocks
                 |> List.tryFind (fun b -> b.Id = bid)
                 |> Option.bind (fun b ->
-                    match b.Kind with
-                    | Server.Lang.Notebook.SketchBlock data ->
+                    match b.Body with
+                    | Server.Lang.Notebook.SketchBody data ->
                         let synthetic : DocAction = {
                             Id = blockSketchId bid
                             Name = Some b.Name
@@ -118,9 +118,9 @@ module SketchAuthoring =
                 |> List.map (fun b ->
                     if b.Id <> bid then b
                     else
-                        match b.Kind with
-                        | Server.Lang.Notebook.SketchBlock data ->
-                            { b with Kind = Server.Lang.Notebook.SketchBlock { data with Sketch = nextSketch } }
+                        match b.Body with
+                        | Server.Lang.Notebook.SketchBody data ->
+                            { b with Body = Server.Lang.Notebook.SketchBody { data with Sketch = nextSketch } }
                         | _ -> b)
             { doc with Blocks = blocks }
         | None ->

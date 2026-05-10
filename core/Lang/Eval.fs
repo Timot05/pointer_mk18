@@ -29,15 +29,50 @@ module Eval =
         | BinaryOp.Sub -> Ok (a - b)
         | BinaryOp.Mul -> Ok (a * b)
         | BinaryOp.Div -> Ok (a / b)
+        | BinaryOp.Min -> Ok (min a b)
+        | BinaryOp.Max -> Ok (max a b)
         | _ -> Error "operator not valid on numbers"
 
-    let private fieldBinary (ir: MathIr.MathIR) (op: BinaryOp) (a: MathIr.Expr) (b: MathIr.Expr) : Result<MathIr.Expr, string> =
+    let private fieldBinaryOp (op: BinaryOp) : MathIr.Binary option =
         match op with
-        | BinaryOp.Add -> Ok (ir.Binary(MathIr.Binary.Add, a, b))
-        | BinaryOp.Sub -> Ok (ir.Binary(MathIr.Binary.Sub, a, b))
-        | BinaryOp.Mul -> Ok (ir.Binary(MathIr.Binary.Mul, a, b))
-        | BinaryOp.Div -> Ok (ir.Binary(MathIr.Binary.Div, a, b))
-        | _ -> Error "operator not valid on fields"
+        | BinaryOp.Add -> Some MathIr.Binary.Add
+        | BinaryOp.Sub -> Some MathIr.Binary.Sub
+        | BinaryOp.Mul -> Some MathIr.Binary.Mul
+        | BinaryOp.Div -> Some MathIr.Binary.Div
+        | BinaryOp.Min -> Some MathIr.Binary.Min
+        | BinaryOp.Max -> Some MathIr.Binary.Max
+        | _ -> None
+
+    let private fieldBinary (ir: MathIr.MathIR) (op: BinaryOp) (a: MathIr.Expr) (b: MathIr.Expr) : Result<MathIr.Expr, string> =
+        match fieldBinaryOp op with
+        | Some k -> Ok (ir.Binary(k, a, b))
+        | None -> Error "operator not valid on fields"
+
+    let private numericUnary (op: UnaryOp) (a: float) : Result<float, string> =
+        match op with
+        | UnaryOp.Neg    -> Ok (-a)
+        | UnaryOp.Sqrt   -> Ok (sqrt a)
+        | UnaryOp.Abs    -> Ok (abs a)
+        | UnaryOp.Square -> Ok (a * a)
+        | UnaryOp.Sin    -> Ok (sin a)
+        | UnaryOp.Cos    -> Ok (cos a)
+        | UnaryOp.Tan    -> Ok (tan a)
+
+    let private fieldUnaryOp (op: UnaryOp) : MathIr.Unary =
+        match op with
+        | UnaryOp.Neg    -> MathIr.Unary.Neg
+        | UnaryOp.Sqrt   -> MathIr.Unary.Sqrt
+        | UnaryOp.Abs    -> MathIr.Unary.Abs
+        | UnaryOp.Square -> MathIr.Unary.Square
+        | UnaryOp.Sin    -> MathIr.Unary.Sin
+        | UnaryOp.Cos    -> MathIr.Unary.Cos
+        | UnaryOp.Tan    -> MathIr.Unary.Tan
+
+    let private axisOf (a: Axis) : MathIr.Axis =
+        match a with
+        | AxisX -> MathIr.Axis.X
+        | AxisY -> MathIr.Axis.Y
+        | AxisZ -> MathIr.Axis.Z
 
     let rec evalExpr (ctx: EvalContext) (e: Expr) : Result<Value, EvalError> =
         match e.Node with
@@ -46,10 +81,22 @@ module Eval =
         | EBool b -> Ok (VBool b)
         | EString s -> Ok (VString s)
         | EVar id ->
-            match envLookup ctx.Env id.Name with
-            | Some v -> Ok v
-            | None ->
-                evalError id.Span (sprintf "unbound identifier '%s'" id.Name)
+            match id.IdentKind with
+            | Internal ->
+                // `@name` is always a builtin handle — never an env binding.
+                // Returning a fresh `VBuiltin` here makes `@sphere`, `@view`,
+                // etc. first-class values that curry through `EApply` /
+                // pipes (`x |> @sphere`).
+                match Builtins.arityOf id.Name with
+                | Some arity ->
+                    Ok (VBuiltin { Name = id.Name; Arity = arity; AccArgs = [] })
+                | None ->
+                    evalError id.Span (sprintf "unknown builtin '@%s'" id.Name)
+            | User ->
+                match envLookup ctx.Env id.Name with
+                | Some v -> Ok v
+                | None ->
+                    evalError id.Span (sprintf "unbound identifier '%s'" id.Name)
         | EPath idents ->
             match idents with
             | [] -> evalError e.Span "empty path"
@@ -73,7 +120,7 @@ module Eval =
                     cur
         | EStackTop ->
             evalError e.Span "stack-top (`pop`) requires a notebook context"
-        | ELambda(param, body) ->
+        | ELambda(param, _paramAnno, body) ->
             Ok (VClosure { Param = param.Name; Body = body; Captured = ctx.Env })
         | EApply(fnExpr, argExpr) ->
             evalExpr ctx fnExpr >>= fun fnVal ->
@@ -83,13 +130,38 @@ module Eval =
         | EList items -> evalList ctx items
         | ETuple items -> evalList ctx items
         | ECall(callee, args) -> evalCall ctx e.Span callee args
-        | EUnary(UnaryOp.Neg, inner) ->
+        | EUnary(op, inner) ->
             evalExpr ctx inner >>= fun v ->
                 match v with
-                | VNumber n -> Ok (VNumber (-n))
-                | VField f -> Ok (VField (ctx.Ir.Unary(MathIr.Unary.Neg, f)))
-                | _ -> evalError e.Span "unary minus expects a number or field"
+                | VNumber n ->
+                    match numericUnary op n with
+                    | Ok r -> Ok (VNumber r)
+                    | Error msg -> evalError e.Span msg
+                | VField f ->
+                    Ok (VField (ctx.Ir.Unary(fieldUnaryOp op, f)))
+                | _ ->
+                    evalError e.Span "unary op expects a number or field"
         | EBinary(op, l, r) -> evalBinary ctx e.Span op l r
+        | EAxis a ->
+            // Spatial axis variable — resolves to the kernel's per-sample
+            // position component. Always wrapped as a Field so it composes
+            // with numeric arithmetic (which lifts numbers to consts).
+            Ok (VField (ctx.Ir.Var(axisOf a)))
+        | ERemapAxes(target, nx, ny, nz) ->
+            evalExpr ctx target >>= fun tv ->
+            evalExpr ctx nx >>= fun xv ->
+            evalExpr ctx ny >>= fun yv ->
+            evalExpr ctx nz >>= fun zv ->
+                let liftField span v =
+                    match v with
+                    | VField f -> Ok f
+                    | VNumber n -> Ok (ctx.Ir.Constant n)
+                    | _ -> evalError span "remap-axes expects field/number operands"
+                liftField e.Span tv >>= fun t ->
+                liftField e.Span xv >>= fun nx ->
+                liftField e.Span yv >>= fun ny ->
+                liftField e.Span zv >>= fun nz ->
+                    Ok (VField (ctx.Ir.RemapAxes(t, nx, ny, nz)))
         | EMatch _ ->
             evalError e.Span "match expressions are not yet supported"
 
@@ -103,8 +175,25 @@ module Eval =
             let result = evalExpr ctx clo.Body
             ctx.Env <- savedEnv
             result
+        | VBuiltin b ->
+            let acc = b.AccArgs @ [ arg ]
+            if List.length acc < b.Arity then
+                Ok (VBuiltin { b with AccArgs = acc })
+            else
+                dispatchBuiltin ctx callSpan b.Name acc
         | _ ->
             evalError callSpan "value is not callable"
+
+    and dispatchBuiltin (ctx: EvalContext) (span: Span) (name: string) (args: Value list) : Result<Value, EvalError> =
+        if Builtins.isSpecial name then
+            match name, args with
+            | "print", [ VString n; v ] -> ctx.Specials.Print span n v
+            | "print", _ -> evalError span "print expects (string, value)"
+            | "debug", [ v ] -> ctx.Specials.Debug span v
+            | _ -> evalError span (sprintf "unexpected arity for special '%s'" name)
+        else
+            let argVals = args |> List.map Builtins.APos
+            Builtins.dispatch ctx name argVals span
 
     and evalBlock (ctx: EvalContext) (stmts: Stmt list) (span: Span) : Result<Value, EvalError> =
         let scope = newEnv (Some ctx.Env)
@@ -170,31 +259,11 @@ module Eval =
         | None -> Ok (List.rev acc)
 
     and evalInternalCall (ctx: EvalContext) (span: Span) (callee: Ident) (args: Arg list) : Result<Value, EvalError> =
+        // `@input` / `@output` / `@view` were retired in favour of
+        // `let import` / `let pub` declarations. The ECall AST shape is
+        // unreachable from parsed sources after the parens-call retirement,
+        // but this dispatcher is kept on disk for `@print` / `@debug`.
         match callee.Name with
-        | "input" ->
-            evalArgs ctx args >>= fun argVals ->
-                let pos =
-                    argVals
-                    |> List.choose (function Builtins.APos v -> Some v | _ -> None)
-                match pos with
-                | [ VString name ] -> ctx.Specials.Input span name
-                | _ -> evalError span "@input expects exactly one string argument"
-        | "output" ->
-            evalArgs ctx args >>= fun argVals ->
-                let pos =
-                    argVals
-                    |> List.choose (function Builtins.APos v -> Some v | _ -> None)
-                match pos with
-                | [ VString name; value ] -> ctx.Specials.Output span name value
-                | _ -> evalError span "@output expects (string, value)"
-        | "view" ->
-            evalArgs ctx args >>= fun argVals ->
-                let pos =
-                    argVals
-                    |> List.choose (function Builtins.APos v -> Some v | _ -> None)
-                match pos with
-                | [ value ] -> ctx.Specials.View span value
-                | _ -> evalError span "@view expects exactly one argument"
         | "print" ->
             evalArgs ctx args >>= fun argVals ->
                 let pos =
@@ -283,6 +352,17 @@ module Eval =
                     Ok v
                 | _ ->
                     Error { Message = "multi-name let bindings are not yet supported"; Span = value.Span }
+        | SImport _ ->
+            // Pre-populated by the notebook driver before this block runs;
+            // the statement itself is a no-op at eval time.
+            Ok VUnit
+        | SExport(name, value) ->
+            // Identical binding behaviour to a single-name `SLet`. The
+            // export mark is read post-eval by the notebook driver from
+            // the AST + final env (see `AstQueries.collectExports`).
+            evalExpr ctx value >>= fun v ->
+                envBind ctx.Env name.Name v
+                Ok v
         | SExpr e -> evalExpr ctx e
         | SDup sp | SSwap sp | SRotate sp ->
             evalError sp "stack operators (dup/swap/rotate) require a notebook context"

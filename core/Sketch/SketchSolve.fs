@@ -93,15 +93,3 @@ module SketchSolve =
 
     let patchSolvedSketchSlots (baseParams: float array) (slots: SlotTable) (sketchId: string) (sketch: ActionSketch) (solvedLocal: float32[]) : float[] =
         overlaySolvedSketch baseParams slots sketchId sketch solvedLocal
-
-    let commitSolvedSketch (sketchId: string) (solvedLocal: float32[]) (doc: Document) : Document =
-        match doc.Actions |> List.tryFind (fun action -> action.Id = sketchId) with
-        | Some { Kind = Sketch(_, _, sketch) } ->
-            let fields = localFields sketch
-            let count = min fields.Length solvedLocal.Length
-
-            ((doc, [ 0 .. count - 1 ])
-             ||> List.fold (fun current index ->
-                 Document.patchParamValue sketchId fields.[index] (VFloat(float solvedLocal.[index])) current))
-        | _ ->
-            doc

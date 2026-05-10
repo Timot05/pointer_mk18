@@ -117,11 +117,12 @@ let install
             dimensionEditingKey <- ""
             dimensionClosing <- false
         | Some editing ->
-            let sketchActionOpt =
-                state.Doc.Actions
-                |> List.tryFind (fun a -> a.Id = editing.SketchId)
-            match sketchActionOpt with
-            | Some { Kind = Sketch(_, _, sketch) } ->
+            let sketchOpt =
+                match SketchAuthoring.trySelectedSketch state.Doc with
+                | Some ctx when ctx.Id = editing.SketchId -> Some ctx.Sketch
+                | _ -> None
+            match sketchOpt with
+            | Some sketch ->
                 match dimensionAnchorForSketch state editing.SketchId sketch editing.ConstraintIndex with
                 | Some anchor ->
                     let sketchFrame =

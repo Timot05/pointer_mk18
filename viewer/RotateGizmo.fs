@@ -63,24 +63,7 @@ let private pushAngleArc
         for i in 0 .. steps - 1 do
             pushLine out (pt i) (pt (i + 1)) angleColour
 
-let contextOf (state: EditorState) : Context option =
-    match state.Doc.SelectedId with
-    | None -> None
-    | Some selId ->
-        match state.Doc.Actions |> List.tryFind (fun a -> a.Id = selId) with
-        | Some { Kind = Rotate _ } ->
-            let xform = Editor.resolveActionTransform state selId
-            let axisLocal = Editor.normalizedRotateAxisLocal state selId
-            let axisWorld = xform.Rot.Rotate(axisLocal).Normalized
-            let basisU, basisV = Editor.orthonormalBasisFromAxis axisWorld
-            Some
-                { ActionId = selId
-                  Origin = xform.Trans
-                  AxisWorld = axisWorld
-                  BasisU = basisU
-                  BasisV = basisV
-                  Angle = Editor.rotateAngleValue state selId }
-        | _ -> None
+let contextOf (_state: EditorState) : Context option = None
 
 let handles : GizmoHandle[] =
     [| GRotateAxis; GRotateAngle |]
@@ -90,11 +73,7 @@ let ephemeralPickables (actionId: ActionId) (baseId: int) : Pickable list =
     |> Array.mapi (fun i h -> PickGizmoHandle(baseId + i, actionId, h))
     |> Array.toList
 
-let ephemeralPickablesForState (state: EditorState) : Pickable list =
-    match state.Doc.SelectedId with
-    | Some id when state.Doc.Actions |> List.exists (fun a -> a.Id = id && (match a.Kind with Rotate _ -> true | _ -> false)) ->
-        ephemeralPickables id state.Compiled.Pickables.Length
-    | _ -> []
+let ephemeralPickablesForState (_state: EditorState) : Pickable list = []
 
 let buildLineVertices (ctx: Context) (worldPerPx: float) : float32[] =
     let out = ResizeArray<float32>()

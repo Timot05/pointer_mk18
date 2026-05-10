@@ -92,12 +92,7 @@ let private activeEditSketchId (state: EditorState) : ActionId option =
                         else None
                     | _ -> None)
             | None -> None
-        match blockId with
-        | Some _ -> blockId
-        | None ->
-            state.Doc.SelectedId
-            |> Option.filter (fun id ->
-                vs.SketchTransforms |> List.exists (fun t -> t.Id = id))
+        blockId
 
 /// Install mouse/dblclick/wheel handlers on the canvas. The `hooks` carry
 /// the async GPU pick (which the render module can't expose without
@@ -208,11 +203,20 @@ let install
                 Pickable.reduceCandidates
                     (pickableById () |> Map.toList |> List.map snd)
                     candidates
+            // Map a synthetic `@block_<n>` sketch id back to a real
+            // BlockId and dispatch `SelectBlock`. Action-anchored sketch
+            // ids no longer route to a selection (no action graph).
+            let selectFromSketchId (sid: string) =
+                if sid.StartsWith "@block_" then
+                    let rest = sid.Substring 7
+                    match System.Int32.TryParse rest with
+                    | true, bid -> Store.dispatch AppStore.store (SelectBlock bid)
+                    | _ -> ()
             match topPickable with
             | Some (PickDimension(_, sid, idx, _)) ->
                 let vs = ViewerPipeline.viewerState AppStore.store.State
                 if not vs.SketchUi.EditMode then
-                    Store.dispatch AppStore.store (SelectAction sid)
+                    selectFromSketchId sid
                     Store.dispatch AppStore.store ToggleSketchEdit
                 Store.dispatch AppStore.store (StartEditingDimension idx)
             | Some p ->
@@ -227,7 +231,7 @@ let install
                 match sketchIdOpt with
                 | Some sid ->
                     let vs = ViewerPipeline.viewerState AppStore.store.State
-                    Store.dispatch AppStore.store (SelectAction sid)
+                    selectFromSketchId sid
                     if not vs.SketchUi.EditMode then
                         Store.dispatch AppStore.store ToggleSketchEdit
                 | None -> ()

@@ -67,20 +67,6 @@ let defaultDraggableOptions =
       FineStep = 0.1
       Normalize = id }
 
-let private signedUnitDraggableOptions =
-    let normalize value =
-        let clamped = max -1.0 (min 1.0 value)
-        if abs clamped <= 0.15 then 0.0 else clamped
-    { defaultDraggableOptions with
-        CoarseStep = 0.02
-        FineStep = 0.005
-        Normalize = normalize }
-
-let draggableOptionsForMode (mode: NumericFieldMode) =
-    match mode with
-    | SignedUnit -> signedUnitDraggableOptions
-    | Default -> defaultDraggableOptions
-
 let rec setupDraggableWithOptions
     (opts: DraggableOptions)
     (elem: HTMLElement)

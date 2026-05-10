@@ -197,16 +197,6 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
 
                 DimensionEditor.install container canvas scene.Camera
 
-                // GPU raymarcher — alternative to the voxel kernel,
-                // toggled at runtime by `state.ViewerMode`. Cheap to
-                // create (empty buffers, no pipeline until first
-                // compile), so we instantiate unconditionally.
-                let raymarch = Raymarch.create scene
-
-                // Iso-line overlay. Runs in both modes; pipeline + buffer
-                // grow on demand.
-                let fieldSlice = FieldSlice.create scene
-
                 // Render loop. Two separate concerns:
                 //   1. Dirty-check — skip the render call entirely when
                 //      nothing visible has changed. rAF stays ticking
@@ -298,8 +288,7 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                         // but it's the cost that blocks the main thread —
                         // which is what the user sees as "frame cost".
                         let renderStart = WebGPU.performanceNow ()
-                        Render.renderFrame scene toolCursor.Value
-                            background.Value (Some raymarch) (Some fieldSlice)
+                        Render.renderFrame scene toolCursor.Value background.Value
                         // Keep the compute-pick geometry buffers in sync
                         // with whatever Render just drew, using the same
                         // `viewState` source. Sketch order inside the

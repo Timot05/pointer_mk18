@@ -61,14 +61,13 @@ let private writeSketchUniforms
     |> Map.ofList
 
 /// Render one frame. Call from a requestAnimationFrame loop in Viewer.
-/// The 3D field can be produced by the Zig-WASM voxel kernel (`background`)
-/// or by the GPU raymarcher (`raymarch`); `state.ViewerMode` selects.
+/// The 3D field is produced by the Zig-WASM voxel kernel (`background`).
+/// The GPU raymarcher path was retired alongside the action graph — its
+/// file (`Raymarch.fs`) stays on disk for future block-targeted work.
 let renderFrame
         (scene: Scene.Scene)
         (toolCursor: (ActionId * float * float) option)
-        (background: Kernel.Background.Background option)
-        (raymarch: Raymarch.Raymarch option)
-        (fieldSlice: FieldSlice.FieldSlice option) =
+        (background: Kernel.Background.Background option) =
     let w : int = scene.Canvas?width
     let h : int = scene.Canvas?height
 
@@ -96,40 +95,19 @@ let renderFrame
 
     let state = AppStore.store.State
 
-    // Raymarch needs its per-block probe + analysis compute passes to
-    // run BEFORE the render pass begins — the fragment reads the
-    // storage buffers those passes write.
-    match state.ViewerMode, raymarch with
-    | Raymarch, Some rm ->
-        Raymarch.update rm state
-        Raymarch.encodeCompute rm encoder
-    | _ -> ()
-
     let colorPass =
         WebGPU.beginRenderPassClearColor encoder colorView 0.996 0.988 0.953 depthView
 
     // Field background — drawn first so every sketch/overlay paints on
-    // top. Either the Zig-WASM voxel kernel or the GPU sphere-marcher,
-    // user-selectable via `state.ViewerMode`.
-    match state.ViewerMode, background, raymarch with
-    | IntervalKernel, Some bg, _ ->
+    // top. Powered by the Zig-WASM voxel kernel.
+    match background with
+    | Some bg ->
         Kernel.Background.update bg
         Kernel.Background.draw bg colorPass
-    | Raymarch, _, Some rm ->
-        Raymarch.draw rm colorPass
-    | _ -> ()
+    | None -> ()
     let model = ViewerPipeline.viewerModel state
     let viewState = ViewerPipeline.viewerState state
 
-    // Field iso-line overlay. Draws on top of the background (z-testing
-    // against the surface) and *behind* sketches (sketches with the same
-    // `less` compare land on top when they're in front of the slice
-    // plane). Runs regardless of viewer mode.
-    match fieldSlice with
-    | Some fs ->
-        FieldSlice.update fs state viewState
-        FieldSlice.draw fs colorPass
-    | None -> ()
     let frameById =
         viewState.SketchTransforms
         |> List.map (fun f -> f.Id, f.Transform)
@@ -140,9 +118,8 @@ let renderFrame
     // draw below looks the offset up by id.
     let sketchOffsets = writeSketchUniforms scene viewState.SketchTransforms
 
-    let isVisible (actionId: string) =
-        Map.tryFind actionId viewState.Visible
-        |> Option.defaultValue true
+    // Action visibility is gone with the action graph; everything renders.
+    let isVisible (_actionId: string) = true
 
     let slots = scene.Slots
 
@@ -195,10 +172,9 @@ let renderFrame
         | Some _, Some frameOffset ->
             let isActiveEditSketch =
                 viewState.SketchUi.EditMode
-                && (state.Doc.SelectedId = Some sketch.Id
-                    || (match state.Doc.SelectedBlockId with
-                        | Some bid -> Server.SketchAuthoring.blockSketchId bid = sketch.Id
-                        | None -> false))
+                && (match state.Doc.SelectedBlockId with
+                    | Some bid -> Server.SketchAuthoring.blockSketchId bid = sketch.Id
+                    | None -> false)
 
             // Per-sketch buffer slot lookup — each category resolves to
             // this sketch's own `Slot` so sketches can't stomp each
@@ -335,12 +311,12 @@ let renderFrame
 
     // ── Color pass: frame gizmos + origin dots (world-space, no frame uniform) ──
     let visibleFrames =
-        viewState.Frames |> List.filter (fun f -> isVisible f.Id)
+        ([] : FrameView list)
 
     let frameGizmoData =
         SketchOverlayRender.buildFramesGizmoBuffer
             visibleFrames viewState.HighlightedTarget viewState.HighlightedTargets
-            state.Doc.SelectedId
+            None
 
     let translateCtx = TranslateGizmo.contextOf state
     let rotateCtx = RotateGizmo.contextOf state

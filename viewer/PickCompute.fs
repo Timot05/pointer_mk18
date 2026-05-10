@@ -690,12 +690,6 @@ let update (pc: PickCompute) (state: EditorState) (viewState: ViewerState) =
 
     // Sketches addressed by id, for fast entity / constraint lookup
     // inside the per-sketch loop below.
-    let actionSketches =
-        state.Doc.Actions
-        |> List.choose (fun a ->
-            match a.Kind with
-            | Sketch(_, _, s) -> Some (a.Id, s)
-            | _ -> None)
     let blockSketches =
         state.Doc.Blocks
         |> List.choose (fun b ->
@@ -703,7 +697,7 @@ let update (pc: PickCompute) (state: EditorState) (viewState: ViewerState) =
             | Server.Lang.Notebook.SketchBody data ->
                 Some (Server.SketchAuthoring.blockSketchId b.Id, data.Sketch)
             | _ -> None)
-    let sketchById = (actionSketches @ blockSketches) |> Map.ofList
+    let sketchById = blockSketches |> Map.ofList
     let loopsBySketch =
         viewState.SketchLoops
         |> List.map (fun sl -> sl.SketchId, sl.Loops)
@@ -760,12 +754,9 @@ let update (pc: PickCompute) (state: EditorState) (viewState: ViewerState) =
         if changed || sb.BindGroup.IsNone then
             sb.BindGroup <- Some(rebuildSketchBindGroup pc sb)
 
-    // Frame origins. Pad the tail with a far-away sentinel so grown or
-    // empty buffers don't read back as a phantom frame at (0,0,0).
-    let visibleFrames =
-        viewState.Frames
-        |> List.filter (fun f ->
-            Map.tryFind f.Id viewState.Visible |> Option.defaultValue true)
+    // Frame origins were action-anchored; with the action graph gone
+    // they're empty.
+    let visibleFrames : FrameView list = []
     let worldPerPx = (2.0 * Camera.viewHalfH pc.Scene.Camera) / max (float pc.Scene.Canvas.height) 1.0
     let origins =
         buildWorldPointPickArray

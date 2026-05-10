@@ -29,10 +29,9 @@ let private store = AppStore.store
 
 let private dispatch msg = Store.dispatch store msg
 
-let private getPaletteState () = DocumentPipeline.paletteView store.State
-let private getDocActionCount () =
-    (DocumentPipeline.documentView store.State).Actions.Length
-let private getPaletteOpen () = (getPaletteState ()).IsOpen
+// Action palette dormant. Block palette state is owned by `BlockList`
+// directly (see `BlockList.togglePalette`).
+let private getPaletteOpen () = false
 
 // --------------------------------------------------------------------------
 // Viewer mount. The F# viewer is now the only viewer; the legacy TS viewer
@@ -54,41 +53,12 @@ let private viewerHost =
 // --------------------------------------------------------------------------
 
 let private onSave () =
-    let model = Editor.serializedModel store.State
-    let json = Fable.Core.JS.JSON.stringify(model, space = 2)
-    let baseName =
-        let trimmed = model.Name.Trim().ToLower()
-        if trimmed = "" || trimmed = "untitled" then "pointer-model" else trimmed
-    let blob = newBlob [| json :> obj |] {| ``type`` = "application/json" |}
-    let url = urlCreateObjectUrl blob
-    let link = document.createElement "a" :?> HTMLAnchorElement
-    link.href <- url
-    link?download <- sprintf "%s.json" baseName
-    link.click ()
-    urlRevokeObjectUrl url
+    // Save / load was action-graph flavoured. Notebook-mode persistence
+    // is a future feature — needs a block-aware on-disk format.
+    console.warn "Save is not implemented in notebook mode"
 
 let private onLoad () =
-    let input = document.createElement "input" :?> Browser.Types.HTMLInputElement
-    input.``type`` <- "file"
-    input.accept <- "application/json,.json"
-    input.addEventListener (
-        "change",
-        fun _ ->
-            let files = input.files
-            if files.length > 0 then
-                let file = files.[0]
-                let reader = FileReader.Create()
-                reader.onload <- (fun _ ->
-                    let text : string = unbox reader.result
-                    try
-                        let parsed = Fable.Core.JS.JSON.parse(text)
-                        let model : SerializedModel = unbox parsed
-                        dispatch (LoadModel model)
-                    with ex ->
-                        console.error ("Failed to load: " + ex.Message))
-                reader.readAsText(file)
-    )
-    input.click ()
+    console.warn "Load is not implemented in notebook mode"
 
 // --------------------------------------------------------------------------
 // Render loop.
@@ -127,7 +97,7 @@ let private actionListSignature (doc: DocumentView) =
 
 let private uiSignature (state: EditorState) =
     sprintf
-        "%A|%A|%A|%A|%A|%A|%A|%A|%A|%A"
+        "%A|%A|%A|%A|%A|%A|%A|%A"
         state.SketchEditMode
         state.SketchTool
         state.SelectedTargets
@@ -136,24 +106,19 @@ let private uiSignature (state: EditorState) =
         state.ConstraintPlacementMode
         state.ConstraintPlacementDraft
         state.ConstraintPlacementCursor
-        // Expansion changes reshape the action list but not the
-        // shell; we still include them in the UI signature so Shell
-        // and the panel stay in sync.
-        state.ExpandedActionIds
-        state.ViewerMode
 
 let mutable private lastCompiled = store.State.Compiled
 let mutable private lastSlotValues = store.State.SlotValues
 let mutable private lastUiSignature = uiSignature store.State
 let initialDocView = DocumentPipeline.documentView store.State
 let mutable private lastActionListSignature = actionListSignature initialDocView
-let mutable private lastSelectedId = store.State.Doc.SelectedId
+let mutable private lastSelectedBlockId = store.State.Doc.SelectedBlockId
 
 let private onStateChange (root: Browser.Types.HTMLElement) () =
     let state = store.State
     let compiledChanged = not (obj.ReferenceEquals(lastCompiled, state.Compiled))
     let slotValuesChanged = not (obj.ReferenceEquals(lastSlotValues, state.SlotValues))
-    let selectionChanged = state.Doc.SelectedId <> lastSelectedId
+    let selectionChanged = state.Doc.SelectedBlockId <> lastSelectedBlockId
     let nextUiSignature = uiSignature state
     let uiChanged = nextUiSignature <> lastUiSignature
     let doc = DocumentPipeline.documentView state
@@ -172,7 +137,7 @@ let private onStateChange (root: Browser.Types.HTMLElement) () =
     lastSlotValues <- state.SlotValues
     lastUiSignature <- nextUiSignature
     lastActionListSignature <- nextActionListSignature
-    lastSelectedId <- state.Doc.SelectedId
+    lastSelectedBlockId <- state.Doc.SelectedBlockId
 
 // --------------------------------------------------------------------------
 // Bootstrap.

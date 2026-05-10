@@ -243,12 +243,7 @@ let private trySelectedSketchFromView (doc: DocumentView) : ActionSketch option 
                 match b.Body with
                 | Server.Lang.Notebook.SketchBody data -> Some data.Sketch
                 | _ -> None)
-    match blockSketch with
-    | Some _ -> blockSketch
-    | None ->
-        doc.SelectedId
-        |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id))
-        |> Option.bind (fun a -> match a.Kind with Sketch(_, _, sketch) -> Some sketch | _ -> None)
+    blockSketch
 
 let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement option =
     if not doc.SketchUi.EditMode then None

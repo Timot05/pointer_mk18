@@ -56,12 +56,13 @@ module SketchAuthoring =
           DimensionPlacementAvailability = Map.empty }
 
     type SelectedSketchContext =
-        { Action: DocAction
+        { Id: string
           Sketch: ActionSketch }
 
     /// Tagged-id format for a sketch sourced from a Notebook SketchBlock.
-    /// Real action ids are simple lowercase identifiers; the `@block_`
-    /// prefix is unique enough to disambiguate without a separate type.
+    /// Notebook is the only sketch host now; the `@block_` prefix is kept
+    /// because the rest of the editor (slot table, pickables) keys off
+    /// strings, not BlockIds.
     let blockSketchId (bid: Server.Lang.Notebook.BlockId) : string =
         sprintf "@block_%d" bid
 
@@ -73,42 +74,19 @@ module SketchAuthoring =
             | _ -> None
         else None
 
-    /// Look up the active sketch. SketchBlocks (selected via
-    /// `Doc.SelectedBlockId`) take priority over selected Sketch actions
-    /// — when a SketchBlock is selected, the panel + tools edit it
-    /// instead. The returned `Action` is synthetic for blocks (with id
-    /// `blockSketchId bid`); `withUpdatedSketch` recognizes the id format
-    /// and routes the write to the right place.
+    /// Look up the active sketch — only SketchBlocks selected via
+    /// `Doc.SelectedBlockId` are sources of truth.
     let trySelectedSketch (doc: Document) =
-        let blockSketch =
-            match doc.SelectedBlockId with
-            | None -> None
-            | Some bid ->
-                doc.Blocks
-                |> List.tryFind (fun b -> b.Id = bid)
-                |> Option.bind (fun b ->
-                    match b.Body with
-                    | Server.Lang.Notebook.SketchBody data ->
-                        let synthetic : DocAction = {
-                            Id = blockSketchId bid
-                            Name = Some b.Name
-                            Kind = Sketch(None, data.Plane, data.Sketch)
-                            Visibility = VVisible
-                        }
-                        Some { Action = synthetic; Sketch = data.Sketch }
-                    | _ -> None)
-        match blockSketch with
-        | Some _ -> blockSketch
-        | None ->
-            match doc.SelectedId with
-            | None -> None
-            | Some id ->
-                doc.Actions
-                |> List.tryFind (fun action -> action.Id = id)
-                |> Option.bind (fun action ->
-                    match action.Kind with
-                    | Sketch(_, _, sketch) -> Some { Action = action; Sketch = sketch }
-                    | _ -> None)
+        match doc.SelectedBlockId with
+        | None -> None
+        | Some bid ->
+            doc.Blocks
+            |> List.tryFind (fun b -> b.Id = bid)
+            |> Option.bind (fun b ->
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data ->
+                    Some { Id = blockSketchId bid; Sketch = data.Sketch }
+                | _ -> None)
 
     let withUpdatedSketch (doc: Document) (sketchId: string) (nextSketch: ActionSketch) =
         match tryParseBlockId sketchId with
@@ -123,18 +101,7 @@ module SketchAuthoring =
                             { b with Body = Server.Lang.Notebook.SketchBody { data with Sketch = nextSketch } }
                         | _ -> b)
             { doc with Blocks = blocks }
-        | None ->
-            match doc.Actions |> List.tryFind (fun action -> action.Id = sketchId) with
-            | Some action ->
-                let nextAction =
-                    { action with
-                        Kind =
-                            match action.Kind with
-                            | Sketch(origin, plane, _) -> Sketch(origin, plane, nextSketch)
-                            | other -> other }
-                Document.updateAction sketchId nextAction doc
-            | None ->
-                doc
+        | None -> doc
 
     let removeConstraintAt (index: int) (sketch: ActionSketch) =
         { sketch with
@@ -753,15 +720,15 @@ module SketchAuthoring =
     let addConstraintFromSelection doc targets kind =
         trySelectedSketch doc
         |> Option.bind (fun ctx ->
-            buildConstraint ctx.Sketch ctx.Action.Id kind targets None
+            buildConstraint ctx.Sketch ctx.Id kind targets None
             |> Option.map (fun constraint_ ->
                 let nextSketch = { ctx.Sketch with Constraints = ctx.Sketch.Constraints @ [ constraint_ ] }
-                withUpdatedSketch doc ctx.Action.Id nextSketch))
+                withUpdatedSketch doc ctx.Id nextSketch))
 
     let placeConstraintFromSelection doc targets placementKind labelPosition =
         trySelectedSketch doc
         |> Option.bind (fun ctx ->
-            buildConstraint ctx.Sketch ctx.Action.Id placementKind targets (Some(labelPosition.X, labelPosition.Y))
+            buildConstraint ctx.Sketch ctx.Id placementKind targets (Some(labelPosition.X, labelPosition.Y))
             |> Option.map (fun constraint_ ->
                 let withLabel =
                     match constraint_ with
@@ -772,7 +739,7 @@ module SketchAuthoring =
                         Angle(aStart, aEnd, bStart, bEnd, lineA, lineB, angle, aReverse, bReverse, ccw, Some labelPosition)
                     | other -> other
                 let nextSketch = { ctx.Sketch with Constraints = ctx.Sketch.Constraints @ [ withLabel ] }
-                withUpdatedSketch doc ctx.Action.Id nextSketch))
+                withUpdatedSketch doc ctx.Id nextSketch))
 
     /// A pending placement's constraint may carry a placeholder distance
     /// (0.0) when the user is about to click; fix it up with the real
@@ -824,10 +791,10 @@ module SketchAuthoring =
             | other -> other
 
         trySelectedSketch doc
-        |> Option.filter (fun ctx -> ctx.Action.Id = pending.SketchId)
+        |> Option.filter (fun ctx -> ctx.Id = pending.SketchId)
         |> Option.map (fun ctx ->
             let nextSketch = { ctx.Sketch with Constraints = ctx.Sketch.Constraints @ [ withLabel ] }
-            withUpdatedSketch doc ctx.Action.Id nextSketch)
+            withUpdatedSketch doc ctx.Id nextSketch)
 
     let availabilityForSelection doc editMode tool placementMode targets placementCursor placementDraft hoveredTarget =
         match trySelectedSketch doc with
@@ -840,25 +807,25 @@ module SketchAuthoring =
                 ConstraintPlacementDraft = None
                 PendingConstraintPlacement = None }
         | Some ctx ->
-            let can kind = buildConstraint ctx.Sketch ctx.Action.Id kind targets None |> Option.isSome
+            let can kind = buildConstraint ctx.Sketch ctx.Id kind targets None |> Option.isSome
             let activeDraft =
                 if editMode then
-                    placementDraft |> Option.filter (fun d -> d.SketchId = ctx.Action.Id && placementMode = Some d.Kind)
+                    placementDraft |> Option.filter (fun d -> d.SketchId = ctx.Id && placementMode = Some d.Kind)
                 else
                     None
-            let hoveredRef = hoveredTarget |> Option.bind (placementRefFromTarget ctx.Action.Id)
+            let hoveredRef = hoveredTarget |> Option.bind (placementRefFromTarget ctx.Id)
             let pendingConstraintPlacement =
                 if editMode then
                     match activeDraft with
                     | Some draft ->
                         pendingConstraintForDraft ctx.Sketch draft hoveredRef placementCursor
-                        |> Option.map (fun constraint_ -> { SketchId = ctx.Action.Id; Constraint = constraint_ })
+                        |> Option.map (fun constraint_ -> { SketchId = ctx.Id; Constraint = constraint_ })
                     | None ->
                         placementMode
                         |> Option.bind (fun kind ->
-                            buildConstraint ctx.Sketch ctx.Action.Id kind targets placementCursor
+                            buildConstraint ctx.Sketch ctx.Id kind targets placementCursor
                             |> Option.map (fun constraint_ ->
-                                { SketchId = ctx.Action.Id
+                                { SketchId = ctx.Id
                                   Constraint = constraint_ }))
                 else
                     None

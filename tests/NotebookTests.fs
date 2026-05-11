@@ -77,6 +77,24 @@ let ``translate referencing an upstream sphere yields a RemapAxes-rooted Field``
     | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]
+let ``mirror symmetric y wraps an upstream field in a RemapAxes node`` () =
+    let nb =
+        notebookOf [
+            nativeBlock 0 "half" "sphere" [ "radius", ArgScalar 1.0 ]
+            nativeBlock 1 "full" "mirror-symmetric-y"
+                [ "rootY", ArgScalar 0.0
+                  "child", ArgRef (Some 0) ]
+        ]
+    let result = NotebookEval.eval nb
+    let be = blockEvalOf 1 result
+    Assert.Equal(None, be.Error)
+    match be.Output with
+    | Some (Value.VField root) ->
+        let rootNode = result.Ir.Nodes.[root.Id]
+        Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
+    | other -> failwithf "expected VField, got %A" other
+
+[<Fact>]
 let ``union of two spheres roots a Min binary node`` () =
     let nb =
         notebookOf [

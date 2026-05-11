@@ -159,6 +159,17 @@ module BlockSpec =
                     body
           ScalarDefaults = Map.ofList [ "x", 0.0; "y", 0.0; "z", 0.0 ] }
 
+    /// `mirror-symmetric-y rootY child` — evaluate the positive/root side
+    /// of `child` on both sides of the XZ plane at `rootY`.
+    let private mirrorSymmetricYSpec : BlockSpec =
+        let rootY = varE "rootY"
+        let child = varE "child"
+        let mirroredY = rootY +. absE (axE AxisY -. rootY)
+        let body = mk (ERemapAxes(child, axE AxisX, mirroredY, axE AxisZ))
+        { Name = "mirror-symmetric-y"
+          Body = lambda [ "rootY", Type.Scalar; "child", Type.Field ] body
+          ScalarDefaults = Map.ofList [ "rootY", 0.0 ] }
+
     /// `union a b` — `min(a, b)`.
     let private unionSpec : BlockSpec =
         let body = minE (varE "a") (varE "b")
@@ -216,6 +227,7 @@ module BlockSpec =
     do register boxSpec
     do register cylinderSpec
     do register translateSpec
+    do register mirrorSymmetricYSpec
     do register unionSpec
     do register intersectSpec
     do register subtractSpec

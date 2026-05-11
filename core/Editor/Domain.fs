@@ -217,9 +217,8 @@ module Document =
               RELine("line0", "p0", "p1") ]
           Constraints = [] }
 
-    /// Boot-time notebook: two sketch guide curves wired into the
-    /// wing-remap preview block, so the initial scene exercises the
-    /// sketch -> curve-distance -> two-body remapped profile path.
+    /// Boot-time notebook: two sketch guide curves wired into the half-wing
+    /// preview block, then mirrored symmetrically across the root XZ plane.
     let private defaultBlocks : Server.Lang.Notebook.Block list =
         [ { Id = 0
             Name = "leading"
@@ -236,13 +235,25 @@ module Document =
             Visibility = Server.Lang.Notebook.VHidden
             SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
           { Id = 2
-            Name = "wing_remap"
+            Name = "half_wing"
             Body =
                 Server.Lang.Notebook.NativeBody(
                     "wing-remap-preview",
                     Map.ofList
                         [ "leading", Server.Lang.Notebook.ArgRef(Some 0)
                           "trailing", Server.Lang.Notebook.ArgRef(Some 1) ])
+            Visibility = Server.Lang.Notebook.VHidden
+            SlicePlane =
+                { Server.Lang.Notebook.defaultSlicePlane with
+                    Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } }
+          { Id = 3
+            Name = "full_wing"
+            Body =
+                Server.Lang.Notebook.NativeBody(
+                    "mirror-symmetric-y",
+                    Map.ofList
+                        [ "rootY", Server.Lang.Notebook.ArgScalar 0.0
+                          "child", Server.Lang.Notebook.ArgRef(Some 2) ])
             Visibility = Server.Lang.Notebook.VIsosurface
             SlicePlane =
                 { Server.Lang.Notebook.defaultSlicePlane with
@@ -251,5 +262,5 @@ module Document =
     let emptyDocument () : Document =
         { Name = "untitled"
           Blocks = defaultBlocks
-          NextBlockId = 3
-          SelectedBlockId = Some 2 }
+          NextBlockId = 4
+          SelectedBlockId = Some 3 }

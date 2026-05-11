@@ -293,6 +293,19 @@ module Builtins =
             let t = (y - g.Y0) / dy
             g.X0 + t * (g.X1 - g.X0)
 
+    let private lineXAtYExpr (ir: MathIr.MathIR) (g: LineGuide) (y: MathIr.Expr) : MathIr.Expr =
+        let dy = g.Y1 - g.Y0
+        if abs dy < 1.0e-9 then ir.Constant g.X0
+        else
+            let slope = (g.X1 - g.X0) / dy
+            ir.Binary(
+                MathIr.Binary.Add,
+                ir.Constant g.X0,
+                ir.Binary(
+                    MathIr.Binary.Mul,
+                    ir.Binary(MathIr.Binary.Sub, y, ir.Constant g.Y0),
+                    ir.Constant slope))
+
     let private tryPointCoords (sketch: Server.ActionSketch) pointId =
         sketch.Entities
         |> List.tryPick (function
@@ -343,8 +356,15 @@ module Builtins =
             // our CurveDistanceAlong sign convention (`curve_x - sample_x`),
             // A = leading - x and B = trailing - x. `-(A+B)/(B-A)` maps
             // leading edge → -1, mid-chord → 0, trailing edge → +1.
-            let clearance = ir.Binary(MathIr.Binary.Sub, dTrailing, dLeading)
-            let midsurface = ir.Binary(MathIr.Binary.Add, dLeading, dTrailing)
+            let y = ir.Y()
+            let leadingX = lineXAtYExpr ir le y
+            let trailingX = lineXAtYExpr ir te y
+            let clearance = ir.Binary(MathIr.Binary.Sub, trailingX, leadingX)
+            let midsurface =
+                ir.Binary(
+                    MathIr.Binary.Sub,
+                    ir.Binary(MathIr.Binary.Add, leadingX, trailingX),
+                    ir.Binary(MathIr.Binary.Mul, ir.Constant 2.0, ir.X()))
             let twoBody =
                 ir.Unary(
                     MathIr.Unary.Neg,
@@ -362,21 +382,52 @@ module Builtins =
                 ir.Binary(MathIr.Binary.Div, localChord, ir.Constant rootChord)
             let scaledZ = ir.Binary(MathIr.Binary.Div, ir.Z(), chordScale)
 
-            // Canonical cambered airfoil-like source profile in x/z, with
-            // x in [-1, 1]. Remapping by `twoBody` handles chord taper and
-            // sweep; remapping z by local/root chord keeps thickness ratio.
+            // Canonical NACA-style source profile in XZ, with x in [-1, 1]
+            // and z as thickness height. Remapping by `twoBody` handles
+            // chord taper and sweep; remapping z by local/root chord keeps
+            // thickness ratio as the chord changes along the span.
             let sx = ir.X()
             let sz = ir.Z()
             let one = ir.Constant 1.0
-            let oneMinusXSq =
+            let zero = ir.Constant 0.0
+            let cRaw =
+                ir.Binary(
+                    MathIr.Binary.Mul,
+                    ir.Binary(MathIr.Binary.Add, sx, one),
+                    ir.Constant 0.5)
+            let c =
+                ir.Binary(
+                    MathIr.Binary.Min,
+                    ir.Binary(MathIr.Binary.Max, cRaw, zero),
+                    one)
+            let c2 = ir.Unary(MathIr.Unary.Square, c)
+            let c3 = ir.Binary(MathIr.Binary.Mul, c2, c)
+            let c4 = ir.Unary(MathIr.Unary.Square, c2)
+            let nacaThicknessShape =
+                let term0 = ir.Binary(MathIr.Binary.Mul, ir.Constant 0.2969, ir.Unary(MathIr.Unary.Sqrt, c))
+                let term1 = ir.Binary(MathIr.Binary.Mul, ir.Constant -0.1260, c)
+                let term2 = ir.Binary(MathIr.Binary.Mul, ir.Constant -0.3516, c2)
+                let term3 = ir.Binary(MathIr.Binary.Mul, ir.Constant 0.2843, c3)
+                let term4 = ir.Binary(MathIr.Binary.Mul, ir.Constant -0.1015, c4)
+                ir.Binary(
+                    MathIr.Binary.Add,
+                    ir.Binary(MathIr.Binary.Add, term0, term1),
+                    ir.Binary(
+                        MathIr.Binary.Add,
+                        ir.Binary(MathIr.Binary.Add, term2, term3),
+                        term4))
+            let thickness =
+                ir.Binary(
+                    MathIr.Binary.Mul,
+                    nacaThicknessShape,
+                    ir.Constant (5.0 * 0.18 * 2.0))
+            let camberShape =
                 ir.Binary(
                     MathIr.Binary.Sub,
                     one,
                     ir.Unary(MathIr.Unary.Square, sx))
             let camber =
-                ir.Binary(MathIr.Binary.Mul, ir.Constant 0.035, oneMinusXSq)
-            let thickness =
-                ir.Binary(MathIr.Binary.Mul, ir.Constant 0.11, oneMinusXSq)
+                ir.Binary(MathIr.Binary.Mul, ir.Constant 0.04, camberShape)
             let chordWindow =
                 ir.Binary(MathIr.Binary.Sub, ir.Unary(MathIr.Unary.Abs, sx), one)
             let heightWindow =

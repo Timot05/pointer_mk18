@@ -134,6 +134,33 @@ module Typecheck =
             collect4 r1 r2 r3 r4 |> Result.map (fun (t, ax, ay, az) ->
                 Tast.mkTExpr (Tast.TERemapAxes(t, ax, ay, az)) Type.Field expr.Span)
 
+        | EFold(op, children) ->
+            // Each child must be a Field (or coerce — numbers lift to fields
+            // via the same path Eval uses). Output is always Field.
+            let results = children |> List.map (checkScalarOrField env)
+            collectList results |> Result.map (fun ts ->
+                Tast.mkTExpr (Tast.TEFold(op, ts)) Type.Field expr.Span)
+
+        | ELineSegment(plane, p0x, p0y, p1x, p1y) ->
+            checkPrimitive env [ p0x; p0y; p1x; p1y ] expr.Span |> Result.map (fun ts ->
+                Tast.mkTExpr (Tast.TELineSegment(plane, ts.[0], ts.[1], ts.[2], ts.[3])) Type.Field expr.Span)
+
+        | ECircle(plane, cx, cy, r) ->
+            checkPrimitive env [ cx; cy; r ] expr.Span |> Result.map (fun ts ->
+                Tast.mkTExpr (Tast.TECircle(plane, ts.[0], ts.[1], ts.[2])) Type.Field expr.Span)
+
+        | EBezierQuadratic(plane, p0x, p0y, p1x, p1y, p2x, p2y) ->
+            checkPrimitive env [ p0x; p0y; p1x; p1y; p2x; p2y ] expr.Span |> Result.map (fun ts ->
+                Tast.mkTExpr (Tast.TEBezierQuadratic(plane, ts.[0], ts.[1], ts.[2], ts.[3], ts.[4], ts.[5])) Type.Field expr.Span)
+
+        | EBezierCubic(plane, p0x, p0y, p1x, p1y, p2x, p2y, p3x, p3y) ->
+            checkPrimitive env [ p0x; p0y; p1x; p1y; p2x; p2y; p3x; p3y ] expr.Span |> Result.map (fun ts ->
+                Tast.mkTExpr (Tast.TEBezierCubic(plane, ts.[0], ts.[1], ts.[2], ts.[3], ts.[4], ts.[5], ts.[6], ts.[7])) Type.Field expr.Span)
+
+        | EArcCenter(plane, sx, sy, ex, ey, cx, cy, cw) ->
+            checkPrimitive env [ sx; sy; ex; ey; cx; cy ] expr.Span |> Result.map (fun ts ->
+                Tast.mkTExpr (Tast.TEArcCenter(plane, ts.[0], ts.[1], ts.[2], ts.[3], ts.[4], ts.[5], cw)) Type.Field expr.Span)
+
         | EBlock stmts ->
             inferBlock env stmts expr.Span
 
@@ -172,6 +199,23 @@ module Typecheck =
                 else Error [ TypeMismatch(expected, ti.Type, expr.Span) ])
 
     // ── Helpers used by infer ──────────────────────────────────────────────
+
+    /// Accept Scalar or Field for any child position that lifts to a
+    /// MathIR expression (numbers → const nodes; fields pass through).
+    /// Mirrors `Eval.liftToExpr`.
+    and private checkScalarOrField (env: TypeEnv) (e: Expr) : Result<Tast.TExpr, TypeError list> =
+        infer env e |> Result.bind (fun te ->
+            match te.Type with
+            | Type.Scalar | Type.Field -> Ok te
+            | other -> Error [ TypeMismatch(Type.Field, other, e.Span) ])
+
+    /// Check each child as Scalar-or-Field and return them in source order.
+    and private checkPrimitive
+            (env: TypeEnv)
+            (children: Expr list)
+            (_span: Span) : Result<Tast.TExpr array, TypeError list> =
+        let results = children |> List.map (checkScalarOrField env)
+        collectList results |> Result.map List.toArray
 
     and private inferApply (env: TypeEnv) (fn: Expr) (arg: Expr) (span: Span) =
         infer env fn |> Result.bind (fun tFn ->

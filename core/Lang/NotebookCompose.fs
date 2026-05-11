@@ -92,6 +92,225 @@ module NotebookCompose =
     /// UI that this block has a missing input.
     let [<Literal>] private UNWIRED_PLACEHOLDER = "<unwired>"
 
+    // ── from-sketch lowering ───────────────────────────────────────────────
+
+    let private planeMap (p: Server.SketchPlane) : MathIr.Plane =
+        match p with
+        | Server.XY -> MathIr.Plane.XY
+        | Server.XZ -> MathIr.Plane.XZ
+        | Server.YZ -> MathIr.Plane.YZ
+
+    /// Build the `Map<string, (x, y)>` of REPoint coords keyed by entity id.
+    let private pointCoordTable (sketch: Server.ActionSketch) : Map<string, float * float> =
+        sketch.Entities
+        |> List.choose (function
+            | Server.REPoint(id, x, y) -> Some (id, (x, y))
+            | _ -> None)
+        |> Map.ofList
+
+    /// Walk the sketch's entities and emit one AST primitive node per
+    /// line/circle. Bezier and arc entities are skipped (current kernel
+    /// support matches the legacy `fromSketchImpl`); they can be plugged
+    /// in here as `EBezier*` / `EArcCenter` nodes when needed.
+    let private lowerSketchToPrimitives
+            (sp: Span)
+            (sketch: Server.ActionSketch)
+            (plane: MathIr.Plane) : Expr list =
+        let pts = pointCoordTable sketch
+        let numAt (x: float) : Expr = numEAt sp x
+        let lookup id = Map.tryFind id pts
+        sketch.Entities
+        |> List.choose (function
+            | Server.RELine(_, startId, endId) ->
+                match lookup startId, lookup endId with
+                | Some (sx, sy), Some (ex, ey) ->
+                    Some (mkAt sp (ELineSegment(plane, numAt sx, numAt sy, numAt ex, numAt ey)))
+                | _ -> None
+            | Server.RECircle(_, centerId, radius) ->
+                match lookup centerId with
+                | Some (cx, cy) ->
+                    Some (mkAt sp (ECircle(plane, numAt cx, numAt cy, numAt radius)))
+                | None -> None
+            | _ -> None)
+
+    // ── Signed distance for closed loops ──────────────────────────────────
+    //
+    // A closed-loop sketch should render as a filled region — negative
+    // inside, positive outside. After Phase 3 the kernel's
+    // `SketchPath(closed=true)` shortcut went away; we rebuild the
+    // equivalent in pure AST:
+    //
+    //   unsigned     = fold(Min, [primitive_distance(seg_i)])
+    //   total_wind   = fold(Sum, [atan2(cross_i, dot_i)])
+    //   sign_flip    = -compare(|total_wind|, π)   // +1 outside, -1 inside
+    //   signed       = unsigned * sign_flip
+    //
+    // The winding-angle math per line segment is the classic 2D winding
+    // contribution: `atan2((a-p)×(b-p), (a-p)·(b-p))`. Summed over a
+    // closed polygon it lands at ±2π inside and 0 outside, so the
+    // `compare(|sum|, π)` threshold flips the sign cleanly.
+    //
+    // Single-circle loops collapse to a direct `sqrt((x-cx)² + (y-cy)²) - r`
+    // (the analytic signed disk). Cheaper, exact, no `atan2` needed.
+
+    let private planeAxisExprs (sp: Span) (plane: MathIr.Plane) : Expr * Expr =
+        let xa, ya =
+            match plane with
+            | MathIr.Plane.XY -> AxisX, AxisY
+            | MathIr.Plane.XZ -> AxisX, AxisZ
+            | MathIr.Plane.YZ -> AxisY, AxisZ
+            | _ -> AxisX, AxisY
+        mkAt sp (EAxis xa), mkAt sp (EAxis ya)
+
+    let private entityId (e: Server.RenderEntity) : string =
+        match e with
+        | Server.REPoint(id, _, _) -> id
+        | Server.RELine(id, _, _) -> id
+        | Server.RECircle(id, _, _) -> id
+        | Server.REArc(id, _, _, _) -> id
+
+    /// Build the AST winding-angle contribution for a single line segment,
+    /// seen from the kernel's `(x, y)` sample position in `plane`.
+    /// `atan2((a-p)×(b-p), (a-p)·(b-p))`.
+    let private lineWindingAst (sp: Span) (plane: MathIr.Plane) (sx: float) (sy: float) (ex: float) (ey: float) : Expr =
+        let (px, py) = planeAxisExprs sp plane
+        let numA v = numEAt sp v
+        let bop op a b = mkAt sp (EBinary(op, a, b))
+        let dxA = bop BinaryOp.Sub (numA sx) px
+        let dyA = bop BinaryOp.Sub (numA sy) py
+        let dxB = bop BinaryOp.Sub (numA ex) px
+        let dyB = bop BinaryOp.Sub (numA ey) py
+        let cross = bop BinaryOp.Sub (bop BinaryOp.Mul dxA dyB) (bop BinaryOp.Mul dyA dxB)
+        let dot   = bop BinaryOp.Add (bop BinaryOp.Mul dxA dxB) (bop BinaryOp.Mul dyA dyB)
+        bop BinaryOp.Atan2 cross dot
+
+    /// Analytic signed disk distance: `sqrt((x-cx)² + (y-cy)²) - r`.
+    let private circleSignedAst (sp: Span) (plane: MathIr.Plane) (cx: float) (cy: float) (r: float) : Expr =
+        let (px, py) = planeAxisExprs sp plane
+        let numA v = numEAt sp v
+        let bop op a b = mkAt sp (EBinary(op, a, b))
+        let uop op a = mkAt sp (EUnary(op, a))
+        let dx = bop BinaryOp.Sub px (numA cx)
+        let dy = bop BinaryOp.Sub py (numA cy)
+        let rsq = bop BinaryOp.Add (uop UnaryOp.Square dx) (uop UnaryOp.Square dy)
+        bop BinaryOp.Sub (uop UnaryOp.Sqrt rsq) (numA r)
+
+    /// Wrap `unsigned` with the sign flip computed from `windings`:
+    /// `signed = unsigned * (-compare(|sum windings|, π))`.
+    /// `-compare(...)` is `+1` outside (compare = -1), `-1` inside
+    /// (compare = +1), and `0` on the boundary (compare = 0).
+    let private signedFromWindings (sp: Span) (unsigned: Expr) (windings: Expr list) : Expr =
+        let bop op a b = mkAt sp (EBinary(op, a, b))
+        let uop op a = mkAt sp (EUnary(op, a))
+        let total = mkAt sp (EFold(MathIr.FoldOp.Sum, windings))
+        let absT = uop UnaryOp.Abs total
+        let pi = numEAt sp System.Math.PI
+        let signFlip = uop UnaryOp.Neg (bop BinaryOp.Compare absT pi)
+        bop BinaryOp.Mul unsigned signFlip
+
+    /// Build a per-loop AST expression. Returns `None` if the loop is
+    /// degenerate (no line/circle entities); the caller falls back to
+    /// per-entity unsigned primitives in that case.
+    let private buildLoopExpr
+            (sp: Span)
+            (plane: MathIr.Plane)
+            (entitiesById: Map<string, Server.RenderEntity>)
+            (pointCoords: Map<string, float * float>)
+            (loop: Server.SketchLoop) : Expr option =
+        let entitiesOfLoop =
+            loop.EntityIds
+            |> List.choose (fun id -> Map.tryFind id entitiesById)
+        // Single-circle special case: emit analytic signed disk.
+        match entitiesOfLoop with
+        | [ Server.RECircle(_, centerId, radius) ] ->
+            match Map.tryFind centerId pointCoords with
+            | Some (cx, cy) -> Some (circleSignedAst sp plane cx cy radius)
+            | None -> None
+        | _ ->
+            // Build unsigned primitives + per-line winding contributions in
+            // the same pass. If any non-line entity is present, we can't
+            // compute a winding sum, so fall back to unsigned-only for the
+            // whole loop.
+            let mutable allLines = true
+            let unsigned = ResizeArray<Expr>()
+            let windings = ResizeArray<Expr>()
+            for ent in entitiesOfLoop do
+                match ent with
+                | Server.RELine(_, startId, endId) ->
+                    match Map.tryFind startId pointCoords, Map.tryFind endId pointCoords with
+                    | Some (sx, sy), Some (ex, ey) ->
+                        unsigned.Add (mkAt sp (ELineSegment(plane, numEAt sp sx, numEAt sp sy, numEAt sp ex, numEAt sp ey)))
+                        windings.Add (lineWindingAst sp plane sx sy ex ey)
+                    | _ -> ()
+                | Server.RECircle(_, centerId, radius) ->
+                    match Map.tryFind centerId pointCoords with
+                    | Some (cx, cy) ->
+                        unsigned.Add (mkAt sp (ECircle(plane, numEAt sp cx, numEAt sp cy, numEAt sp radius)))
+                        allLines <- false
+                    | None -> ()
+                | _ ->
+                    allLines <- false
+            if unsigned.Count = 0 then None
+            else
+                let unsignedExpr =
+                    if unsigned.Count = 1 then unsigned.[0]
+                    else mkAt sp (EFold(MathIr.FoldOp.Min, List.ofSeq unsigned))
+                if allLines && windings.Count >= 2 then
+                    Some (signedFromWindings sp unsignedExpr (List.ofSeq windings))
+                else
+                    // Mixed-shape loop (e.g. line + circle): the winding
+                    // sum isn't well-defined here, so emit unsigned only.
+                    Some unsignedExpr
+
+    /// Build the SLet RHS for a from-sketch block. Detects closed loops
+    /// and emits signed-distance for each; non-loop entities contribute
+    /// as unsigned primitives. Everything is combined via `fold(Min)`.
+    /// Empty sketch → an unwired placeholder so the typecheck path
+    /// surfaces the same kind of error a missing input would.
+    ///
+    /// Public because `NotebookEval` reuses it: both drivers now share
+    /// the same `sketch → AST → Eval → MathIR` pipeline, so sketch
+    /// semantics live in one place. The legacy MathIR-direct mirror
+    /// (`lowerSketchData`) was retired alongside the duplicate
+    /// `lineWindingIr` / `circleSignedIr` helpers.
+    let buildFromSketchBody
+            (sp: Span)
+            (sketchData: Notebook.SketchData) : Expr =
+        let plane = planeMap sketchData.Plane
+        let entities = sketchData.Sketch.Entities
+        let pts = pointCoordTable sketchData.Sketch
+        let entitiesById =
+            entities |> List.map (fun e -> entityId e, e) |> Map.ofList
+        let loops = Server.SketchLoops.detectLoops entities
+        let loopEntityIds =
+            loops |> List.collect (fun l -> l.EntityIds) |> Set.ofList
+
+        let loopExprs =
+            loops |> List.choose (buildLoopExpr sp plane entitiesById pts)
+
+        // Non-loop line/circle entities still contribute their unsigned
+        // distance to the field so dangling sketches render too.
+        let orphanExprs =
+            entities
+            |> List.filter (fun e -> not (Set.contains (entityId e) loopEntityIds))
+            |> List.choose (function
+                | Server.RELine(_, startId, endId) ->
+                    match Map.tryFind startId pts, Map.tryFind endId pts with
+                    | Some (sx, sy), Some (ex, ey) ->
+                        Some (mkAt sp (ELineSegment(plane, numEAt sp sx, numEAt sp sy, numEAt sp ex, numEAt sp ey)))
+                    | _ -> None
+                | Server.RECircle(_, centerId, radius) ->
+                    match Map.tryFind centerId pts with
+                    | Some (cx, cy) ->
+                        Some (mkAt sp (ECircle(plane, numEAt sp cx, numEAt sp cy, numEAt sp radius)))
+                    | None -> None
+                | _ -> None)
+
+        match loopExprs @ orphanExprs with
+        | [] -> varEAt sp UNWIRED_PLACEHOLDER
+        | [ single ] -> single
+        | many -> mkAt sp (EFold(MathIr.FoldOp.Min, many))
+
     // ── Type signatures for native specs ───────────────────────────────────
 
     /// Curried function type derived from a spec's typed interface.
@@ -130,12 +349,15 @@ module NotebookCompose =
 
         // Pre-seed sketch block names in the type env. They never become
         // let-bindings; downstream `EVar` lookups resolve against this
-        // entry directly.
+        // entry directly. Stash the SketchData by block id so the
+        // from-sketch lowering can reach it without re-walking blocks.
+        let mutable sketchByBlockId : Map<BlockId, Notebook.SketchData> = Map.empty
         for block in notebook.Blocks do
             match block.Body with
-            | SketchBody _ ->
+            | SketchBody data ->
                 typeEnv <- Map.add block.Name Type.Sketch typeEnv
                 blockOutputs <- Map.add block.Id Type.Sketch blockOutputs
+                sketchByBlockId <- Map.add block.Id data sketchByBlockId
             | _ -> ()
 
         // Build per-block let-bindings for the native blocks. Walk in
@@ -160,6 +382,31 @@ module NotebookCompose =
                     // typechecker reports it cleanly.
                     let call = applyChainAt bsp (varEAt bsp specName) []
                     stmts.Add(SLet([ userAt block.Name bsp ], call))
+                | Some spec when specName = "from-sketch" ->
+                    // Lower `from-sketch sketch` to an inlined `EFold(Min,
+                    // [primitives...])` AST built from the referenced
+                    // SketchBody. The spec itself never executes — it only
+                    // contributes its `Sketch -> Field` type signature to
+                    // the env so callers that mis-wire it still typecheck.
+                    let body =
+                        match Map.tryFind "sketch" args with
+                        | Some (ArgRef (Some refId)) ->
+                            match Map.tryFind refId sketchByBlockId with
+                            | Some data -> buildFromSketchBody bsp data
+                            | None -> varEAt bsp UNWIRED_PLACEHOLDER
+                        | _ -> varEAt bsp UNWIRED_PLACEHOLDER
+                    stmts.Add(SLet([ userAt block.Name bsp ], body))
+
+                    let outTy = specOutputType spec
+                    blockOutputs <- Map.add block.Id outTy blockOutputs
+                    let surfaceVisible =
+                        match block.Visibility with
+                        | VIsosurface           -> true
+                        | VHidden | VFieldLines -> false
+                    if outTy = Type.Field && surfaceVisible then
+                        visibleFieldNames.Add block.Name
+                        visibleFieldBlockIds.Add block.Id
+                        visibleFieldKinds.Add block.Visibility
                 | Some spec ->
                     let typed = BlockSpec.typedInterface spec
 

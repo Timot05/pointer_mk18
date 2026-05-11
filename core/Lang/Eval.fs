@@ -31,6 +31,11 @@ module Eval =
         | BinaryOp.Div -> Ok (a / b)
         | BinaryOp.Min -> Ok (min a b)
         | BinaryOp.Max -> Ok (max a b)
+        | BinaryOp.Atan2 -> Ok (System.Math.Atan2(a, b))
+        | BinaryOp.Compare ->
+            if a < b then Ok -1.0
+            elif a = b then Ok 0.0
+            else Ok 1.0
         | _ -> Error "operator not valid on numbers"
 
     let private fieldBinaryOp (op: BinaryOp) : MathIr.Binary option =
@@ -41,6 +46,8 @@ module Eval =
         | BinaryOp.Div -> Some MathIr.Binary.Div
         | BinaryOp.Min -> Some MathIr.Binary.Min
         | BinaryOp.Max -> Some MathIr.Binary.Max
+        | BinaryOp.Atan2 -> Some MathIr.Binary.Atan2
+        | BinaryOp.Compare -> Some MathIr.Binary.Compare
         | _ -> None
 
     let private fieldBinary (ir: MathIr.MathIR) (op: BinaryOp) (a: MathIr.Expr) (b: MathIr.Expr) : Result<MathIr.Expr, string> =
@@ -73,6 +80,15 @@ module Eval =
         | AxisX -> MathIr.Axis.X
         | AxisY -> MathIr.Axis.Y
         | AxisZ -> MathIr.Axis.Z
+
+    /// Coerce a Value to a MathIr.Expr. Numbers lift to Const; fields pass
+    /// through; everything else errors. Used by the primitive-constructor
+    /// and fold node evaluators.
+    let private liftToExpr (ir: MathIr.MathIR) (span: Span) (v: Value) : Result<MathIr.Expr, EvalError> =
+        match v with
+        | VField e -> Ok e
+        | VNumber n -> Ok (ir.Constant n)
+        | _ -> evalError span "expected number or field"
 
     let rec evalExpr (ctx: EvalContext) (e: Expr) : Result<Value, EvalError> =
         match e.Node with
@@ -162,6 +178,23 @@ module Eval =
                 liftField e.Span yv >>= fun ny ->
                 liftField e.Span zv >>= fun nz ->
                     Ok (VField (ctx.Ir.RemapAxes(t, nx, ny, nz)))
+        | EFold(op, children) ->
+            evalFold ctx e.Span op children
+        | ELineSegment(plane, p0x, p0y, p1x, p1y) ->
+            evalPrimitive ctx e.Span [ p0x; p0y; p1x; p1y ] (fun xs ->
+                ctx.Ir.LineSegmentN(plane, xs.[0], xs.[1], xs.[2], xs.[3]))
+        | ECircle(plane, cx, cy, r) ->
+            evalPrimitive ctx e.Span [ cx; cy; r ] (fun xs ->
+                ctx.Ir.CircleN(plane, xs.[0], xs.[1], xs.[2]))
+        | EBezierQuadratic(plane, p0x, p0y, p1x, p1y, p2x, p2y) ->
+            evalPrimitive ctx e.Span [ p0x; p0y; p1x; p1y; p2x; p2y ] (fun xs ->
+                ctx.Ir.BezierQuadraticN(plane, xs.[0], xs.[1], xs.[2], xs.[3], xs.[4], xs.[5]))
+        | EBezierCubic(plane, p0x, p0y, p1x, p1y, p2x, p2y, p3x, p3y) ->
+            evalPrimitive ctx e.Span [ p0x; p0y; p1x; p1y; p2x; p2y; p3x; p3y ] (fun xs ->
+                ctx.Ir.BezierCubicN(plane, xs.[0], xs.[1], xs.[2], xs.[3], xs.[4], xs.[5], xs.[6], xs.[7]))
+        | EArcCenter(plane, sx, sy, ex, ey, cx, cy, cw) ->
+            evalPrimitive ctx e.Span [ sx; sy; ex; ey; cx; cy ] (fun xs ->
+                ctx.Ir.ArcCenterN(plane, xs.[0], xs.[1], xs.[2], xs.[3], xs.[4], xs.[5], cw))
         | EMatch _ ->
             evalError e.Span "match expressions are not yet supported"
 
@@ -194,6 +227,48 @@ module Eval =
         else
             let argVals = args |> List.map Builtins.APos
             Builtins.dispatch ctx name argVals span
+
+    /// Evaluate each coord child and build the primitive via `mkExpr`.
+    /// Each child must be a number or a field — anything else errors.
+    and private evalPrimitive
+            (ctx: EvalContext)
+            (span: Span)
+            (children: Expr list)
+            (mkExpr: MathIr.Expr array -> MathIr.Expr) : Result<Value, EvalError> =
+        let mutable err : EvalError option = None
+        let acc = ResizeArray<MathIr.Expr>()
+        for child in children do
+            if err.IsNone then
+                match evalExpr ctx child with
+                | Error e -> err <- Some e
+                | Ok v ->
+                    match liftToExpr ctx.Ir span v with
+                    | Ok ex -> acc.Add ex
+                    | Error e -> err <- Some e
+        match err with
+        | Some e -> Error e
+        | None -> Ok (VField (mkExpr (acc.ToArray())))
+
+    /// Evaluate every fold child to a Field expr (numbers lift to consts),
+    /// then call `ir.Fold(op, [...])`.
+    and private evalFold
+            (ctx: EvalContext)
+            (span: Span)
+            (op: MathIr.FoldOp)
+            (children: Expr list) : Result<Value, EvalError> =
+        let mutable err : EvalError option = None
+        let acc = ResizeArray<MathIr.Expr>()
+        for child in children do
+            if err.IsNone then
+                match evalExpr ctx child with
+                | Error e -> err <- Some e
+                | Ok v ->
+                    match liftToExpr ctx.Ir span v with
+                    | Ok ex -> acc.Add ex
+                    | Error e -> err <- Some e
+        match err with
+        | Some e -> Error e
+        | None -> Ok (VField (ctx.Ir.Fold(op, List.ofSeq acc)))
 
     and evalBlock (ctx: EvalContext) (stmts: Stmt list) (span: Span) : Result<Value, EvalError> =
         let scope = newEnv (Some ctx.Env)

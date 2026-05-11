@@ -5,19 +5,24 @@ namespace Server.Lang
 // `kernel/src/math_ir_decode.zig`.
 //
 // Header (32 bytes, MIR2):
-//   u32 magic = "MIR2"  u32 version = 3
+//   u32 magic = "MIR2"  u32 version = 5
 //   u32 node_count       u32 affine_count
-//   u32 intrinsic_count  u32 primitive_count
-//   u32 root             u32 view_count
+//   u32 intrinsic_count  u32 root
+//   u32 view_count       u32 node_ref_count
 //
 // Sections (in order): nodes × 32, affines × 48, intrinsics × 48,
-// primitives × 64, views × 12.
+// node_refs × 4, views × 12.
 //
 // View entry (12 bytes): { i32 expr_id; u32 palette_idx; u32 kind; }.
 // One per visible Field block. `kind` selects the renderer shading mode
-// (0 = opaque surface, 1 = field-lines, 2 = isosurface). The kernel
-// renders each view separately to determine the winning block per pixel
-// for colour assignment.
+// (0 = opaque surface, 1 = field-lines, 2 = isosurface).
+//
+// node_refs is a packed i32 array of child node ids. Used by Fold
+// (`A`=start, `B`=count), the sketch-primitive subtree node kinds
+// (LineSegment / Circle / Bezier* / ArcCenter), and the
+// CurveDistanceAlong intrinsic (PrimitiveStart / PrimitiveCount fields
+// reused as a NodeRefs window). The legacy Primitives side table was
+// retired in Phase 3.
 //
 // All fields little-endian. Per-element layouts mirror the in-memory MathIR
 // types byte-for-byte where natural; explicit padding keeps section strides
@@ -31,13 +36,13 @@ module MathIrCodec =
 
     /// "MIR2" little-endian.
     let MAGIC : uint32 = 0x4D495232u
-    let VERSION : uint32 = 3u
+    let VERSION : uint32 = 5u
 
     let private HEADER_BYTES = 32
     let private NODE_BYTES = 32
     let private AFFINE_BYTES = 48
     let private INTRINSIC_BYTES = 48
-    let private PRIMITIVE_BYTES = 64
+    let private NODE_REF_BYTES = 4
     let private VIEW_BYTES = 12
 
     [<Emit("new Uint8Array($0)")>]
@@ -97,24 +102,6 @@ module MathIrCodec =
         setI32 dv (off + 40) i.Az
         // bytes 44..47 padding
 
-    let private writePrimitive (dv: obj) (off: int) (p: MathIr.SketchPrimitive) =
-        setI32 dv (off + 0)  (int p.Kind)
-        setI32 dv (off + 4)  p.P0.XSlot
-        setI32 dv (off + 8)  p.P0.YSlot
-        setI32 dv (off + 12) p.P1.XSlot
-        setI32 dv (off + 16) p.P1.YSlot
-        setI32 dv (off + 20) p.P2.XSlot
-        setI32 dv (off + 24) p.P2.YSlot
-        setI32 dv (off + 28) p.P3.XSlot
-        setI32 dv (off + 32) p.P3.YSlot
-        setI32 dv (off + 36) p.Radius
-        setI32 dv (off + 40) p.Chord
-        setI32 dv (off + 44) p.MaxCamber
-        setI32 dv (off + 48) p.CamberPos
-        setI32 dv (off + 52) p.Thickness
-        setU8  dv (off + 56) (if p.Clockwise then 1 else 0)
-        // bytes 57..63 padding
-
     /// Compute the total byte size of a (MathIR, root, views) encoding
     /// without allocating. Useful for tests and capacity assertions.
     let byteSize (ir: MathIr.MathIR) (views: (MathIr.Expr * uint32 * uint32) list) : int =
@@ -122,7 +109,7 @@ module MathIrCodec =
         + ir.Nodes.Count * NODE_BYTES
         + ir.Affines.Count * AFFINE_BYTES
         + ir.Intrinsics.Count * INTRINSIC_BYTES
-        + ir.Primitives.Count * PRIMITIVE_BYTES
+        + ir.NodeRefs.Count * NODE_REF_BYTES
         + List.length views * VIEW_BYTES
 
     /// Serialize (ir, root, views) to a Uint8Array suitable for
@@ -139,7 +126,7 @@ module MathIrCodec =
         let nodeCount = ir.Nodes.Count
         let affineCount = ir.Affines.Count
         let intrinsicCount = ir.Intrinsics.Count
-        let primitiveCount = ir.Primitives.Count
+        let nodeRefCount = ir.NodeRefs.Count
         let viewCount = List.length views
 
         // Header
@@ -148,9 +135,9 @@ module MathIrCodec =
         setU32 dv 8  (uint32 nodeCount)
         setU32 dv 12 (uint32 affineCount)
         setU32 dv 16 (uint32 intrinsicCount)
-        setU32 dv 20 (uint32 primitiveCount)
-        setU32 dv 24 (uint32 root.Id)
-        setU32 dv 28 (uint32 viewCount)
+        setU32 dv 20 (uint32 root.Id)
+        setU32 dv 24 (uint32 viewCount)
+        setU32 dv 28 (uint32 nodeRefCount)
 
         // Sections
         let mutable off = HEADER_BYTES
@@ -163,9 +150,9 @@ module MathIrCodec =
         for i in 0 .. intrinsicCount - 1 do
             writeIntrinsic dv off ir.Intrinsics.[i]
             off <- off + INTRINSIC_BYTES
-        for i in 0 .. primitiveCount - 1 do
-            writePrimitive dv off ir.Primitives.[i]
-            off <- off + PRIMITIVE_BYTES
+        for i in 0 .. nodeRefCount - 1 do
+            setI32 dv off ir.NodeRefs.[i]
+            off <- off + NODE_REF_BYTES
         for (expr, paletteIdx, kind) in views do
             setI32 dv off expr.Id
             setU32 dv (off + 4) paletteIdx

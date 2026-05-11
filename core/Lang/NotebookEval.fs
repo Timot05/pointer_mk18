@@ -110,6 +110,52 @@ module NotebookEval =
                 let v = VSketch { Sketch = data.Sketch; Plane = data.Plane }
                 outputs <- Map.add block.Id v outputs
                 perBlock.Add { Id = block.Id; Output = Some v; Error = None }
+            | NativeBody(specName, args) when specName = "from-sketch" ->
+                // From-sketch is special-cased: the spec body is a
+                // placeholder (an empty fold). Resolve the upstream
+                // SketchBody, lower it through the SAME AST path that
+                // `NotebookCompose.compose` uses, then evaluate the
+                // resulting AST against the shared MathIR. This keeps
+                // sketch semantics in one place
+                // (`NotebookCompose.buildFromSketchBody`) — both drivers
+                // go: `sketch data → AST → Eval → MathIR`.
+                let sketchData =
+                    match Map.tryFind "sketch" args with
+                    | Some (ArgRef (Some refId)) ->
+                        match Map.tryFind refId outputs with
+                        | Some (VSketch sv) -> Some { Sketch = sv.Sketch; Plane = sv.Plane }
+                        | _ -> None
+                    | _ -> None
+                match sketchData with
+                | None ->
+                    perBlock.Add
+                        { Id = block.Id
+                          Output = None
+                          Error =
+                              Some
+                                  { Message = "from-sketch: 'sketch' arg is missing or not a Sketch"
+                                    Span = { Start = 0; Stop = 0 } } }
+                | Some data ->
+                    let body =
+                        NotebookCompose.buildFromSketchBody
+                            { Start = 0; Stop = 0 } data
+                    match Eval.evalExpr ctx body with
+                    | Ok (VField _ as v) ->
+                        outputs <- Map.add block.Id v outputs
+                        perBlock.Add { Id = block.Id; Output = Some v; Error = None }
+                    | Ok _ ->
+                        perBlock.Add
+                            { Id = block.Id
+                              Output = None
+                              Error =
+                                  Some
+                                      { Message = "from-sketch: lowered AST did not evaluate to a Field"
+                                        Span = { Start = 0; Stop = 0 } } }
+                    | Error e ->
+                        perBlock.Add
+                            { Id = block.Id
+                              Output = None
+                              Error = Some e }
             | NativeBody(specName, args) ->
                 match BlockSpec.tryFind specName with
                 | None ->

@@ -157,49 +157,9 @@ let ``eval: closure captures and applies`` () =
     Assert.Equal(Value.VNumber 6.0, v)
 
 [<Fact>]
-let ``eval: sphere builtin produces a Field with the expected node-tail shape`` () =
-    let ir, v = runOk "@sphere 1.0"
-    match v with
-    | Value.VField root ->
-        // sphere = sqrt(x²+y²+z²) - r → root must be a Sub binary node
-        Assert.True(ir.Nodes.Count >= 7, sprintf "expected ≥7 nodes, got %d" ir.Nodes.Count)
-        let rootNode = ir.Nodes.[root.Id]
-        Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
-        Assert.Equal(int MathIr.Binary.Sub, rootNode.Op)
-    | other -> failwithf "expected VField, got %A" other
-
-[<Fact>]
-let ``eval: translate wraps target in a RemapAxes node`` () =
-    let ir, v = runOk "@translate 1 0 0 (@sphere 1)"
-    match v with
-    | Value.VField root ->
-        let rootNode = ir.Nodes.[root.Id]
-        Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
-    | other -> failwithf "expected VField, got %A" other
-
-[<Fact>]
 let ``eval: pipe sugar applies to a closure`` () =
     let _, v = runOk "let inc = fun x -> x + 1 end\n5 |> inc"
     Assert.Equal(Value.VNumber 6.0, v)
-
-[<Fact>]
-let ``eval: union of two spheres roots a Min binary node`` () =
-    let ir, v = runOk "@union (@sphere 1) (@sphere 2)"
-    match v with
-    | Value.VField root ->
-        let rootNode = ir.Nodes.[root.Id]
-        Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
-        Assert.Equal(int MathIr.Binary.Min, rootNode.Op)
-    | other -> failwithf "expected VField, got %A" other
-
-[<Fact>]
-let ``eval: pipe a sphere through translate`` () =
-    // x |> f === f x. `@translate 2 0 0` is partially applied (3 of 4
-    // args); piping `@sphere 1` in saturates the 4th.
-    let _, v = runOk "@sphere 1 |> @translate 2 0 0"
-    match v with
-    | Value.VField _ -> ()
-    | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]
 let ``eval: bare name does not resolve to a builtin`` () =

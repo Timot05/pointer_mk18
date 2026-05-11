@@ -2,20 +2,25 @@
 //
 // Wire format (all little-endian, header 32 bytes, "MIR2"):
 //   u32 magic           = 0x4D495232 ("MIR2")
-//   u32 version         = 3
+//   u32 version         = 5
 //   u32 node_count
 //   u32 affine_count
 //   u32 intrinsic_count
-//   u32 primitive_count
 //   u32 root            (node id of the unioned render tree)
 //   u32 view_count
+//   u32 node_ref_count
 //
 // Sections in declaration order:
 //   nodes:      node_count      × 32 B  (Node)
 //   affines:    affine_count    × 48 B  (Affine3, 12 × i32 expr id)
 //   intrinsics: intrinsic_count × 48 B  (Intrinsic + 4-byte pad)
-//   primitives: primitive_count × 64 B  (SketchPrimitive + 7-byte pad)
+//   node_refs:  node_ref_count  ×  4 B  (i32 child node id)
 //   views:      view_count      × 12 B  (i32 expr_id, u32 palette_idx, u32 kind)
+//
+// `node_refs` is the packed integer table referenced by Fold nodes,
+// sketch-primitive subtree node kinds, and `CurveDistanceAlong`'s
+// primitive list (via `Intrinsic.primitive_start`/`primitive_count`).
+// The legacy `primitives` side table was retired in Phase 3.
 //
 // Views: one per visible Field block. The kernel renders each separately
 // so the winning block at each hit pixel can be coloured by `palette_idx`
@@ -36,7 +41,7 @@ pub const Error = error{
     TooManyNodes,
     TooManyAffines,
     TooManyIntrinsics,
-    TooManyPrimitives,
+    TooManyNodeRefs,
     TooManyViews,
     BadKind,
 };
@@ -44,7 +49,7 @@ pub const Error = error{
 pub const IR_UPLOAD_CAPACITY: usize = 256 * 1024;
 
 pub const MAGIC: u32 = 0x4D495232;
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 5;
 
 /// Maximum visible Field blocks the renderer can colour by tag.
 /// Keep modest — each view holds its own ~50 KB RegTape on the kernel.
@@ -70,7 +75,7 @@ const HEADER_BYTES: usize = 32;
 const NODE_BYTES: usize = 32;
 const AFFINE_BYTES: usize = 48;
 const INTRINSIC_BYTES: usize = 48;
-const PRIMITIVE_BYTES: usize = 64;
+const NODE_REF_BYTES: usize = 4;
 const VIEW_BYTES: usize = 12;
 
 var ir_upload_buffer: [IR_UPLOAD_CAPACITY]u8 align(8) = undefined;
@@ -97,21 +102,21 @@ pub fn decodeInto(byte_len: usize, ir: *m.MathIR) Error!Decoded {
     const node_count = readU32(bytes, 8);
     const affine_count = readU32(bytes, 12);
     const intrinsic_count = readU32(bytes, 16);
-    const primitive_count = readU32(bytes, 20);
-    const root = readU32(bytes, 24);
-    const view_count = readU32(bytes, 28);
+    const root = readU32(bytes, 20);
+    const view_count = readU32(bytes, 24);
+    const node_ref_count = readU32(bytes, 28);
 
     if (node_count > m.max_nodes) return Error.TooManyNodes;
     if (affine_count > m.max_affines) return Error.TooManyAffines;
     if (intrinsic_count > m.max_intrinsics) return Error.TooManyIntrinsics;
-    if (primitive_count > m.max_primitives) return Error.TooManyPrimitives;
+    if (node_ref_count > m.max_node_refs) return Error.TooManyNodeRefs;
     if (view_count > max_views) return Error.TooManyViews;
 
     const nodes_off = HEADER_BYTES;
     const affines_off = nodes_off + @as(usize, node_count) * NODE_BYTES;
     const intrinsics_off = affines_off + @as(usize, affine_count) * AFFINE_BYTES;
-    const primitives_off = intrinsics_off + @as(usize, intrinsic_count) * INTRINSIC_BYTES;
-    const views_off = primitives_off + @as(usize, primitive_count) * PRIMITIVE_BYTES;
+    const node_refs_off = intrinsics_off + @as(usize, intrinsic_count) * INTRINSIC_BYTES;
+    const views_off = node_refs_off + @as(usize, node_ref_count) * NODE_REF_BYTES;
     const total = views_off + @as(usize, view_count) * VIEW_BYTES;
     if (byte_len < total) return Error.Truncated;
 
@@ -137,11 +142,13 @@ pub fn decodeInto(byte_len: usize, ir: *m.MathIR) Error!Decoded {
     ir.intrinsic_count = intrinsic_count;
 
     i = 0;
-    while (i < primitive_count) : (i += 1) {
-        const off = primitives_off + @as(usize, i) * PRIMITIVE_BYTES;
-        ir.primitives[i] = try decodePrimitive(bytes[off..][0..PRIMITIVE_BYTES]);
+    while (i < node_ref_count) : (i += 1) {
+        const off = node_refs_off + @as(usize, i) * NODE_REF_BYTES;
+        const ref = readI32(bytes, off);
+        if (ref < 0 or @as(u32, @intCast(ref)) >= node_count) return Error.Truncated;
+        ir.node_refs[i] = ref;
     }
-    ir.primitive_count = primitive_count;
+    ir.node_ref_count = node_ref_count;
 
     if (root >= node_count) return Error.Truncated;
 
@@ -164,7 +171,7 @@ pub fn decodeInto(byte_len: usize, ir: *m.MathIR) Error!Decoded {
 
 fn decodeNode(rec: *const [NODE_BYTES]u8) Error!m.Node {
     const kind_raw = readI32(rec, 0);
-    if (kind_raw < 0 or kind_raw > 7) return Error.BadKind;
+    if (kind_raw < 0 or kind_raw > 13) return Error.BadKind;
     const kind: m.NodeKind = @enumFromInt(kind_raw);
     return .{
         .kind = kind,
@@ -196,7 +203,9 @@ fn decodeAffine(rec: *const [AFFINE_BYTES]u8) m.Affine3 {
 
 fn decodeIntrinsic(rec: *const [INTRINSIC_BYTES]u8) Error!m.Intrinsic {
     const kind_raw = readI32(rec, 0);
-    if (kind_raw < 0 or kind_raw > 2) return Error.BadKind;
+    // Only `curve_distance_along` (value 2) is shipped on the wire after
+    // Phase 3 — sketch_distance / sketch_path were retired.
+    if (kind_raw != 2) return Error.BadKind;
     const plane_raw = readI32(rec, 4);
     if (plane_raw < 0 or plane_raw > 2) return Error.BadKind;
     return .{
@@ -214,25 +223,6 @@ fn decodeIntrinsic(rec: *const [INTRINSIC_BYTES]u8) Error!m.Intrinsic {
         .ay = readI32(rec, 36),
         .az = readI32(rec, 40),
         // bytes 44..47: pad
-    };
-}
-
-fn decodePrimitive(rec: *const [PRIMITIVE_BYTES]u8) Error!m.SketchPrimitive {
-    const kind_raw = readI32(rec, 0);
-    if (kind_raw < 0 or kind_raw > 5) return Error.BadKind;
-    return .{
-        .kind = @enumFromInt(kind_raw),
-        .p0 = .{ .x = readI32(rec, 4), .y = readI32(rec, 8) },
-        .p1 = .{ .x = readI32(rec, 12), .y = readI32(rec, 16) },
-        .p2 = .{ .x = readI32(rec, 20), .y = readI32(rec, 24) },
-        .p3 = .{ .x = readI32(rec, 28), .y = readI32(rec, 32) },
-        .radius = readI32(rec, 36),
-        .chord = readI32(rec, 40),
-        .max_camber = readI32(rec, 44),
-        .camber_pos = readI32(rec, 48),
-        .thickness = readI32(rec, 52),
-        .clockwise = rec[56] != 0,
-        // bytes 57..63: pad
     };
 }
 

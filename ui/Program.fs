@@ -60,13 +60,16 @@ let private onSave () =
 let private onLoad () =
     console.warn "Load is not implemented in notebook mode"
 
+let private onExportStl () =
+    MeshExport.downloadCurrentStl ()
+
 // --------------------------------------------------------------------------
 // Render loop.
 // --------------------------------------------------------------------------
 
 let private renderInto (root: Browser.Types.HTMLElement) =
     let doc = DocumentPipeline.documentView store.State
-    let shell = Shell.render dispatch doc viewerHost onSave onLoad
+    let shell = Shell.render dispatch doc viewerHost onSave onLoad onExportStl
     root.innerHTML <- ""
     root.appendChild shell |> ignore
 

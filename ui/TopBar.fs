@@ -30,7 +30,8 @@ let private dropdownItem (label: string) (shortcut: string option) : HTMLButtonE
 let render
         (dispatch: Message -> unit)
         (onSave: unit -> unit)
-        (onLoad: unit -> unit) : HTMLElement =
+        (onLoad: unit -> unit)
+        (onExportStl: unit -> unit) : HTMLElement =
     let topbar = Dom.el "div" "topbar"
     topbar.appendChild (Dom.elText "span" "topbar-logo" "Dekal" :> Node) |> ignore
 
@@ -53,6 +54,14 @@ let render
         fun _ ->
             fileDropdown?style?display <- "none"
             onLoad ()
+    )
+
+    let exportStlBtn = dropdownItem "Export STL" None
+    exportStlBtn.addEventListener (
+        "click",
+        fun _ ->
+            fileDropdown?style?display <- "none"
+            onExportStl ()
     )
 
     let clearBtn = dropdownItem "Clear" None
@@ -78,6 +87,7 @@ let render
 
     fileDropdown.appendChild (saveBtn :> Node) |> ignore
     fileDropdown.appendChild (loadBtn :> Node) |> ignore
+    fileDropdown.appendChild (exportStlBtn :> Node) |> ignore
     fileDropdown.appendChild (clearBtn :> Node) |> ignore
     fileMenu.appendChild (fileBtn :> Node) |> ignore
     fileMenu.appendChild (fileDropdown :> Node) |> ignore

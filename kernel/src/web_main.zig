@@ -22,6 +22,7 @@ const std = @import("std");
 const m = @import("math_domain.zig");
 const math_ir_decode = @import("math_ir_decode.zig");
 const cpu_render = @import("cpu_render.zig");
+const mesh_mod = @import("mesh.zig");
 
 /// Largest tile (width or height). Mirrors the host's MAX_TILE = 1024 in
 /// `viewer/Kernel/Background.fs`. The host splits any canvas larger than
@@ -39,8 +40,10 @@ var camera_buffer: [12]f32 align(4) = undefined;
 
 var math_ir: m.MathIR = .{};
 var scene_tape: m.RegTape = undefined;
+var mesh_tape: m.RegTape = undefined;
 var mutable_camera: m.MutableCamera = undefined;
 var scene_loaded: bool = false;
+var scene_mesh: ?mesh_mod.MeshBuffers = null;
 
 /// Per-block view tapes — one per visible Field block. Used at hit
 /// time by `cpu_render` to determine which block "owns" each pixel
@@ -59,9 +62,10 @@ pub export fn ir_upload_buffer_ptr() [*]u8 {
 }
 
 /// 0 = ok, 1 = bad magic, 2 = bad version, 3 = too many nodes, 4 = too many
-/// affines, 5 = too many intrinsics, 6 = too many primitives, 7 = truncated,
-/// 8 = bad kind, 9 = camera/tape build failed, 10 = too many views.
+/// affines, 5 = too many intrinsics, 7 = truncated, 8 = bad kind,
+/// 9 = camera/tape build failed, 10 = too many views, 11 = too many node refs.
 pub export fn ir_upload(byte_len: usize) u32 {
+    clearSceneMesh();
     math_ir = .{};
     const decoded = math_ir_decode.decodeInto(byte_len, &math_ir) catch |e| return switch (e) {
         math_ir_decode.Error.BadMagic => 1,
@@ -69,11 +73,13 @@ pub export fn ir_upload(byte_len: usize) u32 {
         math_ir_decode.Error.TooManyNodes => 3,
         math_ir_decode.Error.TooManyAffines => 4,
         math_ir_decode.Error.TooManyIntrinsics => 5,
-        math_ir_decode.Error.TooManyPrimitives => 6,
         math_ir_decode.Error.Truncated => 7,
         math_ir_decode.Error.BadKind => 8,
         math_ir_decode.Error.TooManyViews => 10,
+        math_ir_decode.Error.TooManyNodeRefs => 11,
     };
+
+    mesh_tape = m.compileToRegTape(&math_ir, decoded.root) catch return 9;
 
     // One CameraAxes shared by the main render tape + every view tape.
     // Each tape gets its own immediates after compile, but they all
@@ -199,23 +205,102 @@ pub export fn max_render_level() u32 {
 // ── Mesh exports (stubbed; mk21 has no DC meshing this round) ────────────
 
 pub export fn mesh_build(half_extent: f32, max_depth: u32) u32 {
-    _ = half_extent;
-    _ = max_depth;
-    return 1;
+    if (!scene_loaded) return 1;
+    if (!(half_extent > 0.0) or max_depth == 0 or max_depth > 10) return 2;
+
+    clearSceneMesh();
+
+    const h = half_extent;
+    const bounds: mesh_mod.Aabb = .{
+        .min = .{ .x = -h, .y = -h, .z = -h },
+        .max = .{ .x = h, .y = h, .z = h },
+    };
+    const sampler: mesh_mod.Sampler = .{
+        .ctx = null,
+        .sampleFn = meshSample,
+        .gradientFn = meshGradient,
+        .intervalFn = meshInterval,
+    };
+
+    var built = mesh_mod.buildMesh(
+        std.heap.wasm_allocator,
+        sampler,
+        bounds,
+        .{ .max_depth = @intCast(max_depth), .binary_search_steps = 8 },
+    ) catch return 3;
+    if (built.vertices.len == 0 or built.triangles.len == 0) {
+        built.deinit(std.heap.wasm_allocator);
+        return 4;
+    }
+    scene_mesh = built;
+    return 0;
 }
 
 pub export fn mesh_vertices_ptr() usize {
+    if (scene_mesh) |mesh| return @intFromPtr(mesh.vertices.ptr);
     return 0;
 }
 
 pub export fn mesh_vertices_len() u32 {
+    if (scene_mesh) |mesh| return @intCast(mesh.vertices.len * 3);
     return 0;
 }
 
 pub export fn mesh_triangles_ptr() usize {
+    if (scene_mesh) |mesh| return @intFromPtr(mesh.triangles.ptr);
     return 0;
 }
 
 pub export fn mesh_triangles_len() u32 {
+    if (scene_mesh) |mesh| return @intCast(mesh.triangles.len * 3);
     return 0;
+}
+
+fn clearSceneMesh() void {
+    if (scene_mesh) |*mesh| {
+        mesh.deinit(std.heap.wasm_allocator);
+        scene_mesh = null;
+    }
+}
+
+fn toMathVec(p: mesh_mod.Vec3) m.Vec3 {
+    return .{ .x = p.x, .y = p.y, .z = p.z };
+}
+
+fn meshSample(_: ?*const anyopaque, p: mesh_mod.Vec3) f32 {
+    return m.decodeRegEvalF32(&mesh_tape, &math_ir, &.{}, toMathVec(p));
+}
+
+fn meshGradient(_: ?*const anyopaque, p: mesh_mod.Vec3) mesh_mod.Vec3 {
+    const g = m.decodeRegEvalGrad(&mesh_tape, &math_ir, &.{}, toMathVec(p));
+    var n: mesh_mod.Vec3 = .{ .x = g[1], .y = g[2], .z = g[3] };
+    if (mesh_mod.Vec3.length(n) > 1.0e-6) return mesh_mod.Vec3.normalize(n);
+
+    const eps: f32 = 1.0e-3;
+    const px = meshSample(null, .{ .x = p.x + eps, .y = p.y, .z = p.z });
+    const mx = meshSample(null, .{ .x = p.x - eps, .y = p.y, .z = p.z });
+    const py = meshSample(null, .{ .x = p.x, .y = p.y + eps, .z = p.z });
+    const my = meshSample(null, .{ .x = p.x, .y = p.y - eps, .z = p.z });
+    const pz = meshSample(null, .{ .x = p.x, .y = p.y, .z = p.z + eps });
+    const mz = meshSample(null, .{ .x = p.x, .y = p.y, .z = p.z - eps });
+    n = .{
+        .x = (px - mx) / (2.0 * eps),
+        .y = (py - my) / (2.0 * eps),
+        .z = (pz - mz) / (2.0 * eps),
+    };
+    return mesh_mod.Vec3.normalize(n);
+}
+
+fn meshInterval(_: ?*const anyopaque, bounds: mesh_mod.Aabb) mesh_mod.Interval {
+    const iv = m.decodeRegEvalInterval(
+        &mesh_tape,
+        &math_ir,
+        &.{},
+        m.box3(
+            m.interval(bounds.min.x, bounds.max.x),
+            m.interval(bounds.min.y, bounds.max.y),
+            m.interval(bounds.min.z, bounds.max.z),
+        ),
+    );
+    return .{ .lo = @floatCast(iv.lo), .hi = @floatCast(iv.hi) };
 }

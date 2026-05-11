@@ -65,20 +65,34 @@ fn binaryName(b: m.Binary) []const u8 {
 
 fn intrinsicName(k: m.IntrinsicKind) []const u8 {
     return switch (k) {
-        .sketch_distance => "sketch_distance",
-        .sketch_path => "sketch_path",
         .curve_distance_along => "curve_dist_along",
     };
 }
 
-fn primitiveName(k: m.PrimitiveKind) []const u8 {
+fn nodeKindShortName(k: m.NodeKind) []const u8 {
     return switch (k) {
+        .var_ => "var",
+        .slot => "slot",
+        .const_ => "const",
+        .unary => "unary",
+        .binary => "binary",
+        .remap_axes => "remap_axes",
+        .remap_affine => "remap_affine",
+        .intrinsic => "intrinsic",
+        .fold => "fold",
         .line_segment => "line",
+        .circle => "circle",
         .bezier_quadratic => "bez_q",
         .bezier_cubic => "bez_c",
-        .circle => "circle",
-        .naca4 => "naca4",
         .arc_center => "arc",
+    };
+}
+
+fn foldName(op: m.FoldOp) []const u8 {
+    return switch (op) {
+        .min => "min",
+        .max => "max",
+        .sum => "sum",
     };
 }
 
@@ -109,7 +123,7 @@ pub fn writeDot(out: Out, ir: *const m.MathIR, root: m.Expr) !void {
     // Edges between nodes
     i = 0;
     while (i < ir.node_count) : (i += 1) {
-        try writeEdges(out, i, ir.nodes[i]);
+        try writeEdges(out, ir, i, ir.nodes[i]);
     }
     try out.writeAll("\n");
 
@@ -159,10 +173,18 @@ fn writeNode(out: Out, ir: *const m.MathIR, id: usize, node: m.Node, root_id: us
             const intrinsic = ir.intrinsics[@intCast(node.a)];
             try out.print("  n{d} [label=\"#{d} {s}\\nI={d}\", shape=oval, style=filled, fillcolor=\"#c8e6c9\", peripheries={d}];\n", .{ id, id, intrinsicName(intrinsic.kind), node.a, peri });
         },
+        .fold => {
+            const op: m.FoldOp = @enumFromInt(node.op);
+            try out.print("  n{d} [label=\"#{d} fold {s}\\n[{d}..+{d}]\", shape=box, style=filled, fillcolor=\"#ffe0b2\", peripheries={d}];\n", .{ id, id, foldName(op), node.a, node.b, peri });
+        },
+        .line_segment, .circle, .bezier_quadratic, .bezier_cubic, .arc_center => {
+            const plane: m.Plane = @enumFromInt(@divTrunc(node.op, 2));
+            try out.print("  n{d} [label=\"#{d} {s} {s}\\n[{d}..+{d}]\", shape=hexagon, style=filled, fillcolor=\"#d1c4e9\", peripheries={d}];\n", .{ id, id, nodeKindShortName(node.kind), planeName(plane), node.a, node.b, peri });
+        },
     }
 }
 
-fn writeEdges(out: Out, id: usize, node: m.Node) !void {
+fn writeEdges(out: Out, ir: *const m.MathIR, id: usize, node: m.Node) !void {
     switch (node.kind) {
         .var_, .slot, .const_ => {},
         .unary => try out.print("  n{d} -> n{d};\n", .{ id, node.a }),
@@ -181,6 +203,14 @@ fn writeEdges(out: Out, id: usize, node: m.Node) !void {
             try out.print("  n{d} -> aff{d} [style=dashed, color=goldenrod, label=\"affine\"];\n", .{ id, node.b });
         },
         .intrinsic => try out.print("  n{d} -> intr{d} [style=dashed, color=darkgreen, label=\"intrinsic\"];\n", .{ id, node.a }),
+        .fold, .line_segment, .circle, .bezier_quadratic, .bezier_cubic, .arc_center => {
+            const start: usize = @intCast(node.a);
+            const count: usize = @intCast(node.b);
+            var k: usize = 0;
+            while (k < count) : (k += 1) {
+                try out.print("  n{d} -> n{d} [label=\"{d}\", color=\"#888888\"];\n", .{ id, ir.node_refs[start + k], k });
+            }
+        },
     }
 }
 
@@ -229,13 +259,17 @@ fn writeIntrinsicCluster(out: Out, id: usize, intrinsic: m.Intrinsic, ir: *const
         .{ id, intrinsicName(intrinsic.kind), planeName(intrinsic.plane), intrinsic.primitive_count, intrinsic.closed, intrinsic.flip },
     );
 
+    // Primitives live as child node refs in
+    // `ir.node_refs[primitive_start..+primitive_count]`. Link the cluster
+    // record to each primitive subtree node.
     var pi: i32 = 0;
     while (pi < intrinsic.primitive_count) : (pi += 1) {
-        const prim_id: i32 = intrinsic.primitive_start + pi;
-        const prim = ir.primitives[@intCast(prim_id)];
+        const ref_idx: usize = @intCast(intrinsic.primitive_start + pi);
+        if (ref_idx >= ir.node_ref_count) break;
+        const child_id = ir.node_refs[ref_idx];
         try out.print(
-            "    intr{d}_p{d} [shape=note, fontsize=8, label=\"{s} #{d}\\np0=s{d},s{d} p1=s{d},s{d} p2=s{d},s{d} r=s{d}\"];\n",
-            .{ id, prim_id, primitiveName(prim.kind), prim_id, prim.p0.x, prim.p0.y, prim.p1.x, prim.p1.y, prim.p2.x, prim.p2.y, prim.radius },
+            "    intr{d} -> n{d} [style=dashed, color=darkgreen, label=\"p{d}\"];\n",
+            .{ id, child_id, pi },
         );
     }
     try out.writeAll("  }\n");
@@ -286,6 +320,8 @@ pub fn writeTapeComments(out: Out, tape: *const m.RegTape, ir: *const m.MathIR) 
                 const intrinsic = ir.intrinsics[@intCast(aux)];
                 try out.print("s{d} = intrinsic[{d}] {s} plane={s}\n", .{ dst, aux, intrinsicName(intrinsic.kind), planeName(intrinsic.plane) });
             },
+            .fold => try out.print("s{d} = fold {s} (start={d}, count={d})\n", .{ dst, foldName(@enumFromInt(b)), aux, a }),
+            .primitive => try out.print("s{d} = primitive {s}\n", .{ dst, nodeKindShortName(ir.nodes[@intCast(dst)].kind) }),
             .return_ => try out.print("return s{d}\n", .{a}),
         }
     }

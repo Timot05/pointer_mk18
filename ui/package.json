@@ -9,7 +9,9 @@
     "build": "npm run build:wasm && dotnet fable ../App.fsproj --outDir src-gen -e .js && vite build",
     "preview": "vite preview"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@carbon/icons": "^11.78.0"
+  },
   "devDependencies": {
     "typescript": "^5.4.0",
     "vite": "^5.4.0"

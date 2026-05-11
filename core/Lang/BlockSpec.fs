@@ -200,12 +200,15 @@ module BlockSpec =
                     body
           ScalarDefaults = Map.ofList [ "amount", 0.1 ] }
 
-    /// `from-sketch sketch` — lower a 2D sketch to a 3D field via the
-    /// kernel's SketchPath intrinsic. Body delegates to `@from_sketch`
-    /// because the lowering needs to walk the sketch's primitive list
-    /// (not expressible in pure AST).
+    /// `from-sketch sketch` — lower a 2D sketch to a 3D field. The body
+    /// here is a placeholder; `NotebookCompose.compose` intercepts blocks
+    /// with this spec name and emits an inlined `EFold(Min, [...primitive
+    /// constructors])` AST built directly from the upstream SketchBody.
+    /// The spec only needs to contribute its `Sketch -> Field` type
+    /// signature to the env so mis-wired callers still get a clean error.
+    /// An empty fold typechecks as `Field` and never runs.
     let private fromSketchSpec : BlockSpec =
-        let body = mk (EApply(internalE "from_sketch", varE "sketch"))
+        let body = mk (EFold(MathIr.FoldOp.Min, []))
         { Name = "from-sketch"
           Body = lambda [ "sketch", Type.Sketch ] body
           ScalarDefaults = Map.empty }

@@ -39,235 +39,15 @@ module Builtins =
         | Some v -> Ok v
         | None -> evalError span (sprintf "missing argument '%s'" name)
 
-    /// Coerce a Value into a MathIr.Expr. Numbers become Const nodes;
-    /// existing fields pass through. Anything else errors.
-    let private toExprArg (ir: MathIr.MathIR) (span: Span) (v: Value) : Result<MathIr.Expr, EvalError> =
-        match v with
-        | VField e -> Ok e
-        | VNumber n -> Ok (ir.Constant n)
-        | _ -> evalError span "expected number or field"
-
-    let private toNumberArg (span: Span) (v: Value) : Result<float, EvalError> =
-        match v with
-        | VNumber n -> Ok n
-        | _ -> evalError span "expected number"
-
-    // -- Geometric primitives ----------------------------------------------------
-
-    let private sphereImpl (ctx: EvalContext) (span: Span) (radius: MathIr.Expr) : MathIr.Expr =
-        let ir = ctx.Ir
-        let x = ir.X()
-        let y = ir.Y()
-        let z = ir.Z()
-        let xx = ir.Unary(MathIr.Unary.Square, x)
-        let yy = ir.Unary(MathIr.Unary.Square, y)
-        let zz = ir.Unary(MathIr.Unary.Square, z)
-        let xy = ir.Binary(MathIr.Binary.Add, xx, yy)
-        let sum = ir.Binary(MathIr.Binary.Add, xy, zz)
-        let mag = ir.Unary(MathIr.Unary.Sqrt, sum)
-        ir.Binary(MathIr.Binary.Sub, mag, radius)
-
-    /// Box SDF: outside = ||max(|p| - half, 0)||;
-    ///          inside  = min(max(bx, max(by, bz)), 0)
-    let private boxImpl (ctx: EvalContext) (hx: MathIr.Expr) (hy: MathIr.Expr) (hz: MathIr.Expr) : MathIr.Expr =
-        let ir = ctx.Ir
-        let zero = ir.Constant 0.0
-        let bx = ir.Binary(MathIr.Binary.Sub, ir.Unary(MathIr.Unary.Abs, ir.X()), hx)
-        let by = ir.Binary(MathIr.Binary.Sub, ir.Unary(MathIr.Unary.Abs, ir.Y()), hy)
-        let bz = ir.Binary(MathIr.Binary.Sub, ir.Unary(MathIr.Unary.Abs, ir.Z()), hz)
-        // outside
-        let cx = ir.Binary(MathIr.Binary.Max, bx, zero)
-        let cy = ir.Binary(MathIr.Binary.Max, by, zero)
-        let cz = ir.Binary(MathIr.Binary.Max, bz, zero)
-        let cxx = ir.Unary(MathIr.Unary.Square, cx)
-        let cyy = ir.Unary(MathIr.Unary.Square, cy)
-        let czz = ir.Unary(MathIr.Unary.Square, cz)
-        let cxy = ir.Binary(MathIr.Binary.Add, cxx, cyy)
-        let csum = ir.Binary(MathIr.Binary.Add, cxy, czz)
-        let outside = ir.Unary(MathIr.Unary.Sqrt, csum)
-        // inside (fully negative when all bx, by, bz are negative)
-        let mxy = ir.Binary(MathIr.Binary.Max, by, bz)
-        let mxyz = ir.Binary(MathIr.Binary.Max, bx, mxy)
-        let inside = ir.Binary(MathIr.Binary.Min, mxyz, zero)
-        ir.Binary(MathIr.Binary.Add, outside, inside)
-
-    /// Cylinder along Y axis: max(|x,z|-r, |y|-h/2)
-    let private cylinderImpl (ctx: EvalContext) (radius: MathIr.Expr) (height: MathIr.Expr) : MathIr.Expr =
-        let ir = ctx.Ir
-        let xx = ir.Unary(MathIr.Unary.Square, ir.X())
-        let zz = ir.Unary(MathIr.Unary.Square, ir.Z())
-        let xz = ir.Binary(MathIr.Binary.Add, xx, zz)
-        let radial = ir.Binary(MathIr.Binary.Sub, ir.Unary(MathIr.Unary.Sqrt, xz), radius)
-        let two = ir.Constant 2.0
-        let halfH = ir.Binary(MathIr.Binary.Div, height, two)
-        let axial = ir.Binary(MathIr.Binary.Sub, ir.Unary(MathIr.Unary.Abs, ir.Y()), halfH)
-        ir.Binary(MathIr.Binary.Max, radial, axial)
-
-    let private translateImpl (ctx: EvalContext) (tx: MathIr.Expr) (ty: MathIr.Expr) (tz: MathIr.Expr) (target: MathIr.Expr) : MathIr.Expr =
-        let ir = ctx.Ir
-        let xMinus = ir.Binary(MathIr.Binary.Sub, ir.X(), tx)
-        let yMinus = ir.Binary(MathIr.Binary.Sub, ir.Y(), ty)
-        let zMinus = ir.Binary(MathIr.Binary.Sub, ir.Z(), tz)
-        ir.RemapAxes(target, xMinus, yMinus, zMinus)
-
-    let private unionImpl (ctx: EvalContext) (a: MathIr.Expr) (b: MathIr.Expr) : MathIr.Expr =
-        ctx.Ir.Binary(MathIr.Binary.Min, a, b)
-
-    let private intersectImpl (ctx: EvalContext) (a: MathIr.Expr) (b: MathIr.Expr) : MathIr.Expr =
-        ctx.Ir.Binary(MathIr.Binary.Max, a, b)
-
-    let private subtractImpl (ctx: EvalContext) (a: MathIr.Expr) (b: MathIr.Expr) : MathIr.Expr =
-        let ir = ctx.Ir
-        let negB = ir.Unary(MathIr.Unary.Neg, b)
-        ir.Binary(MathIr.Binary.Max, a, negB)
-
-    /// Shifts the iso-surface outward by `amount` (the iso level rises so
-    /// where sdf == amount becomes the new surface).
-    let private thickenImpl (ctx: EvalContext) (amount: MathIr.Expr) (target: MathIr.Expr) : MathIr.Expr =
-        ctx.Ir.Binary(MathIr.Binary.Sub, target, amount)
-
-    // -- Dispatch ----------------------------------------------------------------
-
-    let private sphereCall (ctx: EvalContext) (span: Span) (args: ArgValue list) =
-        let pos = positionals args
-        let named = namedMap args
-        requireArg span pos named 0 "radius" >>= fun rv ->
-            toExprArg ctx.Ir span rv >>= fun r ->
-                Ok (VField (sphereImpl ctx span r))
-
-    let private boxCall (ctx: EvalContext) (span: Span) (args: ArgValue list) =
-        let pos = positionals args
-        let named = namedMap args
-        requireArg span pos named 0 "width" >>= fun wv ->
-        requireArg span pos named 1 "height" >>= fun hv ->
-        requireArg span pos named 2 "depth" >>= fun dv ->
-            toExprArg ctx.Ir span wv >>= fun w ->
-            toExprArg ctx.Ir span hv >>= fun h ->
-            toExprArg ctx.Ir span dv >>= fun d ->
-                let two = ctx.Ir.Constant 2.0
-                let hx = ctx.Ir.Binary(MathIr.Binary.Div, w, two)
-                let hy = ctx.Ir.Binary(MathIr.Binary.Div, h, two)
-                let hz = ctx.Ir.Binary(MathIr.Binary.Div, d, two)
-                Ok (VField (boxImpl ctx hx hy hz))
-
-    let private cylinderCall (ctx: EvalContext) (span: Span) (args: ArgValue list) =
-        let pos = positionals args
-        let named = namedMap args
-        requireArg span pos named 0 "radius" >>= fun rv ->
-        requireArg span pos named 1 "height" >>= fun hv ->
-            toExprArg ctx.Ir span rv >>= fun r ->
-            toExprArg ctx.Ir span hv >>= fun h ->
-                Ok (VField (cylinderImpl ctx r h))
-
-    let private translateCall (ctx: EvalContext) (span: Span) (args: ArgValue list) =
-        let pos = positionals args
-        let named = namedMap args
-        requireArg span pos named 0 "x" >>= fun xv ->
-        requireArg span pos named 1 "y" >>= fun yv ->
-        requireArg span pos named 2 "z" >>= fun zv ->
-        requireArg span pos named 3 "field" >>= fun fv ->
-            toExprArg ctx.Ir span xv >>= fun tx ->
-            toExprArg ctx.Ir span yv >>= fun ty ->
-            toExprArg ctx.Ir span zv >>= fun tz ->
-            (match fv with
-             | VField e -> Ok e
-             | _ -> evalError span "translate: 4th argument must be a field") >>= fun target ->
-                Ok (VField (translateImpl ctx tx ty tz target))
-
-    let private booleanCall name impl (ctx: EvalContext) (span: Span) (args: ArgValue list) =
-        let pos = positionals args
-        let named = namedMap args
-        requireArg span pos named 0 "a" >>= fun av ->
-        requireArg span pos named 1 "b" >>= fun bv ->
-            toExprArg ctx.Ir span av >>= fun a ->
-            toExprArg ctx.Ir span bv >>= fun b ->
-                Ok (VField (impl ctx a b))
-
-    let private thickenCall (ctx: EvalContext) (span: Span) (args: ArgValue list) =
-        let pos = positionals args
-        let named = namedMap args
-        requireArg span pos named 0 "amount" >>= fun av ->
-        requireArg span pos named 1 "field" >>= fun fv ->
-            toExprArg ctx.Ir span av >>= fun amount ->
-            (match fv with
-             | VField e -> Ok e
-             | _ -> evalError span "thicken: 2nd argument must be a field") >>= fun target ->
-                Ok (VField (thickenImpl ctx amount target))
-
-    let private rotateCall (ctx: EvalContext) (span: Span) (_args: ArgValue list) =
-        evalError span "@rotate is not yet implemented in this round"
-
-    // -- from_sketch -------------------------------------------------------------
-    //
-    // Lower a `VSketch` to a `VField` by emitting one MathIR primitive per
-    // line/circle entity (point coords backed by Const nodes — the kernel
-    // reads them via `nodeValue`/`nodePoint2`) and wrapping with a
-    // SketchPath intrinsic. Arcs and beziers are skipped this round; the
-    // kernel's `evalSketchDistance` doesn't support arcs, so emitting them
-    // would just NaN-pollute the field.
-
-    let private planeMap (p: Server.SketchPlane) : MathIr.Plane =
-        match p with
-        | Server.XY -> MathIr.Plane.XY
-        | Server.XZ -> MathIr.Plane.XZ
-        | Server.YZ -> MathIr.Plane.YZ
-
-    let private fromSketchImpl
-            (ctx: EvalContext)
-            (span: Span)
-            (sv: SketchValue) : Result<MathIr.Expr, EvalError> =
-        let ir = ctx.Ir
-        // Resolve point ids → (x_node_id, y_node_id). Each REPoint becomes
-        // two Const nodes; the SlotPoint2 holds those node ids. The
-        // kernel-side `nodePoint2` reads `ir.nodes[id].value`.
-        let pointTable =
-            sv.Sketch.Entities
-            |> List.choose (function
-                | Server.REPoint(id, x, y) ->
-                    let pt = ir.Point2((ir.Constant x).Id, (ir.Constant y).Id)
-                    Some (id, pt)
-                | _ -> None)
-            |> Map.ofList
-
-        // First primitive id is allocated as we push them; remember the
-        // start so the SketchPath intrinsic can range-encode them.
-        let primitiveStart = ir.Primitives.Count
-
-        let mutable count = 0
-        for entity in sv.Sketch.Entities do
-            match entity with
-            | Server.RELine(_, startId, endId) ->
-                match Map.tryFind startId pointTable, Map.tryFind endId pointTable with
-                | Some s, Some e ->
-                    ir.LineSegment(s, e) |> ignore
-                    count <- count + 1
-                | _ -> ()
-            | Server.RECircle(_, centerId, radius) ->
-                match Map.tryFind centerId pointTable with
-                | Some c ->
-                    let rExpr = ir.Constant radius
-                    ir.Circle(c, rExpr.Id) |> ignore
-                    count <- count + 1
-                | None -> ()
-            | _ -> ()
-
-        if count = 0 then
-            evalError span "@from_sketch: sketch produced no renderable primitives"
-        else
-            // Emit a closed SketchPath spanning the just-pushed range. The
-            // kernel resolves "inside" by sampling winding angle; closed
-            // ⇒ negative inside.
-            Ok (ir.SketchPath(planeMap sv.Plane, primitiveStart, count, true, false))
-
-    let private fromSketchCall (ctx: EvalContext) (span: Span) (args: ArgValue list) =
-        let pos = positionals args
-        let named = namedMap args
-        requireArg span pos named 0 "sketch" >>= fun sv ->
-            match sv with
-            | VSketch s ->
-                fromSketchImpl ctx span s
-                |> Result.map VField
-            | _ -> evalError span "@from_sketch: argument must be a sketch"
+    // Geometric primitives — sphere/box/cylinder/translate/union/subtract/
+    // intersect/thicken/rotate used to be dispatched via `@`-prefix names
+    // through `Builtins.dispatch`. They were retired in Phase 7: every
+    // primitive's body is now expressed directly in `BlockSpec.fs` as pure
+    // AST (lambdas over `EAxis` / `EBinary` / `ERemapAxes`), so there's no
+    // production caller for `@sphere` etc. The only remaining intrinsic in
+    // this file is `wing_remap_preview`, which is kept because it walks a
+    // `VSketch` payload to emit a `CurveDistanceAlong` intrinsic — work
+    // that's not expressible in pure AST today.
 
     // -- wing_remap_preview ------------------------------------------------------
     //
@@ -278,7 +58,7 @@ module Builtins =
     // closed solid; it is an inspectable field for validating the remap path.
 
     type private LineGuide =
-        { Primitive: int
+        { Primitive: MathIr.Expr
           X0: float
           Y0: float
           X1: float
@@ -324,10 +104,12 @@ module Builtins =
             | Some(a, b) ->
                 match tryPointCoords sv.Sketch a, tryPointCoords sv.Sketch b with
                 | Some(x0, y0), Some(x1, y1) ->
-                    let p0 = ir.Point2((ir.Constant x0).Id, (ir.Constant y0).Id)
-                    let p1 = ir.Point2((ir.Constant x1).Id, (ir.Constant y1).Id)
+                    let p0x = ir.Constant x0
+                    let p0y = ir.Constant y0
+                    let p1x = ir.Constant x1
+                    let p1y = ir.Constant y1
                     Ok
-                        { Primitive = ir.LineSegment(p0, p1)
+                        { Primitive = ir.LineSegmentN(MathIr.Plane.XY, p0x, p0y, p1x, p1y)
                           X0 = x0
                           Y0 = y0
                           X1 = x1
@@ -349,9 +131,9 @@ module Builtins =
             let axisY = ir.Constant 0.0
             let axisZ = ir.Constant 0.0
             let dLeading =
-                ir.CurveDistanceAlong(MathIr.Plane.XY, le.Primitive, 1, axisX, axisY, axisZ, false)
+                ir.CurveDistanceAlong(MathIr.Plane.XY, [ le.Primitive ], axisX, axisY, axisZ, false)
             let dTrailing =
-                ir.CurveDistanceAlong(MathIr.Plane.XY, te.Primitive, 1, axisX, axisY, axisZ, false)
+                ir.CurveDistanceAlong(MathIr.Plane.XY, [ te.Primitive ], axisX, axisY, axisZ, false)
             // Two-body coordinate from the nTop variable-loft recipe. With
             // our CurveDistanceAlong sign convention (`curve_x - sample_x`),
             // A = leading - x and B = trailing - x. `-(A+B)/(B-A)` maps
@@ -469,33 +251,14 @@ module Builtins =
             (args: ArgValue list)
             (span: Span) : Result<Value, EvalError> =
         match name with
-        | "sphere" -> sphereCall ctx span args
-        | "box" -> boxCall ctx span args
-        | "cylinder" -> cylinderCall ctx span args
-        | "translate" -> translateCall ctx span args
-        | "union" -> booleanCall "union" unionImpl ctx span args
-        | "subtract" -> booleanCall "subtract" subtractImpl ctx span args
-        | "intersect" -> booleanCall "intersect" intersectImpl ctx span args
-        | "thicken" -> thickenCall ctx span args
-        | "rotate" -> rotateCall ctx span args
-        | "from_sketch" -> fromSketchCall ctx span args
         | "wing_remap_preview" -> wingRemapPreviewCall ctx span args
         | _ -> evalError span (sprintf "unknown builtin @%s" name)
 
     /// Positional arities for the curried `@name` form. `print` / `debug`
     /// are routed by the evaluator through `ctx.Specials`; all other names
-    /// go through `dispatch` once saturated. `view` / `input` / `output`
-    /// were retired in favour of `let import` / `let pub` declarations.
+    /// go through `dispatch` once saturated.
     let arityOf (name: string) : int option =
         match name with
-        | "sphere" -> Some 1
-        | "box" -> Some 3
-        | "cylinder" -> Some 2
-        | "translate" -> Some 4
-        | "union" | "subtract" | "intersect" -> Some 2
-        | "thicken" -> Some 2
-        | "rotate" -> Some 4
-        | "from_sketch" -> Some 1
         | "wing_remap_preview" -> Some 2
         | "print" -> Some 2
         | "debug" -> Some 1

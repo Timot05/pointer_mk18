@@ -312,10 +312,8 @@ let private renderRow
                 else dispatch (ExpandBlock block.Id))
     main.appendChild (caret :> Node) |> ignore
 
-    // Icon column — kept as a placeholder so column alignment matches
-    // the action-list spacing rules even though we don't have per-block
-    // icons yet.
     let iconSlot = Dom.el "span" "action-icon"
+    iconSlot.appendChild (Icons.forBody block.Body :> Node) |> ignore
     main.appendChild (iconSlot :> Node) |> ignore
 
     let info = Dom.el "div" "action-info"
@@ -475,6 +473,9 @@ let private renderPicker (dispatch: Message -> unit) : HTMLElement =
         current
         |> List.iteri (fun i (name, _) ->
             let item = Dom.el "button" "action-picker-item"
+            let icon = Dom.el "span" "action-icon"
+            icon.appendChild (Icons.forSpecName name :> Node) |> ignore
+            item.appendChild (icon :> Node) |> ignore
             item.appendChild (Dom.elText "span" "action-picker-label" name :> Node) |> ignore
             item.addEventListener ("mouseenter", fun _ ->
                 highlighted <- i

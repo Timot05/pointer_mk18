@@ -89,13 +89,6 @@ module MathIrWgsl =
             || s.Contains "inf" || s.Contains "Inf" || s.Contains "nan" || s.Contains "NaN"
         if hasFloatMarker then s else s + ".0"
 
-    let private nodeConst (ir: MathIR) (id: int) : string =
-        if id < 0 || id >= ir.Nodes.Count then "0.0"
-        else constExpr ir.Nodes.[id].Value
-
-    let private slotPointConst (ir: MathIR) (p: SlotPoint2) : string =
-        sprintf "vec2<f32>(%s, %s)" (nodeConst ir p.XSlot) (nodeConst ir p.YSlot)
-
     let private planePointExpr (plane: Plane) : string =
         match plane with
         | Plane.XY -> "p.xy"
@@ -137,30 +130,46 @@ module MathIrWgsl =
                         else
                             let intrinsic = ir.Intrinsics.[intrinsicId]
                             match intrinsic.Kind with
-                            | IntrinsicKind.CurveDistanceAlong ->
-                                if intrinsic.PrimitiveStart < 0
-                                   || intrinsic.PrimitiveStart >= ir.Primitives.Count
+                            | IntrinsicKind.CurveDistanceAlong
+                            | _ ->
+                                // Primitives are subtree nodes now — the
+                                // intrinsic's `PrimitiveStart`/`Count`
+                                // fields are reused as a `NodeRefs`
+                                // window. We support only line-segment
+                                // primitives in WGSL today; mirror the
+                                // legacy single-line-segment case.
+                                if intrinsic.PrimitiveCount <> 1
                                    || intrinsic.Ax < 0
                                    || intrinsic.Ay < 0
                                    || intrinsic.Az < 0 then
                                     "1.0e10"
                                 else
-                                    let primitive = ir.Primitives.[intrinsic.PrimitiveStart]
-                                    match primitive.Kind with
-                                    | PrimitiveKind.LineSegment ->
-                                        let axisX = emitNode intrinsic.Ax
-                                        let axisY = emitNode intrinsic.Ay
-                                        let axisZ = emitNode intrinsic.Az
-                                        let axis2 = planeAxisExpr intrinsic.Plane axisX axisY axisZ
-                                        let q = planePointExpr intrinsic.Plane
-                                        let a = slotPointConst ir primitive.P0
-                                        let b = slotPointConst ir primitive.P1
-                                        let sign = if intrinsic.Flip then "-" else ""
-                                        sprintf
-                                            """(let_axis_line_distance(%s, %s, %s, %s) * %s1.0)"""
-                                            q axis2 a b sign
-                                    | _ -> "1.0e10"
-                            | _ -> "1.0e10"
+                                    let primStart = intrinsic.PrimitiveStart
+                                    if primStart < 0 || primStart >= ir.NodeRefs.Count then
+                                        "1.0e10"
+                                    else
+                                        let primNodeId = ir.NodeRefs.[primStart]
+                                        if primNodeId < 0 || primNodeId >= ir.Nodes.Count then
+                                            "1.0e10"
+                                        else
+                                            let primNode = ir.Nodes.[primNodeId]
+                                            match primNode.Kind with
+                                            | NodeKind.LineSegment ->
+                                                let segStart = primNode.A
+                                                let p0x = emitNode ir.NodeRefs.[segStart + 0]
+                                                let p0y = emitNode ir.NodeRefs.[segStart + 1]
+                                                let p1x = emitNode ir.NodeRefs.[segStart + 2]
+                                                let p1y = emitNode ir.NodeRefs.[segStart + 3]
+                                                let axisX = emitNode intrinsic.Ax
+                                                let axisY = emitNode intrinsic.Ay
+                                                let axisZ = emitNode intrinsic.Az
+                                                let axis2 = planeAxisExpr intrinsic.Plane axisX axisY axisZ
+                                                let q = planePointExpr intrinsic.Plane
+                                                let sign = if intrinsic.Flip then "-" else ""
+                                                sprintf
+                                                    """(let_axis_line_distance(%s, %s, vec2<f32>(%s, %s), vec2<f32>(%s, %s)) * %s1.0)"""
+                                                    q axis2 p0x p0y p1x p1y sign
+                                            | _ -> "1.0e10"
                     let expr =
                         match node.Kind with
                         | NodeKind.Var -> axisExpr node.Op
@@ -200,6 +209,62 @@ module MathIrWgsl =
                             sprintf "eval_%d(vec3<f32>(%s, %s, %s))" node.A newX newY newZ
                         | NodeKind.Intrinsic ->
                             intrinsicExpr node.A
+                        | NodeKind.Fold ->
+                            // Variadic fold over `NodeRefs[A..A+B]`. WGSL has
+                            // no variadic ops, so we expand into a chain of
+                            // binary ops: `min(c0, min(c1, c2))` for Min/Max,
+                            // `(c0 + (c1 + c2))` for Sum.
+                            let start = node.A
+                            let count = node.B
+                            if count <= 0 then "0.0"
+                            else
+                                let childIds =
+                                    [ for k in 0 .. count - 1 -> ir.NodeRefs.[start + k] ]
+                                let childNames = childIds |> List.map emitNode
+                                let fop : FoldOp = enum node.Op
+                                match fop with
+                                | FoldOp.Sum ->
+                                    childNames
+                                    |> List.reduce (fun acc n -> sprintf "(%s + %s)" acc n)
+                                | _ ->
+                                    let opName =
+                                        match fop with
+                                        | FoldOp.Max -> "max"
+                                        | _          -> "min"
+                                    let rec fold = function
+                                        | [] -> "0.0"
+                                        | [ x ] -> x
+                                        | x :: rest -> sprintf "%s(%s, %s)" opName x (fold rest)
+                                    fold childNames
+                        | NodeKind.LineSegment ->
+                            // Children: p0x, p0y, p1x, p1y (4 child node refs).
+                            // Plane is `Op / 2`; we project the 3D point onto
+                            // it and call the `segment_distance` helper below.
+                            let plane : Plane = enum (node.Op / 2)
+                            let start = node.A
+                            let p0x = emitNode ir.NodeRefs.[start + 0]
+                            let p0y = emitNode ir.NodeRefs.[start + 1]
+                            let p1x = emitNode ir.NodeRefs.[start + 2]
+                            let p1y = emitNode ir.NodeRefs.[start + 3]
+                            let q = planePointExpr plane
+                            sprintf "segment_distance(%s, vec2<f32>(%s, %s), vec2<f32>(%s, %s))"
+                                q p0x p0y p1x p1y
+                        | NodeKind.Circle ->
+                            // Children: cx, cy, r (3 child node refs).
+                            let plane : Plane = enum (node.Op / 2)
+                            let start = node.A
+                            let cx = emitNode ir.NodeRefs.[start + 0]
+                            let cy = emitNode ir.NodeRefs.[start + 1]
+                            let r  = emitNode ir.NodeRefs.[start + 2]
+                            let q = planePointExpr plane
+                            sprintf "circle_curve_distance(%s, vec2<f32>(%s, %s), %s)" q cx cy r
+                        | NodeKind.BezierQuadratic
+                        | NodeKind.BezierCubic
+                        | NodeKind.ArcCenter ->
+                            // Not yet implemented in WGSL — keep the same
+                            // out-of-range sentinel the legacy intrinsic
+                            // path used so the surface degenerates.
+                            "1.0e10"
                         | _ -> "0.0"
                     body.AppendLine(sprintf "  let n_%d: f32 = %s;" id expr) |> ignore
                     sprintf "n_%d" id
@@ -235,6 +300,18 @@ module MathIrWgsl =
         sb.AppendLine "  let aq = a - q;" |> ignore
         sb.AppendLine "  let s = cross2(aq, e) / den;" |> ignore
         sb.AppendLine "  return s;" |> ignore
+        sb.AppendLine "}" |> ignore
+        // Distance to a 2D line segment — mirrors `segDist` in math_eval.zig.
+        sb.AppendLine "fn segment_distance(q: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {" |> ignore
+        sb.AppendLine "  let e = b - a;" |> ignore
+        sb.AppendLine "  let w = q - a;" |> ignore
+        sb.AppendLine "  let t = clamp(dot(w, e) / (dot(e, e) + 1.0e-20), 0.0, 1.0);" |> ignore
+        sb.AppendLine "  return length(w - e * t);" |> ignore
+        sb.AppendLine "}" |> ignore
+        // Unsigned distance to a circle (its perimeter, not its disk).
+        // Mirrors `circleCurveDist` in math_eval.zig.
+        sb.AppendLine "fn circle_curve_distance(q: vec2<f32>, c: vec2<f32>, r: f32) -> f32 {" |> ignore
+        sb.AppendLine "  return abs(length(q - c) - r);" |> ignore
         sb.AppendLine "}" |> ignore
         for src in funcSources do sb.Append src |> ignore
         for (entryName, root) in entries do

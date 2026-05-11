@@ -39,6 +39,13 @@ module Ast =
         | Div
         | Min
         | Max
+        // Two-argument atan2(y, x). Surface parser doesn't expose it yet
+        // (Phase 8 territory); compose uses it to build the winding-angle
+        // term for closed-sketch signed distance.
+        | Atan2
+        // Three-way sign of `a - b`: -1 / 0 / +1. Used by compose to lower
+        // "is point inside this loop" into pure AST.
+        | Compare
         | Pipe
         | Compose
 
@@ -81,6 +88,21 @@ module Ast =
         // Equivalent to MathIR's `RemapAxes` node — used by translate-style
         // blocks to shift the sample point before delegating.
         | ERemapAxes of target: Expr * newX: Expr * newY: Expr * newZ: Expr
+        // Variadic fold (`min` / `max` / `sum`) over an arbitrary number of
+        // Field children. Lowers to `MathIr.MathIR.Fold`. Compose emits this
+        // when lowering from-sketch; a future DSL surface (Phase 8) parses
+        // `fold(min, [...])` into the same node.
+        | EFold of op: MathIr.FoldOp * children: Expr list
+        // Sketch-primitive constructors. Each lowers to the matching
+        // `MathIr.MathIR.*N` builder, which materialises the primitive as a
+        // subtree node in the IR DAG. The `plane` is baked in; coord
+        // children must evaluate to numbers or fields (numbers are lifted
+        // to `Const` nodes).
+        | ELineSegment of plane: MathIr.Plane * p0x: Expr * p0y: Expr * p1x: Expr * p1y: Expr
+        | ECircle of plane: MathIr.Plane * cx: Expr * cy: Expr * r: Expr
+        | EBezierQuadratic of plane: MathIr.Plane * p0x: Expr * p0y: Expr * p1x: Expr * p1y: Expr * p2x: Expr * p2y: Expr
+        | EBezierCubic of plane: MathIr.Plane * p0x: Expr * p0y: Expr * p1x: Expr * p1y: Expr * p2x: Expr * p2y: Expr * p3x: Expr * p3y: Expr
+        | EArcCenter of plane: MathIr.Plane * sx: Expr * sy: Expr * ex: Expr * ey: Expr * cx: Expr * cy: Expr * clockwise: bool
         | EMatch of subject: Expr * arms: MatchArm list
 
     and Arg =

@@ -278,6 +278,28 @@ fn renderTileRecurse(
     if (bounds.lo > 0.0) return;
     if (bounds.hi < 0.0) return;
 
+    // Sphere-tracing fallback. The interval check above is the cheap
+    // bound, but for SDFs like the closed-sketch signed distance
+    // (`unsigned * (-compare(|winding|, π))`) it's always loose:
+    // `[+pos_lo, +pos_hi] * [-1, +1]` collapses to `[-pos_hi, +pos_hi]`
+    // for every tile, no matter how far from the surface. Without this
+    // additional check the recursion descends to per-pixel level over
+    // the entire viewport — correct but monstrously slow.
+    //
+    // The signed-distance lowering is Lipschitz with constant 1 (it's
+    // a valid SDF — `unsigned` is Lipschitz-1 and the sign flip only
+    // changes value across the surface itself), so `|sdf(center)| >
+    // tile_radius` is a sound "surface not in tile" predicate.
+    const u_c = 0.5 * (u_lo + u_hi);
+    const v_c = 0.5 * (v_lo + v_hi);
+    const t_c = 0.5 * (t_lo + t_hi);
+    const half_u = 0.5 * (u_hi - u_lo);
+    const half_v = 0.5 * (v_hi - v_lo);
+    const half_t = 0.5 * (t_hi - t_lo);
+    const tile_radius = @sqrt(half_u * half_u + half_v * half_v + half_t * half_t);
+    const center_val = m.decodeRegEvalF32(tape, ctx.ir, ctx.slots, .{ .x = u_c, .y = v_c, .z = t_c });
+    if (@abs(center_val) > tile_radius) return;
+
     if (level == FINEST_TILE_LEVEL) {
         if (ctx.max_level > FINEST_TILE_LEVEL) {
             // PER_PIXEL_LEVEL: scan per-pixel only. Each ray gets its own
@@ -362,6 +384,23 @@ fn stampTileBlock(
 
     // One Grad eval at the tile center → value + analytical normal.
     const g = m.decodeRegEvalGrad(tape, ctx.ir, ctx.slots, .{ .x = u_c, .y = v_c, .z = t_c });
+
+    // Sphere-tracing-style sign check: if the SDF magnitude at the tile
+    // centre is larger than the tile's bounding-sphere radius, the surface
+    // can't intersect this tile and we shouldn't stamp it. This catches the
+    // pathological case where `decodeRegEvalIntervalWithTrace` returned a
+    // loose interval that straddles zero (typical for closed-loop signed
+    // distance: `unsigned * (-compare(|winding|, π))` multiplies a positive
+    // unsigned interval by a [-1, 1] sign interval → always straddles 0,
+    // even tiles miles from the actual surface). Without this guard those
+    // tiles get blanket-stamped with whatever (often near-fallback) normal
+    // the centre-point grad produced — i.e. brown screen.
+    const half_u = 0.5 * (u_hi - u_lo);
+    const half_v = 0.5 * (v_hi - v_lo);
+    const half_t = 0.5 * (t_hi - t_lo);
+    const tile_radius = @sqrt(half_u * half_u + half_v * half_v + half_t * half_t);
+    if (@abs(g[0]) > tile_radius) return;
+
     const gx = g[1];
     const gy = g[2];
     const gz = g[3];

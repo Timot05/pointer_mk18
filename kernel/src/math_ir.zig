@@ -45,27 +45,38 @@ pub const NodeKind = enum(i32) {
     remap_axes,
     remap_affine,
     intrinsic,
-};
-
-pub const PrimitiveKind = enum(i32) {
+    fold,
+    // Sketch primitives as first-class subtree nodes. Each one's geometry
+    // inputs are stored as child node refs in `NodeRefs[a..a+b]`. The
+    // plane is packed in `op`: `op / 2` = plane (0=xy, 1=xz, 2=yz).
+    // `arc_center` packs `clockwise` as the low bit of `op`.
     line_segment,
+    circle,
     bezier_quadratic,
     bezier_cubic,
-    circle,
-    naca4,
     arc_center,
 };
 
+/// Variadic-fold operator. Order must match `MathIr.FoldOp` on the F# side.
+pub const FoldOp = enum(i32) {
+    min,
+    max,
+    sum,
+};
+
+/// Kernel-level specialised evaluators. Packaging-only intrinsics
+/// (formerly `sketch_distance` / `sketch_path`) were lowered to fold +
+/// per-primitive subtree nodes; only `curve_distance_along` stays
+/// intrinsic because its signed-distance-along-an-axis math is
+/// genuinely specialised. Numeric values preserved for wire-format
+/// compatibility: `sketch_distance=0`, `sketch_path=1`, `curve_distance_along=2`.
 pub const IntrinsicKind = enum(i32) {
-    sketch_distance,
-    sketch_path,
-    curve_distance_along,
+    curve_distance_along = 2,
 };
 
 pub const Expr = struct { id: i32 };
 pub const Vec2 = struct { x: f64, y: f64 };
 pub const Vec3 = struct { x: f64, y: f64, z: f64 };
-pub const SlotPoint2 = struct { x: i32, y: i32 };
 pub const Interval = struct { lo: f64, hi: f64 };
 pub const Box3 = struct { xi: Interval, yi: Interval, zi: Interval };
 pub const Cube = struct { center: Vec3, half_size: f64 };
@@ -94,20 +105,11 @@ pub const Affine3 = struct {
     m23: Expr,
 };
 
-pub const SketchPrimitive = struct {
-    kind: PrimitiveKind,
-    p0: SlotPoint2 = .{ .x = -1, .y = -1 },
-    p1: SlotPoint2 = .{ .x = -1, .y = -1 },
-    p2: SlotPoint2 = .{ .x = -1, .y = -1 },
-    p3: SlotPoint2 = .{ .x = -1, .y = -1 },
-    radius: i32 = -1,
-    chord: i32 = -1,
-    max_camber: i32 = -1,
-    camber_pos: i32 = -1,
-    thickness: i32 = -1,
-    clockwise: bool = false,
-};
-
+/// `CurveDistanceAlong`'s primitive children live as a window in
+/// `node_refs[primitive_start..primitive_start+primitive_count]`. The
+/// names retain "primitive" for wire-format and historical continuity,
+/// but they always reference primitive subtree node ids now — not rows
+/// in the (retired) `Primitives` side table.
 pub const Intrinsic = struct {
     kind: IntrinsicKind,
     plane: Plane = .xy,
@@ -126,7 +128,7 @@ pub const Intrinsic = struct {
 pub const max_nodes = 4096;
 pub const max_affines = 256;
 pub const max_intrinsics = 512;
-pub const max_primitives = 2048;
+pub const max_node_refs = 8192;
 pub const max_tape_words = 4096;
 pub const max_immediates = 512;
 
@@ -137,8 +139,12 @@ pub const MathIR = struct {
     affine_count: usize = 0,
     intrinsics: [max_intrinsics]Intrinsic = undefined,
     intrinsic_count: usize = 0,
-    primitives: [max_primitives]SketchPrimitive = undefined,
-    primitive_count: usize = 0,
+    /// Packed child-id array. Used by Fold (`a`=start, `b`=count), the
+    /// sketch-primitive node kinds, and `CurveDistanceAlong`'s
+    /// primitive list (via `Intrinsic.primitive_start`/`primitive_count`).
+    /// Replaces the legacy `primitives` side table.
+    node_refs: [max_node_refs]i32 = undefined,
+    node_ref_count: usize = 0,
 
     pub fn node(self: *MathIR, n: Node) !Expr {
         if (self.node_count >= max_nodes) return error.NodeCapacity;
@@ -186,47 +192,77 @@ pub const MathIR = struct {
     pub fn remapAffine(self: *MathIR, target: Expr, affine: i32) !Expr {
         return self.node(.{ .kind = .remap_affine, .a = target.id, .b = affine });
     }
-    pub fn point2(_: *MathIR, x_slot: i32, y_slot: i32) SlotPoint2 {
-        return .{ .x = x_slot, .y = y_slot };
+    // The slot-indexed `point2` / `lineSegment` / `bezierQuadratic` /
+    // `circle` builders and the legacy `sketchDistance` / `sketchPath`
+    // intrinsics were retired in Phase 3. Use the `*N` builders below
+    // for sketch primitives and `fold(.min, …)` for "min over a curve
+    // list" — both emit pure subtree nodes.
+    /// Variadic fold over `children`. Returns a `Fold` node whose `a`
+    /// field is the start index of the children in `node_refs` and `b`
+    /// is the count. `op` selects the fold operator (min/max/sum).
+    pub fn fold(self: *MathIR, op: FoldOp, children: []const Expr) !Expr {
+        if (self.node_ref_count + children.len > max_node_refs) return error.NodeRefCapacity;
+        const start = self.node_ref_count;
+        for (children) |child| {
+            self.node_refs[self.node_ref_count] = child.id;
+            self.node_ref_count += 1;
+        }
+        return self.node(.{ .kind = .fold, .op = @intFromEnum(op), .a = @intCast(start), .b = @intCast(children.len) });
     }
-    pub fn pushPrimitive(self: *MathIR, primitive: SketchPrimitive) !i32 {
-        if (self.primitive_count >= max_primitives) return error.PrimitiveCapacity;
-        const id = self.primitive_count;
-        self.primitives[id] = primitive;
-        self.primitive_count += 1;
-        return @intCast(id);
+
+    /// Internal helper for primitive-as-node builders. Packs `children`
+    /// into `node_refs` and pushes a node of `kind` with `op` carrying
+    /// the plane (and any extra flag bits).
+    fn primitiveNode(self: *MathIR, kind: NodeKind, plane: Plane, op_extra: i32, children: []const Expr) !Expr {
+        if (self.node_ref_count + children.len > max_node_refs) return error.NodeRefCapacity;
+        const start = self.node_ref_count;
+        for (children) |child| {
+            self.node_refs[self.node_ref_count] = child.id;
+            self.node_ref_count += 1;
+        }
+        return self.node(.{
+            .kind = kind,
+            .op = @as(i32, @intFromEnum(plane)) * 2 + op_extra,
+            .a = @intCast(start),
+            .b = @intCast(children.len),
+        });
     }
-    pub fn lineSegment(self: *MathIR, start: SlotPoint2, stop: SlotPoint2) !i32 {
-        return self.pushPrimitive(.{ .kind = .line_segment, .p0 = start, .p1 = stop });
+
+    pub fn lineSegmentN(self: *MathIR, plane: Plane, p0x: Expr, p0y: Expr, p1x: Expr, p1y: Expr) !Expr {
+        return self.primitiveNode(.line_segment, plane, 0, &.{ p0x, p0y, p1x, p1y });
     }
-    pub fn bezierQuadratic(self: *MathIR, p0: SlotPoint2, p1: SlotPoint2, p2: SlotPoint2) !i32 {
-        return self.pushPrimitive(.{ .kind = .bezier_quadratic, .p0 = p0, .p1 = p1, .p2 = p2 });
+
+    pub fn circleN(self: *MathIR, plane: Plane, cx: Expr, cy: Expr, r: Expr) !Expr {
+        return self.primitiveNode(.circle, plane, 0, &.{ cx, cy, r });
     }
-    pub fn circle(self: *MathIR, center: SlotPoint2, radius: i32) !i32 {
-        return self.pushPrimitive(.{ .kind = .circle, .p0 = center, .radius = radius });
+
+    pub fn bezierQuadraticN(self: *MathIR, plane: Plane, p0x: Expr, p0y: Expr, p1x: Expr, p1y: Expr, p2x: Expr, p2y: Expr) !Expr {
+        return self.primitiveNode(.bezier_quadratic, plane, 0, &.{ p0x, p0y, p1x, p1y, p2x, p2y });
     }
-    pub fn sketchDistance(self: *MathIR, plane: Plane, primitive: i32) !Expr {
+
+    pub fn bezierCubicN(self: *MathIR, plane: Plane, p0x: Expr, p0y: Expr, p1x: Expr, p1y: Expr, p2x: Expr, p2y: Expr, p3x: Expr, p3y: Expr) !Expr {
+        return self.primitiveNode(.bezier_cubic, plane, 0, &.{ p0x, p0y, p1x, p1y, p2x, p2y, p3x, p3y });
+    }
+
+    pub fn arcCenterN(self: *MathIR, plane: Plane, sx: Expr, sy: Expr, ex: Expr, ey: Expr, cx: Expr, cy: Expr, clockwise: bool) !Expr {
+        const extra: i32 = if (clockwise) 1 else 0;
+        return self.primitiveNode(.arc_center, plane, extra, &.{ sx, sy, ex, ey, cx, cy });
+    }
+
+    pub fn curveDistanceAlong(self: *MathIR, plane: Plane, primitives: []const Expr, ax: Expr, ay: Expr, az: Expr, flip: bool) !Expr {
         if (self.intrinsic_count >= max_intrinsics) return error.IntrinsicCapacity;
-        const id = self.intrinsic_count;
-        self.intrinsics[id] = .{ .kind = .sketch_distance, .plane = plane, .primitive_start = primitive, .primitive_count = 1 };
-        self.intrinsic_count += 1;
-        return self.node(.{ .kind = .intrinsic, .a = @intCast(id) });
-    }
-    pub fn sketchPath(self: *MathIR, plane: Plane, primitive_start: i32, primitive_count_: i32, closed: bool, flip: bool) !Expr {
-        if (self.intrinsic_count >= max_intrinsics) return error.IntrinsicCapacity;
-        const id = self.intrinsic_count;
-        self.intrinsics[id] = .{ .kind = .sketch_path, .plane = plane, .primitive_start = primitive_start, .primitive_count = primitive_count_, .closed = closed, .flip = flip };
-        self.intrinsic_count += 1;
-        return self.node(.{ .kind = .intrinsic, .a = @intCast(id) });
-    }
-    pub fn curveDistanceAlong(self: *MathIR, plane: Plane, primitive_start: i32, primitive_count_: i32, ax: Expr, ay: Expr, az: Expr, flip: bool) !Expr {
-        if (self.intrinsic_count >= max_intrinsics) return error.IntrinsicCapacity;
+        if (self.node_ref_count + primitives.len > max_node_refs) return error.NodeRefCapacity;
+        const ref_start = self.node_ref_count;
+        for (primitives) |p| {
+            self.node_refs[self.node_ref_count] = p.id;
+            self.node_ref_count += 1;
+        }
         const id = self.intrinsic_count;
         self.intrinsics[id] = .{
             .kind = .curve_distance_along,
             .plane = plane,
-            .primitive_start = primitive_start,
-            .primitive_count = primitive_count_,
+            .primitive_start = @intCast(ref_start),
+            .primitive_count = @intCast(primitives.len),
             .flip = flip,
             .ax = ax.id,
             .ay = ay.id,
@@ -236,7 +272,3 @@ pub const MathIR = struct {
         return self.node(.{ .kind = .intrinsic, .a = @intCast(id) });
     }
 };
-
-pub inline fn expr(self: *MathIR, op: Binary, a: Expr, b: Expr) !Expr {
-    return self.binary(op, a, b);
-}

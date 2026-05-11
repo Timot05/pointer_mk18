@@ -171,6 +171,154 @@ let ``wing remap preview consumes two sketch refs and emits remapped profile`` (
         Assert.Contains("fn wing_preview", wgsl)
     | other -> failwithf "expected VField, got %A" other
 
+// ─── Sketch primitives (subtree nodes) ────────────────────────────────────
+
+[<Fact>]
+let ``from-sketch over two lines roots a Fold(Min, [LineSegment; LineSegment])`` () =
+    let sk =
+        { Entities =
+            [ REPoint("a0", 0.0, 0.0)
+              REPoint("a1", 1.0, 0.0)
+              REPoint("b0", 0.0, 1.0)
+              REPoint("b1", 1.0, 1.0)
+              RELine("la", "a0", "a1")
+              RELine("lb", "b0", "b1") ]
+          Constraints = [] }
+    let nb =
+        notebookOf [
+            sketchBlockOf 0 "sk" sk XY
+            nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
+        ]
+    let result = NotebookEval.eval nb
+    let be = blockEvalOf 1 result
+    Assert.Equal(None, be.Error)
+    match be.Output with
+    | Some (Value.VField root) ->
+        let rootNode = result.Ir.Nodes.[root.Id]
+        Assert.Equal(MathIr.NodeKind.Fold, rootNode.Kind)
+        Assert.Equal(int MathIr.FoldOp.Min, rootNode.Op)
+        Assert.Equal(2, rootNode.B)
+        // Each child should be a LineSegment node.
+        for k in 0 .. rootNode.B - 1 do
+            let childId = result.Ir.NodeRefs.[rootNode.A + k]
+            let childNode = result.Ir.Nodes.[childId]
+            Assert.Equal(MathIr.NodeKind.LineSegment, childNode.Kind)
+    | other -> failwithf "expected VField, got %A" other
+
+[<Fact>]
+let ``from-sketch over a single line returns the LineSegment node directly`` () =
+    let sk =
+        { Entities =
+            [ REPoint("p0", 0.0, 0.0)
+              REPoint("p1", 1.0, 0.0)
+              RELine("l", "p0", "p1") ]
+          Constraints = [] }
+    let nb =
+        notebookOf [
+            sketchBlockOf 0 "sk" sk XY
+            nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
+        ]
+    let result = NotebookEval.eval nb
+    let be = blockEvalOf 1 result
+    match be.Output with
+    | Some (Value.VField root) ->
+        Assert.Equal(MathIr.NodeKind.LineSegment, result.Ir.Nodes.[root.Id].Kind)
+    | other -> failwithf "expected VField, got %A" other
+
+[<Fact>]
+let ``from-sketch over a triangle wraps the Fold(Min, ...) in a sign flip (Mul)`` () =
+    // Three line segments forming a closed loop share endpoint ids; the
+    // loop detector picks this up and from-sketch lowers as
+    //   signed = unsigned * (-compare(|fold(Sum, windings)|, π))
+    // The root MathIR node should be a Binary.Mul.
+    let sk =
+        { Entities =
+            [ REPoint("a", 0.0, 0.0)
+              REPoint("b", 1.0, 0.0)
+              REPoint("c", 0.5, 1.0)
+              RELine("ab", "a", "b")
+              RELine("bc", "b", "c")
+              RELine("ca", "c", "a") ]
+          Constraints = [] }
+    let nb =
+        notebookOf [
+            sketchBlockOf 0 "sk" sk XY
+            nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
+        ]
+    let result = NotebookEval.eval nb
+    let be = blockEvalOf 1 result
+    Assert.Equal(None, be.Error)
+    match be.Output with
+    | Some (Value.VField root) ->
+        let rootNode = result.Ir.Nodes.[root.Id]
+        Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
+        Assert.Equal(int MathIr.Binary.Mul, rootNode.Op)
+        // Left operand is the unsigned fold-min of 3 line segments.
+        let unsignedNode = result.Ir.Nodes.[rootNode.A]
+        Assert.Equal(MathIr.NodeKind.Fold, unsignedNode.Kind)
+        Assert.Equal(int MathIr.FoldOp.Min, unsignedNode.Op)
+        Assert.Equal(3, unsignedNode.B)
+    | other -> failwithf "expected VField, got %A" other
+
+[<Fact>]
+let ``from-sketch over a single circle lowers to analytic signed disk distance`` () =
+    // A lone circle is its own closed loop; the lowering emits
+    //   sqrt((x-cx)² + (y-cy)²) - r
+    // The root is a Binary.Sub of (Unary.Sqrt of ...) - (Const r).
+    let sk =
+        { Entities =
+            [ REPoint("c", 0.0, 0.0)
+              RECircle("circ", "c", 1.5) ]
+          Constraints = [] }
+    let nb =
+        notebookOf [
+            sketchBlockOf 0 "sk" sk XY
+            nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
+        ]
+    let result = NotebookEval.eval nb
+    let be = blockEvalOf 1 result
+    Assert.Equal(None, be.Error)
+    match be.Output with
+    | Some (Value.VField root) ->
+        let rootNode = result.Ir.Nodes.[root.Id]
+        Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
+        Assert.Equal(int MathIr.Binary.Sub, rootNode.Op)
+        // Left operand is sqrt(...)
+        let sqrtNode = result.Ir.Nodes.[rootNode.A]
+        Assert.Equal(MathIr.NodeKind.UnaryK, sqrtNode.Kind)
+        Assert.Equal(int MathIr.Unary.Sqrt, sqrtNode.Op)
+    | other -> failwithf "expected VField, got %A" other
+
+// ─── Fold node ─────────────────────────────────────────────────────────────
+
+[<Fact>]
+let ``Fold node packs children into NodeRefs and round-trips through evalPoint`` () =
+    let ir = MathIr.MathIR()
+    let a = ir.Constant 3.0
+    let b = ir.Constant 1.0
+    let c = ir.Constant 2.0
+    let folded = ir.Fold(MathIr.FoldOp.Min, [ a; b; c ])
+
+    let foldNode = ir.Nodes.[folded.Id]
+    Assert.Equal(MathIr.NodeKind.Fold, foldNode.Kind)
+    Assert.Equal(int MathIr.FoldOp.Min, foldNode.Op)
+    Assert.Equal(3, foldNode.B)               // count
+    Assert.Equal(3, ir.NodeRefs.Count)         // a, b, c packed in
+    Assert.Equal(0, foldNode.A)                // start index
+    Assert.Equal(a.Id, ir.NodeRefs.[0])
+    Assert.Equal(b.Id, ir.NodeRefs.[1])
+    Assert.Equal(c.Id, ir.NodeRefs.[2])
+
+[<Fact>]
+let ``Fold emits a fn through MathIrWgsl with one return per entry`` () =
+    let ir = MathIr.MathIR()
+    let a = ir.Constant 3.0
+    let b = ir.Constant 1.0
+    let folded = ir.Fold(MathIr.FoldOp.Min, [ a; b ])
+    let wgsl = MathIrWgsl.emit ir folded "fold_test"
+    Assert.Contains("fn fold_test", wgsl)
+    Assert.Contains("return", wgsl)
+
 // ─── compileView ───────────────────────────────────────────────────────────
 
 [<Fact>]

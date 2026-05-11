@@ -4,30 +4,29 @@ const math_reg_tape = @import("math_reg_tape.zig");
 const math_grad = @import("math_grad.zig");
 const math_simd_eval = @import("math_simd_eval.zig");
 const camera_frame = @import("camera_frame.zig");
+pub const mesh = @import("mesh.zig");
 
 pub const Axis = math_ir.Axis;
 pub const Plane = math_ir.Plane;
 pub const Unary = math_ir.Unary;
 pub const Binary = math_ir.Binary;
 pub const NodeKind = math_ir.NodeKind;
-pub const PrimitiveKind = math_ir.PrimitiveKind;
+pub const FoldOp = math_ir.FoldOp;
 pub const IntrinsicKind = math_ir.IntrinsicKind;
 pub const Expr = math_ir.Expr;
 pub const Vec2 = math_ir.Vec2;
 pub const Vec3 = math_ir.Vec3;
-pub const SlotPoint2 = math_ir.SlotPoint2;
 pub const Interval = math_ir.Interval;
 pub const Box3 = math_ir.Box3;
 pub const Cube = math_ir.Cube;
 pub const Node = math_ir.Node;
 pub const Affine3 = math_ir.Affine3;
-pub const SketchPrimitive = math_ir.SketchPrimitive;
 pub const Intrinsic = math_ir.Intrinsic;
 pub const MathIR = math_ir.MathIR;
 pub const max_nodes = math_ir.max_nodes;
 pub const max_affines = math_ir.max_affines;
 pub const max_intrinsics = math_ir.max_intrinsics;
-pub const max_primitives = math_ir.max_primitives;
+pub const max_node_refs = math_ir.max_node_refs;
 pub const max_tape_words = math_ir.max_tape_words;
 pub const max_immediates = math_ir.max_immediates;
 
@@ -38,7 +37,6 @@ pub const box3 = math_eval.box3;
 pub const evalUnaryPoint = math_eval.evalUnaryPoint;
 pub const evalBinaryPoint = math_eval.evalBinaryPoint;
 pub const evalPoint = math_eval.evalPoint;
-pub const evalSketchDistance = math_eval.evalSketchDistance;
 pub const evalInterval = math_eval.evalInterval;
 
 pub const RegOp = math_reg_tape.Op;
@@ -69,4 +67,3 @@ pub const wrapWithCameraFrame = camera_frame.wrapWithCameraFrame;
 pub const CameraAxes = camera_frame.CameraAxes;
 pub const buildCameraAxes = camera_frame.buildCameraAxes;
 pub const wrapWithAxes = camera_frame.wrapWithAxes;
-

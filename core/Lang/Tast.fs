@@ -31,6 +31,12 @@ module Tast =
         | TEBinary of op: BinaryOp * left: TExpr * right: TExpr
         | TEUnary of op: UnaryOp * inner: TExpr
         | TERemapAxes of target: TExpr * x: TExpr * y: TExpr * z: TExpr
+        | TEFold of op: MathIr.FoldOp * children: TExpr list
+        | TELineSegment of plane: MathIr.Plane * TExpr * TExpr * TExpr * TExpr
+        | TECircle of plane: MathIr.Plane * TExpr * TExpr * TExpr
+        | TEBezierQuadratic of plane: MathIr.Plane * TExpr * TExpr * TExpr * TExpr * TExpr * TExpr
+        | TEBezierCubic of plane: MathIr.Plane * TExpr * TExpr * TExpr * TExpr * TExpr * TExpr * TExpr * TExpr
+        | TEArcCenter of plane: MathIr.Plane * TExpr * TExpr * TExpr * TExpr * TExpr * TExpr * clockwise: bool
         | TEBlock of stmts: TStmt list
         | TEList of items: TExpr list
         | TETuple of items: TExpr list

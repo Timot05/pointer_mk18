@@ -269,6 +269,147 @@ module Builtins =
                 |> Result.map VField
             | _ -> evalError span "@from_sketch: argument must be a sketch"
 
+    // -- wing_remap_preview ------------------------------------------------------
+    //
+    // Experimental wing parameterization probe. It consumes two XY sketch
+    // blocks, extracts the first line from each as leading/trailing guide
+    // curves, emits CurveDistanceAlong for both, and remaps a unit
+    // chord/span strip through those coordinate fields. The result is not a
+    // closed solid; it is an inspectable field for validating the remap path.
+
+    type private LineGuide =
+        { Primitive: int
+          X0: float
+          Y0: float
+          X1: float
+          Y1: float
+          MinY: float
+          MaxY: float }
+
+    let private lineXAtY (g: LineGuide) (y: float) : float =
+        let dy = g.Y1 - g.Y0
+        if abs dy < 1.0e-9 then g.X0
+        else
+            let t = (y - g.Y0) / dy
+            g.X0 + t * (g.X1 - g.X0)
+
+    let private tryPointCoords (sketch: Server.ActionSketch) pointId =
+        sketch.Entities
+        |> List.tryPick (function
+            | Server.REPoint(id, x, y) when id = pointId -> Some(x, y)
+            | _ -> None)
+
+    let private emitFirstLineGuide
+            (ir: MathIr.MathIR)
+            (span: Span)
+            (name: string)
+            (sv: SketchValue) : Result<LineGuide, EvalError> =
+        match sv.Plane with
+        | Server.XY ->
+            match sv.Sketch.Entities |> List.tryPick (function Server.RELine(_, a, b) -> Some(a, b) | _ -> None) with
+            | None -> evalError span (sprintf "@wing_remap_preview: %s sketch must contain a line" name)
+            | Some(a, b) ->
+                match tryPointCoords sv.Sketch a, tryPointCoords sv.Sketch b with
+                | Some(x0, y0), Some(x1, y1) ->
+                    let p0 = ir.Point2((ir.Constant x0).Id, (ir.Constant y0).Id)
+                    let p1 = ir.Point2((ir.Constant x1).Id, (ir.Constant y1).Id)
+                    Ok
+                        { Primitive = ir.LineSegment(p0, p1)
+                          X0 = x0
+                          Y0 = y0
+                          X1 = x1
+                          Y1 = y1
+                          MinY = min y0 y1
+                          MaxY = max y0 y1 }
+                | _ -> evalError span (sprintf "@wing_remap_preview: %s line endpoints are missing" name)
+        | _ -> evalError span "@wing_remap_preview: only XY sketches are supported for now"
+
+    let private wingRemapPreviewImpl
+            (ctx: EvalContext)
+            (span: Span)
+            (leading: SketchValue)
+            (trailing: SketchValue) : Result<MathIr.Expr, EvalError> =
+        let ir = ctx.Ir
+        emitFirstLineGuide ir span "leading" leading >>= fun le ->
+        emitFirstLineGuide ir span "trailing" trailing >>= fun te ->
+            let axisX = ir.Constant 1.0
+            let axisY = ir.Constant 0.0
+            let axisZ = ir.Constant 0.0
+            let dLeading =
+                ir.CurveDistanceAlong(MathIr.Plane.XY, le.Primitive, 1, axisX, axisY, axisZ, false)
+            let dTrailing =
+                ir.CurveDistanceAlong(MathIr.Plane.XY, te.Primitive, 1, axisX, axisY, axisZ, false)
+            // Two-body coordinate from the nTop variable-loft recipe. With
+            // our CurveDistanceAlong sign convention (`curve_x - sample_x`),
+            // A = leading - x and B = trailing - x. `-(A+B)/(B-A)` maps
+            // leading edge → -1, mid-chord → 0, trailing edge → +1.
+            let clearance = ir.Binary(MathIr.Binary.Sub, dTrailing, dLeading)
+            let midsurface = ir.Binary(MathIr.Binary.Add, dLeading, dTrailing)
+            let twoBody =
+                ir.Unary(
+                    MathIr.Unary.Neg,
+                    ir.Binary(MathIr.Binary.Div, midsurface, clearance))
+
+            let rootY = max le.MinY te.MinY
+            let rootChord =
+                max (abs (lineXAtY te rootY - lineXAtY le rootY)) 1.0e-6
+            let localChord =
+                ir.Binary(
+                    MathIr.Binary.Max,
+                    ir.Unary(MathIr.Unary.Abs, clearance),
+                    ir.Constant 1.0e-6)
+            let chordScale =
+                ir.Binary(MathIr.Binary.Div, localChord, ir.Constant rootChord)
+            let scaledZ = ir.Binary(MathIr.Binary.Div, ir.Z(), chordScale)
+
+            // Canonical cambered airfoil-like source profile in x/z, with
+            // x in [-1, 1]. Remapping by `twoBody` handles chord taper and
+            // sweep; remapping z by local/root chord keeps thickness ratio.
+            let sx = ir.X()
+            let sz = ir.Z()
+            let one = ir.Constant 1.0
+            let oneMinusXSq =
+                ir.Binary(
+                    MathIr.Binary.Sub,
+                    one,
+                    ir.Unary(MathIr.Unary.Square, sx))
+            let camber =
+                ir.Binary(MathIr.Binary.Mul, ir.Constant 0.035, oneMinusXSq)
+            let thickness =
+                ir.Binary(MathIr.Binary.Mul, ir.Constant 0.11, oneMinusXSq)
+            let chordWindow =
+                ir.Binary(MathIr.Binary.Sub, ir.Unary(MathIr.Unary.Abs, sx), one)
+            let heightWindow =
+                ir.Binary(
+                    MathIr.Binary.Sub,
+                    ir.Unary(MathIr.Unary.Abs, ir.Binary(MathIr.Binary.Sub, sz, camber)),
+                    thickness)
+            let sourceProfile = ir.Binary(MathIr.Binary.Max, chordWindow, heightWindow)
+            let remappedProfile = ir.RemapAxes(sourceProfile, twoBody, ir.Y(), scaledZ)
+
+            let minY = max le.MinY te.MinY
+            let maxY = min le.MaxY te.MaxY
+            let centerY = (minY + maxY) * 0.5
+            let halfY = max ((maxY - minY) * 0.5) 1.0e-6
+            let spanWindow =
+                ir.Binary(
+                    MathIr.Binary.Sub,
+                    ir.Unary(MathIr.Unary.Abs, ir.Binary(MathIr.Binary.Sub, ir.Y(), ir.Constant centerY)),
+                    ir.Constant halfY)
+
+            Ok (ir.Binary(MathIr.Binary.Max, remappedProfile, spanWindow))
+
+    let private wingRemapPreviewCall (ctx: EvalContext) (span: Span) (args: ArgValue list) =
+        let pos = positionals args
+        let named = namedMap args
+        requireArg span pos named 0 "leading" >>= fun lv ->
+        requireArg span pos named 1 "trailing" >>= fun tv ->
+            match lv, tv with
+            | VSketch leading, VSketch trailing ->
+                wingRemapPreviewImpl ctx span leading trailing
+                |> Result.map VField
+            | _ -> evalError span "@wing_remap_preview: arguments must be sketches"
+
     /// Dispatch table for `@name(...)` calls (excluding the input/output/view
     /// specials, which the evaluator routes directly to `ctx.Specials`).
     let dispatch
@@ -287,6 +428,7 @@ module Builtins =
         | "thicken" -> thickenCall ctx span args
         | "rotate" -> rotateCall ctx span args
         | "from_sketch" -> fromSketchCall ctx span args
+        | "wing_remap_preview" -> wingRemapPreviewCall ctx span args
         | _ -> evalError span (sprintf "unknown builtin @%s" name)
 
     /// Positional arities for the curried `@name` form. `print` / `debug`
@@ -303,6 +445,7 @@ module Builtins =
         | "thicken" -> Some 2
         | "rotate" -> Some 4
         | "from_sketch" -> Some 1
+        | "wing_remap_preview" -> Some 2
         | "print" -> Some 2
         | "debug" -> Some 1
         | _ -> None

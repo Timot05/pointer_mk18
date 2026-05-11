@@ -5,17 +5,19 @@ namespace Server.Lang
 // `kernel/src/math_ir_decode.zig`.
 //
 // Header (32 bytes, MIR2):
-//   u32 magic = "MIR2"  u32 version = 2
+//   u32 magic = "MIR2"  u32 version = 3
 //   u32 node_count       u32 affine_count
 //   u32 intrinsic_count  u32 primitive_count
 //   u32 root             u32 view_count
 //
 // Sections (in order): nodes × 32, affines × 48, intrinsics × 48,
-// primitives × 64, views × 8.
+// primitives × 64, views × 12.
 //
-// View entry (8 bytes): { i32 expr_id; u32 palette_idx; }. One per
-// visible Field block — kernel renders each separately to determine
-// the winning block per pixel for colour assignment.
+// View entry (12 bytes): { i32 expr_id; u32 palette_idx; u32 kind; }.
+// One per visible Field block. `kind` selects the renderer shading mode
+// (0 = opaque surface, 1 = field-lines, 2 = isosurface). The kernel
+// renders each view separately to determine the winning block per pixel
+// for colour assignment.
 //
 // All fields little-endian. Per-element layouts mirror the in-memory MathIR
 // types byte-for-byte where natural; explicit padding keeps section strides
@@ -29,14 +31,14 @@ module MathIrCodec =
 
     /// "MIR2" little-endian.
     let MAGIC : uint32 = 0x4D495232u
-    let VERSION : uint32 = 2u
+    let VERSION : uint32 = 3u
 
     let private HEADER_BYTES = 32
     let private NODE_BYTES = 32
     let private AFFINE_BYTES = 48
     let private INTRINSIC_BYTES = 48
     let private PRIMITIVE_BYTES = 64
-    let private VIEW_BYTES = 8
+    let private VIEW_BYTES = 12
 
     [<Emit("new Uint8Array($0)")>]
     let private createUint8Array (len: int) : obj = jsNative
@@ -115,7 +117,7 @@ module MathIrCodec =
 
     /// Compute the total byte size of a (MathIR, root, views) encoding
     /// without allocating. Useful for tests and capacity assertions.
-    let byteSize (ir: MathIr.MathIR) (views: (MathIr.Expr * uint32) list) : int =
+    let byteSize (ir: MathIr.MathIR) (views: (MathIr.Expr * uint32 * uint32) list) : int =
         HEADER_BYTES
         + ir.Nodes.Count * NODE_BYTES
         + ir.Affines.Count * AFFINE_BYTES
@@ -126,9 +128,10 @@ module MathIrCodec =
     /// Serialize (ir, root, views) to a Uint8Array suitable for
     /// `Wasm.uploadIr`. `views` is one entry per visible Field block —
     /// the kernel renders each separately so the winning block at each
-    /// pixel can be coloured by `palette_idx`. An empty list produces
-    /// the same render as a single `root` view (no per-pixel tag eval).
-    let serialize (ir: MathIr.MathIR) (root: MathIr.Expr) (views: (MathIr.Expr * uint32) list) : obj =
+    /// pixel can be coloured by `palette_idx` and shaded by `kind`. An
+    /// empty list produces the same render as a single `root` view (no
+    /// per-pixel tag eval).
+    let serialize (ir: MathIr.MathIR) (root: MathIr.Expr) (views: (MathIr.Expr * uint32 * uint32) list) : obj =
         let total = byteSize ir views
         let buf = createUint8Array total
         let dv = dvOver buf
@@ -163,9 +166,10 @@ module MathIrCodec =
         for i in 0 .. primitiveCount - 1 do
             writePrimitive dv off ir.Primitives.[i]
             off <- off + PRIMITIVE_BYTES
-        for (expr, paletteIdx) in views do
+        for (expr, paletteIdx, kind) in views do
             setI32 dv off expr.Id
             setU32 dv (off + 4) paletteIdx
+            setU32 dv (off + 8) kind
             off <- off + VIEW_BYTES
 
         buf

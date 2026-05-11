@@ -199,6 +199,19 @@ module BlockSpec =
           Body = lambda [ "sketch", Type.Sketch ] body
           ScalarDefaults = Map.empty }
 
+    /// `wing-remap-preview leading trailing` — experimental field that
+    /// remaps a canonical unit chord/span strip through two one-line XY
+    /// sketch guides. This validates the curve-distance/remap path before
+    /// adding airfoil thickness or a closed wing solid.
+    let private wingRemapPreviewSpec : BlockSpec =
+        let body =
+            mk (EApply(
+                mk (EApply(internalE "wing_remap_preview", varE "leading")),
+                varE "trailing"))
+        { Name = "wing-remap-preview"
+          Body = lambda [ "leading", Type.Sketch; "trailing", Type.Sketch ] body
+          ScalarDefaults = Map.empty }
+
     do register sphereSpec
     do register boxSpec
     do register cylinderSpec
@@ -208,6 +221,7 @@ module BlockSpec =
     do register subtractSpec
     do register thickenSpec
     do register fromSketchSpec
+    do register wingRemapPreviewSpec
 
     // ── Lookups ────────────────────────────────────────────────────────────
 

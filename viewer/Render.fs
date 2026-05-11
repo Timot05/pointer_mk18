@@ -63,11 +63,14 @@ let private writeSketchUniforms
 /// Render one frame. Call from a requestAnimationFrame loop in Viewer.
 /// The 3D field is produced by the Zig-WASM voxel kernel (`background`).
 /// The GPU raymarcher was retired alongside the action graph and its
-/// source files have been deleted.
+/// source files have been deleted. `fieldSlice` overlays iso-contour
+/// lines on per-block slice planes for any block whose visibility is
+/// `VFieldLines`.
 let renderFrame
         (scene: Scene.Scene)
         (toolCursor: (ActionId * float * float) option)
-        (background: Kernel.Background.Background option) =
+        (background: Kernel.Background.Background option)
+        (fieldSlice: FieldSlice.FieldSlice) =
     let w : int = scene.Canvas?width
     let h : int = scene.Canvas?height
 
@@ -105,6 +108,30 @@ let renderFrame
         Kernel.Background.update bg
         Kernel.Background.draw bg colorPass
     | None -> ()
+
+    // Field-slice overlay. Iso-contour quads for any block whose
+    // visibility is `VFieldLines`. Drawn after the background so its
+    // depth writes integrate with the surface; sketches drawn after
+    // can z-test against either surface.
+    let sliceInputs =
+        match state.NotebookIr with
+        | None -> []
+        | Some _ ->
+            state.Doc.Blocks
+            |> List.choose (fun (b: Server.Lang.Notebook.Block) ->
+                if b.Visibility <> Server.Lang.Notebook.VFieldLines then None
+                else
+                    match Map.tryFind b.Id state.NotebookFieldExprByBlock with
+                    | None -> None
+                    | Some expr ->
+                        Some
+                            { FieldSlice.BlockId   = b.Id
+                              FieldSlice.EntryName = sprintf "block_%d" b.Id
+                              FieldSlice.Expr      = expr
+                              FieldSlice.Plane     = b.SlicePlane })
+    FieldSlice.update fieldSlice state.NotebookIr sliceInputs state.SlotValues
+    FieldSlice.draw fieldSlice colorPass
+
     let model = ViewerPipeline.viewerModel state
     let viewState = ViewerPipeline.viewerState state
 

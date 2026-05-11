@@ -11,13 +11,15 @@ let private nativeBlock id name specName args : Block =
     { Id = id
       Name = name
       Body = NativeBody(specName, Map.ofList args)
-      Visibility = VVisible }
+      Visibility = VIsosurface
+      SlicePlane = defaultSlicePlane }
 
 let private sketchBlockOf id name (sketch: ActionSketch) (plane: SketchPlane) : Block =
     { Id = id
       Name = name
       Body = SketchBody { Sketch = sketch; Plane = plane }
-      Visibility = VVisible }
+      Visibility = VIsosurface
+      SlicePlane = defaultSlicePlane }
 
 let private notebookOf (blocks: Block list) : Notebook =
     { NextId = List.length blocks; Blocks = blocks }
@@ -29,6 +31,13 @@ let private simpleLineSketch : ActionSketch =
     { Entities =
         [ REPoint("p0", 0.0, 0.0)
           REPoint("p1", 1.0, 0.0)
+          RELine("l0", "p0", "p1") ]
+      Constraints = [] }
+
+let private verticalLineSketch x : ActionSketch =
+    { Entities =
+        [ REPoint("p0", x, 0.0)
+          REPoint("p1", x, 2.0)
           RELine("l0", "p0", "p1") ]
       Constraints = [] }
 
@@ -115,6 +124,34 @@ let ``sketch block surfaces as a VSketch output`` () =
         Assert.Equal(3, List.length sv.Sketch.Entities)
         Assert.Equal(XY, sv.Plane)
     | other -> failwithf "expected VSketch, got %A" other
+
+[<Fact>]
+let ``wing remap preview consumes two sketch refs and emits remapped profile`` () =
+    let nb =
+        notebookOf [
+            sketchBlockOf 0 "leading" (verticalLineSketch 0.0) XY
+            sketchBlockOf 1 "trailing" (verticalLineSketch 1.0) XY
+            nativeBlock 2 "wing" "wing-remap-preview"
+                [ "leading", ArgRef (Some 0)
+                  "trailing", ArgRef (Some 1) ]
+        ]
+    let result = NotebookEval.eval nb
+    let be = blockEvalOf 2 result
+    Assert.Equal(None, be.Error)
+    match be.Output with
+    | Some (Value.VField root) ->
+        let rootNode = result.Ir.Nodes.[root.Id]
+        Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
+        Assert.Equal(int MathIr.Binary.Max, rootNode.Op)
+        let curveIntrinsics =
+            result.Ir.Intrinsics
+            |> Seq.filter (fun i -> i.Kind = MathIr.IntrinsicKind.CurveDistanceAlong)
+            |> Seq.length
+        Assert.Equal(2, curveIntrinsics)
+        let wgsl = MathIrWgsl.emit result.Ir root "wing_preview"
+        Assert.Contains("let_axis_line_distance", wgsl)
+        Assert.Contains("fn wing_preview", wgsl)
+    | other -> failwithf "expected VField, got %A" other
 
 // ─── compileView ───────────────────────────────────────────────────────────
 

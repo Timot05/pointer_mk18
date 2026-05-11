@@ -74,6 +74,9 @@ fn v2Scale(a: Vec2, s: f64) Vec2 {
 fn v2Dot(a: Vec2, b: Vec2) f64 {
     return a.x * b.x + a.y * b.y;
 }
+fn v2Cross(a: Vec2, b: Vec2) f64 {
+    return a.x * b.y - a.y * b.x;
+}
 fn v2Len(a: Vec2) f64 {
     return @sqrt(v2Dot(a, a));
 }
@@ -260,6 +263,161 @@ pub fn evalSketchDistance(ir: *const MathIR, primitive: SketchPrimitive, p: Vec3
     };
 }
 
+const AxisHit = struct {
+    found: bool = false,
+    s: f64 = 0.0,
+    score: f64 = 0.0,
+};
+
+fn offerAxisHit(best: *AxisHit, s: f64, score: f64) void {
+    if (!math.isFinite(s) or !math.isFinite(score)) return;
+    if (!best.found or score < best.score) {
+        best.* = .{ .found = true, .s = s, .score = score };
+    }
+}
+
+fn offerCurvePointFallback(best: *AxisHit, q: Vec2, dir: Vec2, point: Vec2) void {
+    const delta = v2Sub(point, q);
+    const s = v2Dot(delta, dir);
+    const perpendicular = absFloat(v2Cross(delta, dir));
+    offerAxisHit(best, s, perpendicular);
+}
+
+fn endpoint_axis_fallback(q: Vec2, dir: Vec2, a: Vec2, b: Vec2) f64 {
+    var best = AxisHit{};
+    offerCurvePointFallback(&best, q, dir, a);
+    offerCurvePointFallback(&best, q, dir, b);
+    return if (best.found) best.s else math.nan(f64);
+}
+
+fn solveQuadratic(a: f64, b: f64, c: f64, roots: *[2]f64) usize {
+    const eps = 1.0e-12;
+    if (absFloat(a) < eps) {
+        if (absFloat(b) < eps) return 0;
+        roots[0] = -c / b;
+        return 1;
+    }
+    const disc = b * b - 4.0 * a * c;
+    if (disc < -eps) return 0;
+    if (absFloat(disc) <= eps) {
+        roots[0] = -b / (2.0 * a);
+        return 1;
+    }
+    const sqrt_disc = @sqrt(disc);
+    roots[0] = (-b - sqrt_disc) / (2.0 * a);
+    roots[1] = (-b + sqrt_disc) / (2.0 * a);
+    return 2;
+}
+
+fn curveDistanceAlongLineSegment(q: Vec2, dir: Vec2, a: Vec2, b: Vec2) f64 {
+    const e = v2Sub(b, a);
+    const den = v2Cross(dir, e);
+    if (absFloat(den) >= 1.0e-12) {
+        const aq = v2Sub(a, q);
+        return v2Cross(aq, e) / den;
+    }
+    return endpoint_axis_fallback(q, dir, a, b);
+}
+
+fn curveDistanceAlongCircle(q: Vec2, dir: Vec2, center: Vec2, radius: f64) f64 {
+    var best = AxisHit{};
+    const m = v2Sub(q, center);
+    const b = 2.0 * v2Dot(m, dir);
+    const c = v2Dot(m, m) - radius * radius;
+    var roots: [2]f64 = undefined;
+    const count = solveQuadratic(1.0, b, c, &roots);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        offerAxisHit(&best, roots[i], absFloat(roots[i]));
+    }
+    if (!best.found) {
+        // No axis-line intersection. Return the signed axis offset to the
+        // closest approach to the circle's center instead of poisoning the
+        // field with NaN.
+        const s_center = v2Dot(v2Sub(center, q), dir);
+        offerAxisHit(&best, s_center, absFloat(v2Cross(v2Sub(center, q), dir)) - radius);
+    }
+    return if (best.found) best.s else math.nan(f64);
+}
+
+fn curveDistanceAlongQuadratic(q: Vec2, dir: Vec2, p0: Vec2, p1: Vec2, p2: Vec2) f64 {
+    var best = AxisHit{};
+    var tangentBest = AxisHit{};
+
+    // C(t) = a*t^2 + b*t + c in power basis.
+    const qa = v2Add(v2Sub(p2, v2Scale(p1, 2.0)), p0);
+    const qb = v2Scale(v2Sub(p1, p0), 2.0);
+    const qc = v2Sub(p0, q);
+
+    var roots: [2]f64 = undefined;
+    const count = solveQuadratic(v2Cross(qa, dir), v2Cross(qb, dir), v2Cross(qc, dir), &roots);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const t = roots[i];
+        if (t >= -1.0e-9 and t <= 1.0 + 1.0e-9) {
+            const cpt = bezierQuadraticPoint(clamp(0.0, 1.0, t), p0, p1, p2);
+            const s = v2Dot(v2Sub(cpt, q), dir);
+            offerAxisHit(&best, s, absFloat(s));
+        } else {
+            const tangentS =
+                if (t < 0.0)
+                    curveDistanceAlongLineSegment(q, dir, p0, v2Add(p0, v2Sub(p1, p0)))
+                else
+                    curveDistanceAlongLineSegment(q, dir, p2, v2Add(p2, v2Sub(p2, p1)));
+            offerAxisHit(&tangentBest, tangentS, absFloat(t));
+        }
+    }
+    if (!best.found) {
+        if (tangentBest.found) {
+            best = tangentBest;
+        } else {
+            offerCurvePointFallback(&best, q, dir, p0);
+            offerCurvePointFallback(&best, q, dir, p2);
+        }
+    }
+    return if (best.found) best.s else math.nan(f64);
+}
+
+fn planeAxis(axis: Vec3, plane: Plane) Vec2 {
+    return switch (plane) {
+        .xy => v2(axis.x, axis.y),
+        .xz => v2(axis.x, axis.z),
+        .yz => v2(axis.y, axis.z),
+    };
+}
+
+fn curveDistanceAlong(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, p: Vec3) f64 {
+    if (intrinsic.primitive_start < 0 or intrinsic.primitive_count <= 0) return math.nan(f64);
+    if (intrinsic.ax < 0 or intrinsic.ay < 0 or intrinsic.az < 0) return math.nan(f64);
+
+    const axis3 = Vec3{
+        .x = evalPoint(ir, .{ .id = intrinsic.ax }, slots, p),
+        .y = evalPoint(ir, .{ .id = intrinsic.ay }, slots, p),
+        .z = evalPoint(ir, .{ .id = intrinsic.az }, slots, p),
+    };
+    const axis2 = planeAxis(axis3, intrinsic.plane);
+    const axis_len = v2Len(axis2);
+    if (axis_len < 1.0e-12) return math.nan(f64);
+    const dir = v2Scale(axis2, 1.0 / axis_len);
+    const q = planePoint(p, intrinsic.plane);
+
+    var best = AxisHit{};
+    var i: usize = 0;
+    while (i < @as(usize, @intCast(intrinsic.primitive_count))) : (i += 1) {
+        const primitive = ir.primitives[@as(usize, @intCast(intrinsic.primitive_start)) + i];
+        const s = switch (primitive.kind) {
+            .line_segment => curveDistanceAlongLineSegment(q, dir, nodePoint2(ir, primitive.p0), nodePoint2(ir, primitive.p1)),
+            .circle => curveDistanceAlongCircle(q, dir, nodePoint2(ir, primitive.p0), nodeValue(ir, primitive.radius)),
+            .bezier_quadratic => curveDistanceAlongQuadratic(q, dir, nodePoint2(ir, primitive.p0), nodePoint2(ir, primitive.p1), nodePoint2(ir, primitive.p2)),
+            else => math.nan(f64),
+        };
+        offerAxisHit(&best, s, absFloat(s));
+    }
+
+    if (!best.found) return math.nan(f64);
+    return if (intrinsic.flip) -best.s else best.s;
+}
+
 fn segmentWindingAngle(p: Vec2, a: Vec2, b: Vec2) f64 {
     const v0x = a.x - p.x;
     const v0y = a.y - p.y;
@@ -311,11 +469,11 @@ fn sketchPathDist(ir: *const MathIR, intrinsic: Intrinsic, p: Vec3) f64 {
     return if (intrinsic.flip) -signed else signed;
 }
 
-pub fn evalIntrinsicPoint(ir: *const MathIR, intrinsic: Intrinsic, _: []const f64, p: Vec3) f64 {
+pub fn evalIntrinsicPoint(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, p: Vec3) f64 {
     return switch (intrinsic.kind) {
         .sketch_distance => evalSketchDistance(ir, ir.primitives[@intCast(intrinsic.primitive_start)], p, intrinsic.plane),
         .sketch_path => sketchPathDist(ir, intrinsic, p),
-        .curve_distance_along => math.nan(f64),
+        .curve_distance_along => curveDistanceAlong(ir, intrinsic, slots, p),
     };
 }
 

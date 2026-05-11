@@ -38,6 +38,7 @@
     <Compile Include="core\Lang\BlockSpec.fs" />
     <Compile Include="core\Lang\Typecheck.fs" />
     <Compile Include="core\Lang\MathIrCodec.fs" />
+    <Compile Include="core\Lang\MathIrWgsl.fs" />
     <Compile Include="core\Lang\Notebook.fs" />
     <Compile Include="core\Lang\NotebookCompose.fs" />
     <Compile Include="core\Lang\NotebookEval.fs" />
@@ -96,6 +97,11 @@
     <Compile Include="viewer\Kernel\Wasm.fs" />
     <Compile Include="viewer\Kernel\Worker.fs" />
     <Compile Include="viewer\Kernel\Background.fs" />
+
+    <!-- Field-slice overlay: per-block iso-contour quad drawn between
+         the background surface and sketch overlays. Depends on Scene
+         and the MathIR→WGSL emitter. -->
+    <Compile Include="viewer\FieldSlice.fs" />
 
     <Compile Include="viewer\TranslateGizmo.fs" />
     <Compile Include="viewer\RotateGizmo.fs" />

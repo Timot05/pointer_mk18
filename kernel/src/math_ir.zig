@@ -219,6 +219,22 @@ pub const MathIR = struct {
         self.intrinsic_count += 1;
         return self.node(.{ .kind = .intrinsic, .a = @intCast(id) });
     }
+    pub fn curveDistanceAlong(self: *MathIR, plane: Plane, primitive_start: i32, primitive_count_: i32, ax: Expr, ay: Expr, az: Expr, flip: bool) !Expr {
+        if (self.intrinsic_count >= max_intrinsics) return error.IntrinsicCapacity;
+        const id = self.intrinsic_count;
+        self.intrinsics[id] = .{
+            .kind = .curve_distance_along,
+            .plane = plane,
+            .primitive_start = primitive_start,
+            .primitive_count = primitive_count_,
+            .flip = flip,
+            .ax = ax.id,
+            .ay = ay.id,
+            .az = az.id,
+        };
+        self.intrinsic_count += 1;
+        return self.node(.{ .kind = .intrinsic, .a = @intCast(id) });
+    }
 };
 
 pub inline fn expr(self: *MathIR, op: Binary, a: Expr, b: Expr) !Expr {

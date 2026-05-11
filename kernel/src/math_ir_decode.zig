@@ -2,7 +2,7 @@
 //
 // Wire format (all little-endian, header 32 bytes, "MIR2"):
 //   u32 magic           = 0x4D495232 ("MIR2")
-//   u32 version         = 2
+//   u32 version         = 3
 //   u32 node_count
 //   u32 affine_count
 //   u32 intrinsic_count
@@ -15,12 +15,13 @@
 //   affines:    affine_count    × 48 B  (Affine3, 12 × i32 expr id)
 //   intrinsics: intrinsic_count × 48 B  (Intrinsic + 4-byte pad)
 //   primitives: primitive_count × 64 B  (SketchPrimitive + 7-byte pad)
-//   views:      view_count      ×  8 B  (i32 expr_id, u32 palette_idx)
+//   views:      view_count      × 12 B  (i32 expr_id, u32 palette_idx, u32 kind)
 //
 // Views: one per visible Field block. The kernel renders each separately
-// so the winning block at each hit pixel can be coloured by `palette_idx`.
-// `view_count == 0` is valid — the kernel falls back to a default colour
-// for the whole `root` surface.
+// so the winning block at each hit pixel can be coloured by `palette_idx`
+// and shaded by `kind` (0 = opaque surface, 1 = field-lines, 2 =
+// isosurface). `view_count == 0` is valid — the kernel falls back to a
+// default colour for the whole `root` surface.
 //
 // Per-element layouts mirror `math_ir.zig`'s in-memory shapes byte-for-byte
 // where natural; padding is added only to keep section strides aligned.
@@ -43,7 +44,7 @@ pub const Error = error{
 pub const IR_UPLOAD_CAPACITY: usize = 256 * 1024;
 
 pub const MAGIC: u32 = 0x4D495232;
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Maximum visible Field blocks the renderer can colour by tag.
 /// Keep modest — each view holds its own ~50 KB RegTape on the kernel.
@@ -52,14 +53,25 @@ pub const max_views: usize = 16;
 pub const View = struct {
     expr_id: i32,
     palette_idx: u32,
+    kind: u32,
 };
+
+/// Shading mode encoded in `View.kind`. Mirrors `BlockVisibility` minus
+/// `VHidden` (hidden blocks aren't sent as views). The F# host only
+/// ships `VIsosurface` views today — `VFieldLines` is drawn by the
+/// host's own GPU pass and never reaches the kernel — so kind=0 is the
+/// only value seen in practice. The constants and bounds check stay
+/// in place so future per-kind renderer dispatch can plug in here.
+pub const VIEW_KIND_ISOSURFACE: u32 = 0;
+pub const VIEW_KIND_FIELD_LINES: u32 = 1;
+const VIEW_KIND_MAX: u32 = 1;
 
 const HEADER_BYTES: usize = 32;
 const NODE_BYTES: usize = 32;
 const AFFINE_BYTES: usize = 48;
 const INTRINSIC_BYTES: usize = 48;
 const PRIMITIVE_BYTES: usize = 64;
-const VIEW_BYTES: usize = 8;
+const VIEW_BYTES: usize = 12;
 
 var ir_upload_buffer: [IR_UPLOAD_CAPACITY]u8 align(8) = undefined;
 
@@ -139,9 +151,12 @@ pub fn decodeInto(byte_len: usize, ir: *m.MathIR) Error!Decoded {
         const off = views_off + @as(usize, i) * VIEW_BYTES;
         const expr_id = readI32(bytes, off);
         if (expr_id < 0 or @as(u32, @intCast(expr_id)) >= node_count) return Error.Truncated;
+        const kind = readU32(bytes, off + 8);
+        if (kind > VIEW_KIND_MAX) return Error.BadKind;
         decoded.views[i] = .{
             .expr_id = expr_id,
             .palette_idx = readU32(bytes, off + 4),
+            .kind = kind,
         };
     }
     return decoded;

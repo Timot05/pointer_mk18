@@ -100,6 +100,14 @@ type EditorState =
       /// Used for ref-drop type filtering — the BlockList drag-over
       /// handler consults this to gate drops by `Type.T` compatibility.
       NotebookBlockOutputs: Map<Server.Lang.Notebook.BlockId, Server.Lang.Type.T>
+      /// MathIR from the last successful compile. Held in F# memory so the
+      /// viewer's per-block GPU pipelines (e.g. field-slice overlay) can
+      /// emit WGSL evaluators without re-parsing `LastNotebookBytes`.
+      NotebookIr: Server.Lang.MathIr.MathIR option
+      /// MathIR root expression per Field block. Keyed by `BlockId`. Used
+      /// alongside `NotebookIr` by the field-slice renderer to compile
+      /// one shader function per visible-as-field-lines block.
+      NotebookFieldExprByBlock: Map<Server.Lang.Notebook.BlockId, Server.Lang.MathIr.Expr>
       /// Click-to-pick state for block ref inputs. When `Some(blockId,
       /// paramName)`, the BlockList renders that bubble as the active
       /// pick target and treats subsequent clicks on type-compatible
@@ -259,6 +267,8 @@ module Editor =
           LastNotebookBytes = nbResult.Bytes
           NotebookBlockErrors = nbResult.BlockErrors
           NotebookBlockOutputs = nbResult.BlockOutputs
+          NotebookIr = nbResult.Ir
+          NotebookFieldExprByBlock = nbResult.FieldExprByBlock
           EditingBlockRef = None }
 
     /// Sketch-local scalar fields are always slot-backed; that's the only
@@ -456,7 +466,9 @@ module Editor =
             LastNotebookError = nbResult.Summary
             LastNotebookBytes = nbResult.Bytes
             NotebookBlockErrors = nbResult.BlockErrors
-            NotebookBlockOutputs = nbResult.BlockOutputs }
+            NotebookBlockOutputs = nbResult.BlockOutputs
+            NotebookIr = nbResult.Ir
+            NotebookFieldExprByBlock = nbResult.FieldExprByBlock }
 
     let recompileState (state: EditorState) =
         let compiled = BlockCompile.compile state.Doc.Blocks
@@ -987,7 +999,8 @@ module Editor =
                         Id = id
                         Name = sprintf "%s_%d" specName id
                         Body = Server.Lang.Notebook.NativeBody(specName, args)
-                        Visibility = Server.Lang.Notebook.VVisible
+                        Visibility = Server.Lang.Notebook.VIsosurface
+                        SlicePlane = Server.Lang.Notebook.defaultSlicePlane
                     }
                     { state with
                         Doc = {
@@ -1005,7 +1018,8 @@ module Editor =
                             Sketch = ActionSketch.empty
                             Plane = SketchPlane.defaults
                         }
-                        Visibility = Server.Lang.Notebook.VVisible
+                        Visibility = Server.Lang.Notebook.VIsosurface
+                        SlicePlane = Server.Lang.Notebook.defaultSlicePlane
                     }
                     { state with
                         Doc = {
@@ -1091,10 +1105,9 @@ module Editor =
                 | CycleBlockVisibility id ->
                     let nextVis (v: Server.Lang.Notebook.BlockVisibility) =
                         match v with
-                        | Server.Lang.Notebook.VHidden     -> Server.Lang.Notebook.VVisible
-                        | Server.Lang.Notebook.VVisible    -> Server.Lang.Notebook.VFieldLines
-                        | Server.Lang.Notebook.VFieldLines -> Server.Lang.Notebook.VIsosurface
-                        | Server.Lang.Notebook.VIsosurface -> Server.Lang.Notebook.VHidden
+                        | Server.Lang.Notebook.VHidden     -> Server.Lang.Notebook.VIsosurface
+                        | Server.Lang.Notebook.VIsosurface -> Server.Lang.Notebook.VFieldLines
+                        | Server.Lang.Notebook.VFieldLines -> Server.Lang.Notebook.VHidden
                     let blocks =
                         state.Doc.Blocks
                         |> List.map (fun b ->

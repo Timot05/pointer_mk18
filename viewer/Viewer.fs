@@ -109,6 +109,11 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                     background.Value <- Some bg
                     pushIr bg)
 
+                // Field-slice overlay. Created synchronously — it lazily
+                // builds its pipeline the first frame any block sets
+                // `VFieldLines`, so it's free when not in use.
+                let fieldSlice = FieldSlice.create scene
+
                 // Adaptive render-resolution scale. Dropped to
                 // `LOW_RES_SCALE` while the camera's moving so the heavy
                 // raymarch fragment runs on a quarter as many pixels; the
@@ -288,7 +293,7 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                         // but it's the cost that blocks the main thread —
                         // which is what the user sees as "frame cost".
                         let renderStart = WebGPU.performanceNow ()
-                        Render.renderFrame scene toolCursor.Value background.Value
+                        Render.renderFrame scene toolCursor.Value background.Value fieldSlice
                         // Keep the compute-pick geometry buffers in sync
                         // with whatever Render just drew, using the same
                         // `viewState` source. Sketch order inside the

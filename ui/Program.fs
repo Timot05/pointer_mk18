@@ -88,7 +88,7 @@ let private actionListSignature (doc: DocumentView) =
                 |> String.concat ","
             sprintf "%s(%s)" name argDigest
         | Server.Lang.Notebook.SketchBody _ -> "sketch"
-    let rows = doc.Blocks |> List.map (fun b -> b.Id, b.Name, bodyTag b.Body)
+    let rows = doc.Blocks |> List.map (fun b -> b.Id, b.Name, bodyTag b.Body, b.Visibility)
     sprintf "%A|%A|%A|%A"
         doc.SelectedBlockId
         doc.ExpandedBlockIds

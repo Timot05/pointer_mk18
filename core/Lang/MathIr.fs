@@ -299,3 +299,23 @@ module MathIr =
             }
             let id = this.PushIntrinsic i
             this.Push { freshNode NodeKind.Intrinsic with A = id }
+
+        member this.CurveDistanceAlong(
+                plane: Plane,
+                primitiveStart: int,
+                primitiveCount: int,
+                axisX: Expr,
+                axisY: Expr,
+                axisZ: Expr,
+                flip: bool) : Expr =
+            let i = {
+                Kind = IntrinsicKind.CurveDistanceAlong
+                Plane = plane
+                PrimitiveStart = primitiveStart
+                PrimitiveCount = primitiveCount
+                Closed = false; Flip = flip
+                Ox = -1; Oy = -1; Oz = -1
+                Ax = axisX.Id; Ay = axisY.Id; Az = axisZ.Id
+            }
+            let id = this.PushIntrinsic i
+            this.Push { freshNode NodeKind.Intrinsic with A = id }

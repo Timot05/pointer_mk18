@@ -52,6 +52,9 @@ module NotebookCompose =
         /// Block id of each visible field name, paired by index with
         /// `VisibleFieldNames`. Used to colour views by block id.
         VisibleFieldBlockIds: BlockId list
+        /// Visibility kind of each visible field name, paired by index with
+        /// `VisibleFieldNames`. Drives the renderer's per-view shading mode.
+        VisibleFieldKinds: BlockVisibility list
     }
 
     // ── AST construction helpers ───────────────────────────────────────────
@@ -142,6 +145,7 @@ module NotebookCompose =
         // `VHidden`. The render root is `union`-folded over this list.
         let visibleFieldNames = ResizeArray<string>()
         let visibleFieldBlockIds = ResizeArray<BlockId>()
+        let visibleFieldKinds = ResizeArray<BlockVisibility>()
 
         for block in notebook.Blocks do
             match block.Body with
@@ -179,9 +183,20 @@ module NotebookCompose =
 
                     let outTy = specOutputType spec
                     blockOutputs <- Map.add block.Id outTy blockOutputs
-                    if outTy = Type.Field && block.Visibility <> VHidden then
+                    // Field blocks contribute to the surface union when
+                    // their visibility is `VIsosurface`. `VFieldLines` is
+                    // overlay-only and is drawn separately by the F#
+                    // viewer's FieldSlice pass — including it in the
+                    // union would double-draw the block as solid surface
+                    // AND contour lines.
+                    let surfaceVisible =
+                        match block.Visibility with
+                        | VIsosurface           -> true
+                        | VHidden | VFieldLines -> false
+                    if outTy = Type.Field && surfaceVisible then
                         visibleFieldNames.Add block.Name
                         visibleFieldBlockIds.Add block.Id
+                        visibleFieldKinds.Add block.Visibility
 
         // Render root = sharp `union` over every visible Field block.
         // Empty list → no trailing expression → "no renderable output".
@@ -201,7 +216,8 @@ module NotebookCompose =
           BlockSpans = blockSpans
           BlockOutputs = blockOutputs
           VisibleFieldNames = visibleFieldNamesList
-          VisibleFieldBlockIds = List.ofSeq visibleFieldBlockIds }
+          VisibleFieldBlockIds = List.ofSeq visibleFieldBlockIds
+          VisibleFieldKinds = List.ofSeq visibleFieldKinds }
 
     // ── Evaluation ─────────────────────────────────────────────────────────
 
@@ -272,9 +288,13 @@ module NotebookCompose =
     /// Result the editor surfaces: bytes for the kernel (when the whole
     /// pipeline succeeds), plus the per-block error and output-type
     /// maps the UI consults for has-error styling and ref-drop
-    /// validation.
+    /// validation. `Ir` and `FieldExprByBlock` let the F# viewer build
+    /// per-block GPU shaders (field-slice overlay) without re-parsing
+    /// the wire bytes.
     type CompileResult = {
         Bytes: obj option
+        Ir: MathIr.MathIR option
+        FieldExprByBlock: Map<BlockId, MathIr.Expr>
         BlockErrors: Map<BlockId, string list>
         BlockOutputs: Map<BlockId, Type.T>
         Summary: string option   // first error formatted, for the panel-level banner
@@ -320,17 +340,42 @@ module NotebookCompose =
         // 8-colour palette in the kernel; cycle by block id.
         uint32 (((id % 8) + 8) % 8)
 
-    /// Pull `(expr, palette_idx)` for each visible Field block out of
+    /// Wire-format encoding of `BlockVisibility`. Hidden / field-line
+    /// blocks never reach `viewsFromBindings` — only `VIsosurface`
+    /// blocks ship as kernel views, so `kindCode` only ever returns 0
+    /// in practice. The other arms are kept for completeness and to
+    /// remind the renderer where to plug in future per-kind shading.
+    let private kindCode (v: BlockVisibility) : uint32 =
+        match v with
+        | VIsosurface -> 0u
+        | VFieldLines -> 1u  // unreachable — drawn by FieldSlice, not kernel
+        | VHidden     -> 0u  // unreachable
+
+    /// Pull `(expr, palette_idx, kind)` for each visible Field block out of
     /// the post-eval bindings. Drops names that didn't resolve to
     /// `VField` (shouldn't happen if typecheck passed; defensive).
     let private viewsFromBindings
             (composed: Composed)
-            (bindings: Map<string, Value>) : (MathIr.Expr * uint32) list =
-        List.zip composed.VisibleFieldNames composed.VisibleFieldBlockIds
-        |> List.choose (fun (name, blockId) ->
+            (bindings: Map<string, Value>) : (MathIr.Expr * uint32 * uint32) list =
+        List.zip3 composed.VisibleFieldNames composed.VisibleFieldBlockIds composed.VisibleFieldKinds
+        |> List.choose (fun (name, blockId, kind) ->
             match Map.tryFind name bindings with
-            | Some (VField expr) -> Some (expr, paletteIndexFor blockId)
+            | Some (VField expr) -> Some (expr, paletteIndexFor blockId, kindCode kind)
             | _ -> None)
+
+    /// Walk the per-block name → block-id table and the post-eval bindings
+    /// to produce a `BlockId → Expr` map of just the Field outputs. Used by
+    /// the F# viewer to emit per-block GPU shaders (field-slice overlay).
+    let private fieldExprByBlock
+            (composed: Composed)
+            (bindings: Map<string, Value>) : Map<BlockId, MathIr.Expr> =
+        composed.BlockNames
+        |> Map.toSeq
+        |> Seq.choose (fun (blockId, name) ->
+            match Map.tryFind name bindings with
+            | Some (VField expr) -> Some (blockId, expr)
+            | _ -> None)
+        |> Map.ofSeq
 
     /// Full notebook compile — typecheck + (on success) eval + serialise.
     let compile (notebook: Notebook) : CompileResult =
@@ -341,44 +386,72 @@ module NotebookCompose =
             let summary =
                 errs |> List.tryHead |> Option.map Typecheck.formatError
             { Bytes = None
+              Ir = None
+              FieldExprByBlock = Map.empty
               BlockErrors = blockErrors
               BlockOutputs = composed.BlockOutputs
               Summary = summary }
         | Ok _ ->
             match evaluate notebook composed with
             | Ok { Ir = ir; Value = VField root; Bindings = bindings } ->
-                // Serialise to wire bytes. On .NET (xUnit tests) the
-                // Fable Uint8Array binding throws — surface that
-                // explicitly so a failure here doesn't masquerade as
-                // "no render root" with a blank canvas.
-                try
-                    let views = viewsFromBindings composed bindings
-                    let bytes = MathIrCodec.serialize ir root views
-                    { Bytes = Some bytes
+                // Per-block field exprs flow to the F# viewer regardless of
+                // whether anything goes to the surface union — `VFieldLines`
+                // blocks need their MathIR root for the slice overlay even
+                // when no surface ships to the kernel.
+                let fieldExprs = fieldExprByBlock composed bindings
+                if List.isEmpty composed.VisibleFieldNames then
+                    // No `VIsosurface` blocks → nothing to raymarch. Skip
+                    // the wire-bytes serialise; the kernel
+                    // sees `LastNotebookBytes = None` and clears its
+                    // background. Slice overlay still has the IR + exprs
+                    // it needs.
+                    { Bytes = None
+                      Ir = Some ir
+                      FieldExprByBlock = fieldExprs
                       BlockErrors = Map.empty
                       BlockOutputs = composed.BlockOutputs
                       Summary = None }
-                with ex ->
-                    // Raw JS errors don't carry a .NET-shaped Type; calling
-                    // GetType() on them throws inside the catch. Stick to
-                    // the JS-safe `string ex` (Fable maps that to
-                    // `String(ex)` which falls back to the JS error's own
-                    // toString — that contains the constructor name +
-                    // message).
-                    let detail =
-                        try string ex
-                        with _ -> "<introspection failed>"
-                    { Bytes = None
-                      BlockErrors = Map.empty
-                      BlockOutputs = composed.BlockOutputs
-                      Summary = Some (sprintf "serialise failed: %s" detail) }
+                else
+                    // Serialise to wire bytes. On .NET (xUnit tests) the
+                    // Fable Uint8Array binding throws — surface that
+                    // explicitly so a failure here doesn't masquerade as
+                    // "no render root" with a blank canvas.
+                    try
+                        let views = viewsFromBindings composed bindings
+                        let bytes = MathIrCodec.serialize ir root views
+                        { Bytes = Some bytes
+                          Ir = Some ir
+                          FieldExprByBlock = fieldExprs
+                          BlockErrors = Map.empty
+                          BlockOutputs = composed.BlockOutputs
+                          Summary = None }
+                    with ex ->
+                        // Raw JS errors don't carry a .NET-shaped Type; calling
+                        // GetType() on them throws inside the catch. Stick to
+                        // the JS-safe `string ex` (Fable maps that to
+                        // `String(ex)` which falls back to the JS error's own
+                        // toString — that contains the constructor name +
+                        // message).
+                        let detail =
+                            try string ex
+                            with _ -> "<introspection failed>"
+                        { Bytes = None
+                          Ir = Some ir
+                          FieldExprByBlock = fieldExprs
+                          BlockErrors = Map.empty
+                          BlockOutputs = composed.BlockOutputs
+                          Summary = Some (sprintf "serialise failed: %s" detail) }
             | Ok _ ->
                 { Bytes = None
+                  Ir = None
+                  FieldExprByBlock = Map.empty
                   BlockErrors = Map.empty
                   BlockOutputs = composed.BlockOutputs
                   Summary = Some "notebook produced no Field render root" }
             | Error e ->
                 { Bytes = None
+                  Ir = None
+                  FieldExprByBlock = Map.empty
                   BlockErrors = Map.empty
                   BlockOutputs = composed.BlockOutputs
                   Summary = Some e.Message }

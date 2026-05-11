@@ -210,19 +210,46 @@ module Document =
                         | _ -> b)
             { doc with Blocks = blocks }
 
-    /// Boot-time notebook: a single typed-block sphere so the user has
-    /// something to drag the radius on.
+    let private lineSketch x0 y0 x1 y1 : ActionSketch =
+        { Entities =
+            [ REPoint("p0", x0, y0)
+              REPoint("p1", x1, y1)
+              RELine("line0", "p0", "p1") ]
+          Constraints = [] }
+
+    /// Boot-time notebook: two sketch guide curves wired into the
+    /// wing-remap preview block, so the initial scene exercises the
+    /// sketch -> curve-distance -> two-body remapped profile path.
     let private defaultBlocks : Server.Lang.Notebook.Block list =
         [ { Id = 0
-            Name = "sphere"
+            Name = "leading"
+            Body = Server.Lang.Notebook.SketchBody
+                { Sketch = lineSketch 0.0 0.0 0.25 5.0
+                  Plane = XY }
+            Visibility = Server.Lang.Notebook.VHidden
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
+          { Id = 1
+            Name = "trailing"
+            Body = Server.Lang.Notebook.SketchBody
+                { Sketch = lineSketch 2.0 0.0 1.25 5.0
+                  Plane = XY }
+            Visibility = Server.Lang.Notebook.VHidden
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
+          { Id = 2
+            Name = "wing_remap"
             Body =
                 Server.Lang.Notebook.NativeBody(
-                    "sphere",
-                    Map.ofList [ "radius", Server.Lang.Notebook.ArgScalar 1.0 ])
-            Visibility = Server.Lang.Notebook.VVisible } ]
+                    "wing-remap-preview",
+                    Map.ofList
+                        [ "leading", Server.Lang.Notebook.ArgRef(Some 0)
+                          "trailing", Server.Lang.Notebook.ArgRef(Some 1) ])
+            Visibility = Server.Lang.Notebook.VIsosurface
+            SlicePlane =
+                { Server.Lang.Notebook.defaultSlicePlane with
+                    Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } } ]
 
     let emptyDocument () : Document =
         { Name = "untitled"
           Blocks = defaultBlocks
-          NextBlockId = 2
-          SelectedBlockId = None }
+          NextBlockId = 3
+          SelectedBlockId = Some 2 }

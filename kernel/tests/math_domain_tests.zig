@@ -30,6 +30,10 @@ fn translatedSphere(ir: *m.MathIR, radius: f64, tx: f64, ty: f64, tz: f64) !m.Ex
     );
 }
 
+fn constPoint2(ir: *m.MathIR, x: f64, y: f64) !m.SlotPoint2 {
+    return ir.point2((try ir.constant(x)).id, (try ir.constant(y)).id);
+}
+
 test "register tape matches IR-tree eval on sphere union" {
     var ir = m.MathIR{};
     const left = try translatedSphere(&ir, 0.72, -0.45, 0.0, 0.0);
@@ -45,6 +49,49 @@ test "register tape matches IR-tree eval on sphere union" {
     for (points) |p| {
         try expectClose(m.evalPoint(&ir, root, &slots, p), m.decodeRegEval(&tape, &ir, &slots, p));
     }
+}
+
+test "curve distance along evaluates line segment along x axis" {
+    var ir = m.MathIR{};
+    const line = try ir.lineSegment(try constPoint2(&ir, 2.0, 0.0), try constPoint2(&ir, 2.0, 1.0));
+    const root = try ir.curveDistanceAlong(.xy, line, 1, try ir.constant(1.0), try ir.constant(0.0), try ir.constant(0.0), false);
+    const tape = try m.compileToRegTape(&ir, root);
+    const slots = [_]f64{};
+
+    const p0 = m.Vec3{ .x = 0.0, .y = 0.5, .z = 0.0 };
+    const p1 = m.Vec3{ .x = 3.0, .y = 0.5, .z = 0.0 };
+    try expectClose(2.0, m.evalPoint(&ir, root, &slots, p0));
+    try expectClose(-1.0, m.evalPoint(&ir, root, &slots, p1));
+    try expectClose(m.evalPoint(&ir, root, &slots, p0), m.decodeRegEval(&tape, &ir, &slots, p0));
+    try expectClose(m.evalPoint(&ir, root, &slots, p1), m.decodeRegEval(&tape, &ir, &slots, p1));
+}
+
+test "curve distance along evaluates circle along x axis" {
+    var ir = m.MathIR{};
+    const circle = try ir.circle(try constPoint2(&ir, 0.0, 0.0), (try ir.constant(2.0)).id);
+    const root = try ir.curveDistanceAlong(.xy, circle, 1, try ir.constant(1.0), try ir.constant(0.0), try ir.constant(0.0), false);
+    const tape = try m.compileToRegTape(&ir, root);
+    const slots = [_]f64{};
+    const p = m.Vec3{ .x = 3.0, .y = 0.0, .z = 0.0 };
+
+    try expectClose(-1.0, m.evalPoint(&ir, root, &slots, p));
+    try expectClose(m.evalPoint(&ir, root, &slots, p), m.decodeRegEval(&tape, &ir, &slots, p));
+}
+
+test "curve distance along evaluates quadratic bezier along x axis" {
+    var ir = m.MathIR{};
+    const quad = try ir.bezierQuadratic(
+        try constPoint2(&ir, 0.0, 0.0),
+        try constPoint2(&ir, 1.0, 1.0),
+        try constPoint2(&ir, 2.0, 0.0),
+    );
+    const root = try ir.curveDistanceAlong(.xy, quad, 1, try ir.constant(1.0), try ir.constant(0.0), try ir.constant(0.0), false);
+    const tape = try m.compileToRegTape(&ir, root);
+    const slots = [_]f64{};
+    const p = m.Vec3{ .x = 0.0, .y = 0.5, .z = 0.0 };
+
+    try expectClose(1.0, m.evalPoint(&ir, root, &slots, p));
+    try expectClose(m.evalPoint(&ir, root, &slots, p), m.decodeRegEval(&tape, &ir, &slots, p));
 }
 
 test "register tape matches IR-tree eval on remap_affine" {
@@ -78,8 +125,8 @@ test "register tape matches IR-tree eval on remap_affine" {
 
 test "register tape matches IR-tree eval on quadratic sketch primitive" {
     var ir = m.MathIR{};
-    const slots = [_]f64{ -1.0, 0.0, 0.0, 1.0, 1.0, 0.0 };
-    const quad = try ir.bezierQuadratic(ir.point2(0, 1), ir.point2(2, 3), ir.point2(4, 5));
+    const slots = [_]f64{};
+    const quad = try ir.bezierQuadratic(try constPoint2(&ir, -1.0, 0.0), try constPoint2(&ir, 0.0, 1.0), try constPoint2(&ir, 1.0, 0.0));
     const root = try ir.sketchDistance(.xy, quad);
     const tape = try m.compileToRegTape(&ir, root);
     const points = [_]m.Vec3{
@@ -94,11 +141,11 @@ test "register tape matches IR-tree eval on quadratic sketch primitive" {
 
 test "register tape matches IR-tree eval on closed sketch path" {
     var ir = m.MathIR{};
-    var slots = [_]f64{ -1.0, -0.7, 1.0, -0.7, 0.0, 0.9 };
+    var slots = [_]f64{};
     const start = ir.primitive_count;
-    _ = try ir.lineSegment(ir.point2(0, 1), ir.point2(2, 3));
-    _ = try ir.lineSegment(ir.point2(2, 3), ir.point2(4, 5));
-    _ = try ir.lineSegment(ir.point2(4, 5), ir.point2(0, 1));
+    _ = try ir.lineSegment(try constPoint2(&ir, -1.0, -0.7), try constPoint2(&ir, 1.0, -0.7));
+    _ = try ir.lineSegment(try constPoint2(&ir, 1.0, -0.7), try constPoint2(&ir, 0.0, 0.9));
+    _ = try ir.lineSegment(try constPoint2(&ir, 0.0, 0.9), try constPoint2(&ir, -1.0, -0.7));
     const root = try ir.sketchPath(.xy, @intCast(start), 3, true, false);
     const tape = try m.compileToRegTape(&ir, root);
     const points = [_]m.Vec3{
@@ -229,11 +276,11 @@ test "interval tape matches IR-tree evalInterval through remap_affine" {
 
 test "interval tape matches IR-tree evalInterval through closed sketch path" {
     var ir = m.MathIR{};
-    const slots = [_]f64{ -1.0, -0.7, 1.0, -0.7, 0.0, 0.9 };
+    const slots = [_]f64{};
     const start = ir.primitive_count;
-    _ = try ir.lineSegment(ir.point2(0, 1), ir.point2(2, 3));
-    _ = try ir.lineSegment(ir.point2(2, 3), ir.point2(4, 5));
-    _ = try ir.lineSegment(ir.point2(4, 5), ir.point2(0, 1));
+    _ = try ir.lineSegment(try constPoint2(&ir, -1.0, -0.7), try constPoint2(&ir, 1.0, -0.7));
+    _ = try ir.lineSegment(try constPoint2(&ir, 1.0, -0.7), try constPoint2(&ir, 0.0, 0.9));
+    _ = try ir.lineSegment(try constPoint2(&ir, 0.0, 0.9), try constPoint2(&ir, -1.0, -0.7));
     const root = try ir.sketchPath(.xy, @intCast(start), 3, true, false);
     const tape = try m.compileToRegTape(&ir, root);
     const boxes = [_]m.Box3{
@@ -379,11 +426,11 @@ test "simplifyTape preserves eval through remap_affine" {
 
 test "closed line path signs inside and outside" {
     var ir = m.MathIR{};
-    var slots = [_]f64{ -1.0, -0.7, 1.0, -0.7, 0.0, 0.9 };
+    var slots = [_]f64{};
     const start = ir.primitive_count;
-    _ = try ir.lineSegment(ir.point2(0, 1), ir.point2(2, 3));
-    _ = try ir.lineSegment(ir.point2(2, 3), ir.point2(4, 5));
-    _ = try ir.lineSegment(ir.point2(4, 5), ir.point2(0, 1));
+    _ = try ir.lineSegment(try constPoint2(&ir, -1.0, -0.7), try constPoint2(&ir, 1.0, -0.7));
+    _ = try ir.lineSegment(try constPoint2(&ir, 1.0, -0.7), try constPoint2(&ir, 0.0, 0.9));
+    _ = try ir.lineSegment(try constPoint2(&ir, 0.0, 0.9), try constPoint2(&ir, -1.0, -0.7));
     const root = try ir.sketchPath(.xy, @intCast(start), 3, true, false);
     try std.testing.expect(m.evalPoint(&ir, root, &slots, .{ .x = 0.0, .y = -0.2, .z = 0.0 }) < 0.0);
     try std.testing.expect(m.evalPoint(&ir, root, &slots, .{ .x = 1.5, .y = 0.0, .z = 0.0 }) > 0.0);
@@ -707,11 +754,9 @@ test "decodeRegEvalGrad through intrinsic (sketch_path) matches finite differenc
     // Build a single circle as a closed sketch path, then offset: scene = sketch_path - 0.1.
     // Intrinsic chain-rule path is exercised here.
     var ir = m.MathIR{};
-    var slots: [3]f64 = .{ 0.0, 0.0, 0.3 }; // center=(slot0,slot1)=(0,0), radius slot=slot2=0.3
-    const cx: i32 = 0;
-    const cy: i32 = 1;
-    const radius: i32 = 2;
-    const center = ir.point2(cx, cy);
+    var slots = [_]f64{};
+    const center = try constPoint2(&ir, 0.0, 0.0);
+    const radius = (try ir.constant(0.3)).id;
     const prim = try ir.circle(center, radius);
     const path = try ir.sketchPath(.xy, prim, 1, true, false);
     const root = try ir.binary(.sub, path, try ir.constant(0.05));
@@ -738,4 +783,3 @@ test "decodeRegEvalGrad through intrinsic (sketch_path) matches finite differenc
 // field_lower tests removed: the FieldIR wire format (scene_decode + field_lower)
 // no longer exists — the F# host now ships MathIR-shaped bytes directly via
 // MathIrCodec, decoded by math_ir_decode. See kernel/src/math_ir_decode.zig.
-

@@ -73,9 +73,8 @@ let private bodyKindLabel (body: Notebook.BlockBody) : string =
 let private visibilityGlyph (v: Notebook.BlockVisibility) : string =
     match v with
     | Notebook.VHidden     -> ""
-    | Notebook.VVisible    -> "◎"   // ◎ bullseye
-    | Notebook.VFieldLines -> "≡"   // ≡
-    | Notebook.VIsosurface -> "○"   // ○
+    | Notebook.VIsosurface -> "◎"   // ◎ bullseye — 3D surface
+    | Notebook.VFieldLines -> "≡"   // ≡ — iso-contour overlay
 
 let private renderVisibilityBadge
         (dispatch: Message -> unit)

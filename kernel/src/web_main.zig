@@ -49,6 +49,7 @@ var scene_loaded: bool = false;
 var view_tapes: [math_ir_decode.max_views]m.RegTape = undefined;
 var view_cameras: [math_ir_decode.max_views]m.MutableCamera = undefined;
 var view_palettes: [math_ir_decode.max_views]u32 = undefined;
+var view_kinds: [math_ir_decode.max_views]u32 = undefined;
 var view_count: usize = 0;
 
 // ── IR upload ────────────────────────────────────────────────────────────
@@ -91,6 +92,7 @@ pub export fn ir_upload(byte_len: usize) u32 {
         view_tapes[i] = m.compileToRegTape(&math_ir, view_root) catch return 9;
         view_cameras[i] = m.MutableCamera.bind(axes.nodes, &view_tapes[i]) catch return 9;
         view_palettes[i] = decoded.views[i].palette_idx;
+        view_kinds[i] = decoded.views[i].kind;
     }
 
     scene_loaded = true;
@@ -166,6 +168,7 @@ pub export fn render_voxels(
         &.{},
         view_tapes[0..view_count],
         view_palettes[0..view_count],
+        view_kinds[0..view_count],
         view_half_w, view_half_h,
         -half, half,
         level,

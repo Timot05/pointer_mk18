@@ -46,19 +46,40 @@ module Notebook =
 
     /// What the viewer should do with this block's output. `VHidden` means
     /// the block contributes to downstream wires but isn't rendered itself;
-    /// `VVisible` is the default opaque surface; `VFieldLines` and
-    /// `VIsosurface` are alternate rendering modes for inspecting fields.
+    /// `VIsosurface` is the default 3D surface render; `VFieldLines` is
+    /// an iso-contour overlay drawn on the block's `SlicePlane`.
     type BlockVisibility =
         | VHidden
-        | VVisible
-        | VFieldLines
         | VIsosurface
+        | VFieldLines
+
+    /// Plane through space on which the viewer rasterises a Field block's
+    /// SDF as iso-contour lines (only consulted when `Visibility =
+    /// VFieldLines`). `AxisX` and `AxisY` span the plane; the rendered quad
+    /// is `Origin ± Extent` along each. Defaults to the world XY plane
+    /// through the origin with extent 20 (see `defaultSlicePlane`).
+    type SlicePlane = {
+        Origin: Server.Vec3
+        AxisX:  Server.Vec3
+        AxisY:  Server.Vec3
+        Extent: float
+    }
+
+    let defaultSlicePlane : SlicePlane =
+        { Origin = { X = 0.0; Y = 0.0; Z = 0.0 }
+          AxisX  = { X = 1.0; Y = 0.0; Z = 0.0 }
+          AxisY  = { X = 0.0; Y = 1.0; Z = 0.0 }
+          Extent = 20.0 }
 
     type Block = {
         Id: BlockId
         Name: string
         Body: BlockBody
         Visibility: BlockVisibility
+        /// Slice plane used when `Visibility = VFieldLines`. Carried on every
+        /// block so toggling visibility kinds preserves the user's plane
+        /// choice. Initialised to `defaultSlicePlane` for new blocks.
+        SlicePlane: SlicePlane
     }
 
     type Notebook = {

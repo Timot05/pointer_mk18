@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const m = @import("math_domain.zig");
+const decode = @import("math_ir_decode.zig");
 
 const RegTape = m.RegTape;
 const MathIR = m.MathIR;
@@ -63,11 +64,11 @@ const NEG_LIGHT_DIR: [3]f32 = .{ -0.35, -0.55, 0.75 }; // pre-normalized
 /// stride). Pass `tile_x = 0, tile_y = 0, tile_w = full_w, tile_h = full_h`
 /// to render the entire image.
 ///
-/// `view_tapes` / `view_palettes` (paired by index) carry per-block
-/// surfaces. At each hit pixel the renderer evaluates every view's
-/// SDF at the hit point and picks the smallest as the winning block;
-/// its palette index drives `shade()`. Empty slices fall back to the
-/// default colour (palette index 0).
+/// `view_tapes` / `view_palettes` / `view_kinds` (paired by index)
+/// carry per-block surfaces. At each hit pixel the renderer evaluates
+/// every view's SDF at the hit point and picks the smallest as the
+/// winning block; its palette index + kind drive `shade()`. Empty
+/// slices fall back to the default colour (palette index 0, kind 0).
 ///
 /// Camera math (view_half_w/h, ray directions) uses `full_w × full_h` so
 /// pixels render the same regardless of which tile they belong to —
@@ -86,6 +87,7 @@ pub fn render(
     slots: []const f64,
     view_tapes: []const RegTape,
     view_palettes: []const u32,
+    view_kinds: []const u32,
     view_half_w: f32,
     view_half_h: f32,
     near: f32,
@@ -98,6 +100,7 @@ pub fn render(
     std.debug.assert(tile_x + tile_w <= full_w);
     std.debug.assert(tile_y + tile_h <= full_h);
     std.debug.assert(view_tapes.len == view_palettes.len);
+    std.debug.assert(view_tapes.len == view_kinds.len);
 
     initBuffers(out_pixels, out_gbuffer, tile_total);
 
@@ -121,6 +124,7 @@ pub fn render(
         .slots = slots,
         .view_tapes = view_tapes,
         .view_palettes = view_palettes,
+        .view_kinds = view_kinds,
         .view_half_w = view_half_w,
         .view_half_h = view_half_h,
         .near = near,
@@ -165,6 +169,7 @@ const RenderCtx = struct {
     slots: []const f64,
     view_tapes: []const RegTape,
     view_palettes: []const u32,
+    view_kinds: []const u32,
     view_half_w: f32,
     view_half_h: f32,
     near: f32,
@@ -526,7 +531,9 @@ inline fn shade(palette_idx: u32, nx: f32, ny: f32, nz: f32) u32 {
 /// Pick the winning view's palette index for a hit at `(u, v, t)` in
 /// camera-local space. Evaluates each view tape's SDF and returns the
 /// palette index with the smallest value. Returns 0 (default colour)
-/// when no views were supplied.
+/// when no views were supplied. `view_kinds` is unused here — the
+/// kernel renders every non-hidden block as a surface; per-kind
+/// overlays (field lines, etc.) are drawn additively by the F# viewer.
 inline fn pickViewPalette(ctx: *const RenderCtx, u: f32, v: f32, t: f32) u32 {
     if (ctx.view_tapes.len == 0) return 0;
     var best_val: f32 = std.math.inf(f32);

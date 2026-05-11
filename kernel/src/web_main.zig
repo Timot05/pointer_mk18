@@ -42,6 +42,15 @@ var scene_tape: m.RegTape = undefined;
 var mutable_camera: m.MutableCamera = undefined;
 var scene_loaded: bool = false;
 
+/// Per-block view tapes — one per visible Field block. Used at hit
+/// time by `cpu_render` to determine which block "owns" each pixel
+/// for colour assignment. Empty when the F# host shipped no views,
+/// in which case `cpu_render` falls back to a single shared colour.
+var view_tapes: [math_ir_decode.max_views]m.RegTape = undefined;
+var view_cameras: [math_ir_decode.max_views]m.MutableCamera = undefined;
+var view_palettes: [math_ir_decode.max_views]u32 = undefined;
+var view_count: usize = 0;
+
 // ── IR upload ────────────────────────────────────────────────────────────
 
 pub export fn ir_upload_buffer_ptr() [*]u8 {
@@ -50,10 +59,10 @@ pub export fn ir_upload_buffer_ptr() [*]u8 {
 
 /// 0 = ok, 1 = bad magic, 2 = bad version, 3 = too many nodes, 4 = too many
 /// affines, 5 = too many intrinsics, 6 = too many primitives, 7 = truncated,
-/// 8 = bad kind, 9 = camera/tape build failed.
+/// 8 = bad kind, 9 = camera/tape build failed, 10 = too many views.
 pub export fn ir_upload(byte_len: usize) u32 {
     math_ir = .{};
-    const root = math_ir_decode.decodeInto(byte_len, &math_ir) catch |e| return switch (e) {
+    const decoded = math_ir_decode.decodeInto(byte_len, &math_ir) catch |e| return switch (e) {
         math_ir_decode.Error.BadMagic => 1,
         math_ir_decode.Error.BadVersion => 2,
         math_ir_decode.Error.TooManyNodes => 3,
@@ -62,11 +71,28 @@ pub export fn ir_upload(byte_len: usize) u32 {
         math_ir_decode.Error.TooManyPrimitives => 6,
         math_ir_decode.Error.Truncated => 7,
         math_ir_decode.Error.BadKind => 8,
+        math_ir_decode.Error.TooManyViews => 10,
     };
 
-    const wrapped = m.wrapWithCameraFrame(&math_ir, root, m.CameraFrame.identity) catch return 9;
-    scene_tape = m.compileToRegTape(&math_ir, wrapped.wrapped_root) catch return 9;
-    mutable_camera = m.MutableCamera.bind(wrapped.nodes, &scene_tape) catch return 9;
+    // One CameraAxes shared by the main render tape + every view tape.
+    // Each tape gets its own immediates after compile, but they all
+    // bind to the same `CameraFrameNodes` ids and so receive identical
+    // updates from `set_camera`'s loop below.
+    const axes = m.buildCameraAxes(&math_ir, m.CameraFrame.identity) catch return 9;
+
+    const main_root = m.wrapWithAxes(&math_ir, decoded.root, axes) catch return 9;
+    scene_tape = m.compileToRegTape(&math_ir, main_root) catch return 9;
+    mutable_camera = m.MutableCamera.bind(axes.nodes, &scene_tape) catch return 9;
+
+    view_count = decoded.view_count;
+    var i: usize = 0;
+    while (i < view_count) : (i += 1) {
+        const view_root = m.wrapWithAxes(&math_ir, .{ .id = decoded.views[i].expr_id }, axes) catch return 9;
+        view_tapes[i] = m.compileToRegTape(&math_ir, view_root) catch return 9;
+        view_cameras[i] = m.MutableCamera.bind(axes.nodes, &view_tapes[i]) catch return 9;
+        view_palettes[i] = decoded.views[i].palette_idx;
+    }
+
     scene_loaded = true;
     return 0;
 }
@@ -85,12 +111,17 @@ pub export fn camera_buffer_ptr() [*]f32 {
 /// pipeline reads basis_z in its native sense.
 pub export fn set_camera() u32 {
     if (!scene_loaded) return 1;
-    mutable_camera.setFrame(&scene_tape, .{
+    const frame: m.CameraFrame = .{
         .eye = .{ camera_buffer[0], camera_buffer[1], camera_buffer[2] },
         .basis_x = .{ camera_buffer[3], camera_buffer[4], camera_buffer[5] },
         .basis_y = .{ camera_buffer[6], camera_buffer[7], camera_buffer[8] },
         .basis_z = .{ -camera_buffer[9], -camera_buffer[10], -camera_buffer[11] },
-    });
+    };
+    mutable_camera.setFrame(&scene_tape, frame);
+    var i: usize = 0;
+    while (i < view_count) : (i += 1) {
+        view_cameras[i].setFrame(&view_tapes[i], frame);
+    }
     return 0;
 }
 
@@ -133,6 +164,8 @@ pub export fn render_voxels(
         &scene_tape,
         &math_ir,
         &.{},
+        view_tapes[0..view_count],
+        view_palettes[0..view_count],
         view_half_w, view_half_h,
         -half, half,
         level,

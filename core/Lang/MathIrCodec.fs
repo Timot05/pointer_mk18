@@ -4,11 +4,18 @@ namespace Server.Lang
 // MathIrCodec.fs — F# encoder for the wire format consumed by
 // `kernel/src/math_ir_decode.zig`.
 //
-// Total bytes = 28 (header)
-//             + nodes      × 32
-//             + affines    × 48
-//             + intrinsics × 48
-//             + primitives × 64
+// Header (32 bytes, MIR2):
+//   u32 magic = "MIR2"  u32 version = 2
+//   u32 node_count       u32 affine_count
+//   u32 intrinsic_count  u32 primitive_count
+//   u32 root             u32 view_count
+//
+// Sections (in order): nodes × 32, affines × 48, intrinsics × 48,
+// primitives × 64, views × 8.
+//
+// View entry (8 bytes): { i32 expr_id; u32 palette_idx; }. One per
+// visible Field block — kernel renders each separately to determine
+// the winning block per pixel for colour assignment.
 //
 // All fields little-endian. Per-element layouts mirror the in-memory MathIR
 // types byte-for-byte where natural; explicit padding keeps section strides
@@ -20,15 +27,16 @@ module MathIrCodec =
     open Fable.Core
     open Fable.Core.JsInterop
 
-    /// "MIR1" little-endian.
-    let MAGIC : uint32 = 0x4D495231u
-    let VERSION : uint32 = 1u
+    /// "MIR2" little-endian.
+    let MAGIC : uint32 = 0x4D495232u
+    let VERSION : uint32 = 2u
 
-    let private HEADER_BYTES = 28
+    let private HEADER_BYTES = 32
     let private NODE_BYTES = 32
     let private AFFINE_BYTES = 48
     let private INTRINSIC_BYTES = 48
     let private PRIMITIVE_BYTES = 64
+    let private VIEW_BYTES = 8
 
     [<Emit("new Uint8Array($0)")>]
     let private createUint8Array (len: int) : obj = jsNative
@@ -105,19 +113,23 @@ module MathIrCodec =
         setU8  dv (off + 56) (if p.Clockwise then 1 else 0)
         // bytes 57..63 padding
 
-    /// Compute the total byte size of a (MathIR, root) encoding without
-    /// allocating. Useful for tests and capacity assertions.
-    let byteSize (ir: MathIr.MathIR) : int =
+    /// Compute the total byte size of a (MathIR, root, views) encoding
+    /// without allocating. Useful for tests and capacity assertions.
+    let byteSize (ir: MathIr.MathIR) (views: (MathIr.Expr * uint32) list) : int =
         HEADER_BYTES
         + ir.Nodes.Count * NODE_BYTES
         + ir.Affines.Count * AFFINE_BYTES
         + ir.Intrinsics.Count * INTRINSIC_BYTES
         + ir.Primitives.Count * PRIMITIVE_BYTES
+        + List.length views * VIEW_BYTES
 
-    /// Serialize (ir, root) to a Uint8Array suitable for `Wasm.uploadIr`.
-    /// The kernel's `math_ir_decode` accepts the result directly.
-    let serialize (ir: MathIr.MathIR) (root: MathIr.Expr) : obj =
-        let total = byteSize ir
+    /// Serialize (ir, root, views) to a Uint8Array suitable for
+    /// `Wasm.uploadIr`. `views` is one entry per visible Field block —
+    /// the kernel renders each separately so the winning block at each
+    /// pixel can be coloured by `palette_idx`. An empty list produces
+    /// the same render as a single `root` view (no per-pixel tag eval).
+    let serialize (ir: MathIr.MathIR) (root: MathIr.Expr) (views: (MathIr.Expr * uint32) list) : obj =
+        let total = byteSize ir views
         let buf = createUint8Array total
         let dv = dvOver buf
 
@@ -125,6 +137,7 @@ module MathIrCodec =
         let affineCount = ir.Affines.Count
         let intrinsicCount = ir.Intrinsics.Count
         let primitiveCount = ir.Primitives.Count
+        let viewCount = List.length views
 
         // Header
         setU32 dv 0  MAGIC
@@ -134,6 +147,7 @@ module MathIrCodec =
         setU32 dv 16 (uint32 intrinsicCount)
         setU32 dv 20 (uint32 primitiveCount)
         setU32 dv 24 (uint32 root.Id)
+        setU32 dv 28 (uint32 viewCount)
 
         // Sections
         let mutable off = HEADER_BYTES
@@ -149,5 +163,9 @@ module MathIrCodec =
         for i in 0 .. primitiveCount - 1 do
             writePrimitive dv off ir.Primitives.[i]
             off <- off + PRIMITIVE_BYTES
+        for (expr, paletteIdx) in views do
+            setI32 dv off expr.Id
+            setU32 dv (off + 4) paletteIdx
+            off <- off + VIEW_BYTES
 
         buf

@@ -63,11 +63,23 @@ pub const WrappedCamera = struct {
     nodes: CameraFrameNodes,
 };
 
-/// Wraps `root` with a camera-frame `remap_axes`. The wrapped tree's input
-/// space is camera-local (wcx, wcy, wcz); the wrapper computes
-/// `world = eye + bx*wcx + by*wcy + bz*wcz` and remaps so the user's
-/// `var_x`/`var_y`/`var_z` references resolve to the world coordinates.
-pub fn wrapWithCameraFrame(ir: *MathIR, root: Expr, frame: CameraFrame) !WrappedCamera {
+/// World-axis exprs derived from a camera frame. Build once via
+/// `buildCameraAxes`, then reuse across multiple roots — every root
+/// wrapped with the same axes shares the same camera-immediate slots
+/// when individually compiled (each tape gets its own immediates,
+/// but they all bind to the same `CameraFrameNodes` ids and thus
+/// receive the same `setFrame` updates from `MutableCamera`).
+pub const CameraAxes = struct {
+    world_x: Expr,
+    world_y: Expr,
+    world_z: Expr,
+    nodes: CameraFrameNodes,
+};
+
+/// Build the 12 mutable camera constants and the `world_{x,y,z}` exprs
+/// the camera-frame remap drives off. Output is a small handle that
+/// can be passed to `wrapWithAxes` for each root we want to render.
+pub fn buildCameraAxes(ir: *MathIR, frame: CameraFrame) !CameraAxes {
     const e0 = try ir.constant(@floatCast(frame.eye[0]));
     const e1 = try ir.constant(@floatCast(frame.eye[1]));
     const e2 = try ir.constant(@floatCast(frame.eye[2]));
@@ -91,10 +103,10 @@ pub fn wrapWithCameraFrame(ir: *MathIR, root: Expr, frame: CameraFrame) !Wrapped
     const world_y = try axisFold(ir, e1, bx1, by1, bz1, wcx, wcy, wcz);
     const world_z = try axisFold(ir, e2, bx2, by2, bz2, wcx, wcy, wcz);
 
-    const wrapped = try ir.remapAxes(root, world_x, world_y, world_z);
-
     return .{
-        .wrapped_root = wrapped,
+        .world_x = world_x,
+        .world_y = world_y,
+        .world_z = world_z,
         .nodes = .{
             .eye = .{ e0.id, e1.id, e2.id },
             .basis_x = .{ bx0.id, bx1.id, bx2.id },
@@ -102,6 +114,21 @@ pub fn wrapWithCameraFrame(ir: *MathIR, root: Expr, frame: CameraFrame) !Wrapped
             .basis_z = .{ bz0.id, bz1.id, bz2.id },
         },
     };
+}
+
+/// Wrap `root` with an existing `CameraAxes`. Cheaper than
+/// `wrapWithCameraFrame` when many roots share the same camera —
+/// only allocates one `remap_axes` node per root.
+pub fn wrapWithAxes(ir: *MathIR, root: Expr, axes: CameraAxes) !Expr {
+    return ir.remapAxes(root, axes.world_x, axes.world_y, axes.world_z);
+}
+
+/// Convenience: build axes + wrap a single root in one call. Equivalent
+/// to today's behaviour for callers that only need one tape.
+pub fn wrapWithCameraFrame(ir: *MathIR, root: Expr, frame: CameraFrame) !WrappedCamera {
+    const axes = try buildCameraAxes(ir, frame);
+    const wrapped = try wrapWithAxes(ir, root, axes);
+    return .{ .wrapped_root = wrapped, .nodes = axes.nodes };
 }
 
 fn axisFold(ir: *MathIR, eye: Expr, bx: Expr, by: Expr, bz: Expr, x: Expr, y: Expr, z: Expr) !Expr {

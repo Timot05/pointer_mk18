@@ -11,8 +11,12 @@ namespace Server.Lang
 //   * Each sketch block is pre-bound in the value/type envs as a typed
 //     `Sketch` value; it doesn't appear in the AST. Downstream blocks
 //     reference it with a plain `EVar`.
-//   * The trailing `SExpr` selects the render root — last block whose
-//     output type is `Field`.
+//   * The trailing `SExpr` selects the render root: every Field-typed
+//     block whose `Visibility ≠ VHidden` is unioned together, producing a
+//     single combined SDF the kernel renders. With one visible block the
+//     union collapses to that block alone (today's behaviour); with N
+//     visible blocks the surfaces show simultaneously, blended at any
+//     overlap.
 //
 // `compose` is pure: it builds the AST + type env without instantiating
 // a MathIR. `evaluate` is the second phase, building a fresh MathIR
@@ -39,6 +43,15 @@ module NotebookCompose =
         BlockNames: Map<BlockId, string>
         BlockSpans: Map<BlockId, Span>
         BlockOutputs: Map<BlockId, Type.T>
+        /// Names of every Field-typed block that is currently visible
+        /// (Visibility ≠ VHidden), in declaration order. The render
+        /// root is `union`-folded over these names; each name also
+        /// becomes a per-block "view" the kernel renders separately
+        /// for tag/colour assignment.
+        VisibleFieldNames: string list
+        /// Block id of each visible field name, paired by index with
+        /// `VisibleFieldNames`. Used to colour views by block id.
+        VisibleFieldBlockIds: BlockId list
     }
 
     // ── AST construction helpers ───────────────────────────────────────────
@@ -125,7 +138,10 @@ module NotebookCompose =
         // Build per-block let-bindings for the native blocks. Walk in
         // declaration order so refs only reach upstream names.
         let stmts = ResizeArray<Stmt>()
-        let mutable renderTarget : string option = None
+        // Names of every Field-typed block whose visibility is not
+        // `VHidden`. The render root is `union`-folded over this list.
+        let visibleFieldNames = ResizeArray<string>()
+        let visibleFieldBlockIds = ResizeArray<BlockId>()
 
         for block in notebook.Blocks do
             match block.Body with
@@ -163,21 +179,29 @@ module NotebookCompose =
 
                     let outTy = specOutputType spec
                     blockOutputs <- Map.add block.Id outTy blockOutputs
-                    if outTy = Type.Field then
-                        renderTarget <- Some block.Name
+                    if outTy = Type.Field && block.Visibility <> VHidden then
+                        visibleFieldNames.Add block.Name
+                        visibleFieldBlockIds.Add block.Id
 
-        // If the last Field-typed block exists, select it as the render
-        // root. Otherwise the AST has no trailing expression and the
-        // block returns `()` which surfaces as "no renderable output".
-        match renderTarget with
-        | Some n -> stmts.Add(SExpr (varE n))
-        | None -> ()
+        // Render root = sharp `union` over every visible Field block.
+        // Empty list → no trailing expression → "no renderable output".
+        // Singleton → that block alone (collapses to today's behaviour).
+        let visibleFieldNamesList = List.ofSeq visibleFieldNames
+        match visibleFieldNamesList with
+        | [] -> ()
+        | [ single ] -> stmts.Add(SExpr (varE single))
+        | head :: tail ->
+            let unionCall a b = applyChain (varE "union") [ a; b ]
+            let folded = tail |> List.fold (fun acc n -> unionCall acc (varE n)) (varE head)
+            stmts.Add(SExpr folded)
 
         { Ast = mk (EBlock (List.ofSeq stmts))
           TypeEnv = typeEnv
           BlockNames = blockNames
           BlockSpans = blockSpans
-          BlockOutputs = blockOutputs }
+          BlockOutputs = blockOutputs
+          VisibleFieldNames = visibleFieldNamesList
+          VisibleFieldBlockIds = List.ofSeq visibleFieldBlockIds }
 
     // ── Evaluation ─────────────────────────────────────────────────────────
 
@@ -203,17 +227,45 @@ module NotebookCompose =
     type EvalResult = {
         Ir: MathIr.MathIR
         Value: Value
+        /// Top-level let-binding values, captured after the notebook's
+        /// statements ran. Used to look up per-block render exprs (one
+        /// MathIR view per visible Field block) without re-evaluating.
+        Bindings: Map<string, Value>
     }
 
     /// Pre-typecheck step has already passed — build the MathIR + eval
-    /// the composed AST.
+    /// the composed AST. Stmts are iterated at the top level (rather
+    /// than wrapped in an EBlock) so each block's let-binding stays
+    /// in `ctx.Env` after evaluation, exposing per-block exprs through
+    /// `EvalResult.Bindings`.
     let evaluate (notebook: Notebook) (composed: Composed) : Result<EvalResult, EvalError> =
         let ir = MathIr.MathIR()
         let ctx = createContextWith ir (newEnv None)
         buildValueEnv notebook ctx
-        match Eval.evalExpr ctx composed.Ast with
-        | Ok v -> Ok { Ir = ir; Value = v }
-        | Error e -> Error e
+
+        let stmts =
+            match composed.Ast.Node with
+            | EBlock ss -> ss
+            | _ -> [ SExpr composed.Ast ]
+
+        let mutable err : EvalError option = None
+        let mutable last : Value = VUnit
+        for stmt in stmts do
+            if err.IsNone then
+                match Eval.evalStmt ctx stmt with
+                | Ok v -> last <- v
+                | Error e -> err <- Some e
+
+        match err with
+        | Some e -> Error e
+        | None ->
+            // Snapshot just the keys we care about — sketch payloads + per-
+            // block let bindings — out of the env's mutable Dictionary.
+            let bindings =
+                ctx.Env.Bindings
+                |> Seq.map (fun kv -> kv.Key, kv.Value)
+                |> Map.ofSeq
+            Ok { Ir = ir; Value = last; Bindings = bindings }
 
     // ── Public entry points ────────────────────────────────────────────────
 
@@ -259,6 +311,27 @@ module NotebookCompose =
             push id (Typecheck.formatError e)
         acc
 
+    /// Per-view metadata: the block's MathIR root expr + the palette
+    /// index the kernel should use when this view's surface wins at
+    /// a given pixel. Palette indices are derived from BlockId (see
+    /// `paletteIndexFor`), so adding/removing blocks doesn't reshuffle
+    /// existing colours.
+    let private paletteIndexFor (id: BlockId) : uint32 =
+        // 8-colour palette in the kernel; cycle by block id.
+        uint32 (((id % 8) + 8) % 8)
+
+    /// Pull `(expr, palette_idx)` for each visible Field block out of
+    /// the post-eval bindings. Drops names that didn't resolve to
+    /// `VField` (shouldn't happen if typecheck passed; defensive).
+    let private viewsFromBindings
+            (composed: Composed)
+            (bindings: Map<string, Value>) : (MathIr.Expr * uint32) list =
+        List.zip composed.VisibleFieldNames composed.VisibleFieldBlockIds
+        |> List.choose (fun (name, blockId) ->
+            match Map.tryFind name bindings with
+            | Some (VField expr) -> Some (expr, paletteIndexFor blockId)
+            | _ -> None)
+
     /// Full notebook compile — typecheck + (on success) eval + serialise.
     let compile (notebook: Notebook) : CompileResult =
         let composed = compose notebook
@@ -273,13 +346,14 @@ module NotebookCompose =
               Summary = summary }
         | Ok _ ->
             match evaluate notebook composed with
-            | Ok { Ir = ir; Value = VField root } ->
+            | Ok { Ir = ir; Value = VField root; Bindings = bindings } ->
                 // Serialise to wire bytes. On .NET (xUnit tests) the
                 // Fable Uint8Array binding throws — surface that
                 // explicitly so a failure here doesn't masquerade as
                 // "no render root" with a blank canvas.
                 try
-                    let bytes = MathIrCodec.serialize ir root
+                    let views = viewsFromBindings composed bindings
+                    let bytes = MathIrCodec.serialize ir root views
                     { Bytes = Some bytes
                       BlockErrors = Map.empty
                       BlockOutputs = composed.BlockOutputs
@@ -325,3 +399,4 @@ module NotebookCompose =
                 Error [ Typecheck.InvalidOperand("notebook produced no Field render root", { Start = 0; Stop = 0 }) ]
             | Error e ->
                 Error [ Typecheck.InvalidOperand(e.Message, e.Span) ]
+

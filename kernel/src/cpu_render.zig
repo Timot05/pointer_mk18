@@ -63,6 +63,12 @@ const NEG_LIGHT_DIR: [3]f32 = .{ -0.35, -0.55, 0.75 }; // pre-normalized
 /// stride). Pass `tile_x = 0, tile_y = 0, tile_w = full_w, tile_h = full_h`
 /// to render the entire image.
 ///
+/// `view_tapes` / `view_palettes` (paired by index) carry per-block
+/// surfaces. At each hit pixel the renderer evaluates every view's
+/// SDF at the hit point and picks the smallest as the winning block;
+/// its palette index drives `shade()`. Empty slices fall back to the
+/// default colour (palette index 0).
+///
 /// Camera math (view_half_w/h, ray directions) uses `full_w × full_h` so
 /// pixels render the same regardless of which tile they belong to —
 /// adjacent tiles produce a seamless image when composited.
@@ -78,6 +84,8 @@ pub fn render(
     tape: *const RegTape,
     ir: *const MathIR,
     slots: []const f64,
+    view_tapes: []const RegTape,
+    view_palettes: []const u32,
     view_half_w: f32,
     view_half_h: f32,
     near: f32,
@@ -89,6 +97,7 @@ pub fn render(
     std.debug.assert(out_gbuffer.len >= tile_total * 4);
     std.debug.assert(tile_x + tile_w <= full_w);
     std.debug.assert(tile_y + tile_h <= full_h);
+    std.debug.assert(view_tapes.len == view_palettes.len);
 
     initBuffers(out_pixels, out_gbuffer, tile_total);
 
@@ -110,6 +119,8 @@ pub fn render(
         .tile_h = tile_h,
         .ir = ir,
         .slots = slots,
+        .view_tapes = view_tapes,
+        .view_palettes = view_palettes,
         .view_half_w = view_half_w,
         .view_half_h = view_half_h,
         .near = near,
@@ -152,6 +163,8 @@ const RenderCtx = struct {
     tile_h: u32,
     ir: *const MathIR,
     slots: []const f64,
+    view_tapes: []const RegTape,
+    view_palettes: []const u32,
     view_half_w: f32,
     view_half_h: f32,
     near: f32,
@@ -356,7 +369,8 @@ fn stampTileBlock(
         ny = gy / gmag;
         nz = gz / gmag;
     }
-    const color = shade(nx, ny, nz);
+    const palette = pickViewPalette(ctx, u_c, v_c, t_c);
+    const color = shade(palette, nx, ny, nz);
 
     var py: u32 = py_lo;
     while (py < py_hi) : (py += 1) {
@@ -446,6 +460,10 @@ fn emitLeafSamples(
                 u_vec, v_vec, hit_t,
                 grad4_slots[0..],
             );
+            // F4 tag eval — one batched eval per view tape, then take
+            // the per-lane min. Lanes that didn't hit produce garbage
+            // tags but the per-lane write below skips them.
+            const palette4 = pickViewPaletteF4(ctx, u_vec, v_vec, hit_t);
             const dx_arr: [4]f32 = grad4.dx;
             const dy_arr: [4]f32 = grad4.dy;
             const dz_arr: [4]f32 = grad4.dz;
@@ -471,17 +489,75 @@ fn emitLeafSamples(
                 ctx.out_gbuffer[idx * 4 + 1] = ny;
                 ctx.out_gbuffer[idx * 4 + 2] = nz_n;
                 ctx.out_gbuffer[idx * 4 + 3] = t_hit;
-                ctx.out_pixels[idx] = shade(nx, ny, nz_n);
+                ctx.out_pixels[idx] = shade(palette4[l], nx, ny, nz_n);
             }
         }
     }
 }
 
-inline fn shade(nx: f32, ny: f32, nz: f32) u32 {
+/// 8-colour palette indexed by `View.palette_idx`. Indexed mod-8 — the
+/// host derives indices from block ids so adding/removing intermediate
+/// blocks doesn't reshuffle the palette.
+///
+/// Tuples are (base_r, base_g, base_b, lit_r, lit_g, lit_b) — base is
+/// the ambient floor; lit is the fully-illuminated tint. Diffuse lerps
+/// between the two.
+const PALETTE: [8][6]f32 = .{
+    .{ 0.35, 0.45, 0.55, 0.70, 0.85, 0.90 }, // 0: cool grey (legacy default)
+    .{ 0.55, 0.30, 0.30, 0.95, 0.60, 0.55 }, // 1: red
+    .{ 0.30, 0.50, 0.30, 0.55, 0.90, 0.55 }, // 2: green
+    .{ 0.30, 0.40, 0.60, 0.55, 0.70, 0.95 }, // 3: blue
+    .{ 0.55, 0.50, 0.25, 0.95, 0.85, 0.45 }, // 4: amber
+    .{ 0.45, 0.30, 0.55, 0.80, 0.55, 0.95 }, // 5: violet
+    .{ 0.30, 0.55, 0.55, 0.55, 0.95, 0.95 }, // 6: teal
+    .{ 0.55, 0.40, 0.30, 0.95, 0.70, 0.50 }, // 7: terracotta
+};
+
+inline fn shade(palette_idx: u32, nx: f32, ny: f32, nz: f32) u32 {
     const ldot = nx * NEG_LIGHT_DIR[0] + ny * NEG_LIGHT_DIR[1] + nz * NEG_LIGHT_DIR[2];
     const diffuse = std.math.clamp(ldot * 0.75 + 0.25, 0.0, 1.0);
-    const r = 0.35 + 0.35 * diffuse;
-    const g = 0.45 + 0.40 * diffuse;
-    const b = 0.55 + 0.35 * diffuse;
+    const c = PALETTE[palette_idx & 7];
+    const r = c[0] + (c[3] - c[0]) * diffuse;
+    const g = c[1] + (c[4] - c[1]) * diffuse;
+    const b = c[2] + (c[5] - c[2]) * diffuse;
     return packRGBA(colorByte(r), colorByte(g), colorByte(b), 255);
+}
+
+/// Pick the winning view's palette index for a hit at `(u, v, t)` in
+/// camera-local space. Evaluates each view tape's SDF and returns the
+/// palette index with the smallest value. Returns 0 (default colour)
+/// when no views were supplied.
+inline fn pickViewPalette(ctx: *const RenderCtx, u: f32, v: f32, t: f32) u32 {
+    if (ctx.view_tapes.len == 0) return 0;
+    var best_val: f32 = std.math.inf(f32);
+    var best_palette: u32 = 0;
+    var i: usize = 0;
+    while (i < ctx.view_tapes.len) : (i += 1) {
+        const val = m.decodeRegEvalF32(&ctx.view_tapes[i], ctx.ir, ctx.slots, .{ .x = u, .y = v, .z = t });
+        if (val < best_val) {
+            best_val = val;
+            best_palette = ctx.view_palettes[i];
+        }
+    }
+    return best_palette;
+}
+
+/// 4-lane variant — runs each view tape with `decodeRegEvalF4` and
+/// returns the per-lane winning palette indices.
+inline fn pickViewPaletteF4(ctx: *const RenderCtx, u: F4, v: F4, t: F4) [4]u32 {
+    var out: [4]u32 = .{ 0, 0, 0, 0 };
+    if (ctx.view_tapes.len == 0) return out;
+    var best_val: F4 = @splat(std.math.inf(f32));
+    var i: usize = 0;
+    while (i < ctx.view_tapes.len) : (i += 1) {
+        const val = m.decodeRegEvalF4(&ctx.view_tapes[i], ctx.ir, ctx.slots, u, v, t, simd_slots[0..]);
+        const closer: @Vector(4, bool) = val < best_val;
+        best_val = @select(f32, closer, val, best_val);
+        const palette = ctx.view_palettes[i];
+        const closer_arr: [4]bool = closer;
+        inline for (0..4) |l| {
+            if (closer_arr[l]) out[l] = palette;
+        }
+    }
+    return out;
 }

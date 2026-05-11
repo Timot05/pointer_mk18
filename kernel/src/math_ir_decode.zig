@@ -1,25 +1,29 @@
 // Decode mk18's MathIR wire format directly into a `MathIR` struct.
 //
-// Wire format (all little-endian, header 28 bytes):
-//   u32 magic           = 0x4D495231 ("MIR1")
-//   u32 version         = 1
+// Wire format (all little-endian, header 32 bytes, "MIR2"):
+//   u32 magic           = 0x4D495232 ("MIR2")
+//   u32 version         = 2
 //   u32 node_count
 //   u32 affine_count
 //   u32 intrinsic_count
 //   u32 primitive_count
-//   u32 root            (node id)
+//   u32 root            (node id of the unioned render tree)
+//   u32 view_count
 //
 // Sections in declaration order:
 //   nodes:      node_count      × 32 B  (Node)
 //   affines:    affine_count    × 48 B  (Affine3, 12 × i32 expr id)
 //   intrinsics: intrinsic_count × 48 B  (Intrinsic + 4-byte pad)
 //   primitives: primitive_count × 64 B  (SketchPrimitive + 7-byte pad)
+//   views:      view_count      ×  8 B  (i32 expr_id, u32 palette_idx)
+//
+// Views: one per visible Field block. The kernel renders each separately
+// so the winning block at each hit pixel can be coloured by `palette_idx`.
+// `view_count == 0` is valid — the kernel falls back to a default colour
+// for the whole `root` surface.
 //
 // Per-element layouts mirror `math_ir.zig`'s in-memory shapes byte-for-byte
 // where natural; padding is added only to keep section strides aligned.
-//
-// Slot baking: numeric immediates show up as Const nodes (kind=2) carrying
-// the f64 in the `value` field. There is no separate slot table on the wire.
 
 const std = @import("std");
 const m = @import("math_ir.zig");
@@ -32,19 +36,30 @@ pub const Error = error{
     TooManyAffines,
     TooManyIntrinsics,
     TooManyPrimitives,
+    TooManyViews,
     BadKind,
 };
 
 pub const IR_UPLOAD_CAPACITY: usize = 256 * 1024;
 
-pub const MAGIC: u32 = 0x4D495231;
-pub const VERSION: u32 = 1;
+pub const MAGIC: u32 = 0x4D495232;
+pub const VERSION: u32 = 2;
 
-const HEADER_BYTES: usize = 28;
+/// Maximum visible Field blocks the renderer can colour by tag.
+/// Keep modest — each view holds its own ~50 KB RegTape on the kernel.
+pub const max_views: usize = 16;
+
+pub const View = struct {
+    expr_id: i32,
+    palette_idx: u32,
+};
+
+const HEADER_BYTES: usize = 32;
 const NODE_BYTES: usize = 32;
 const AFFINE_BYTES: usize = 48;
 const INTRINSIC_BYTES: usize = 48;
 const PRIMITIVE_BYTES: usize = 64;
+const VIEW_BYTES: usize = 8;
 
 var ir_upload_buffer: [IR_UPLOAD_CAPACITY]u8 align(8) = undefined;
 
@@ -52,7 +67,13 @@ pub fn uploadBufferPtr() [*]u8 {
     return @ptrCast(&ir_upload_buffer);
 }
 
-pub fn decodeInto(byte_len: usize, ir: *m.MathIR) Error!m.Expr {
+pub const Decoded = struct {
+    root: m.Expr,
+    views: [max_views]View = undefined,
+    view_count: usize = 0,
+};
+
+pub fn decodeInto(byte_len: usize, ir: *m.MathIR) Error!Decoded {
     if (byte_len < HEADER_BYTES) return Error.Truncated;
     const bytes: []const u8 = ir_upload_buffer[0..byte_len];
 
@@ -66,17 +87,20 @@ pub fn decodeInto(byte_len: usize, ir: *m.MathIR) Error!m.Expr {
     const intrinsic_count = readU32(bytes, 16);
     const primitive_count = readU32(bytes, 20);
     const root = readU32(bytes, 24);
+    const view_count = readU32(bytes, 28);
 
     if (node_count > m.max_nodes) return Error.TooManyNodes;
     if (affine_count > m.max_affines) return Error.TooManyAffines;
     if (intrinsic_count > m.max_intrinsics) return Error.TooManyIntrinsics;
     if (primitive_count > m.max_primitives) return Error.TooManyPrimitives;
+    if (view_count > max_views) return Error.TooManyViews;
 
     const nodes_off = HEADER_BYTES;
     const affines_off = nodes_off + @as(usize, node_count) * NODE_BYTES;
     const intrinsics_off = affines_off + @as(usize, affine_count) * AFFINE_BYTES;
     const primitives_off = intrinsics_off + @as(usize, intrinsic_count) * INTRINSIC_BYTES;
-    const total = primitives_off + @as(usize, primitive_count) * PRIMITIVE_BYTES;
+    const views_off = primitives_off + @as(usize, primitive_count) * PRIMITIVE_BYTES;
+    const total = views_off + @as(usize, view_count) * VIEW_BYTES;
     if (byte_len < total) return Error.Truncated;
 
     var i: u32 = 0;
@@ -108,7 +132,19 @@ pub fn decodeInto(byte_len: usize, ir: *m.MathIR) Error!m.Expr {
     ir.primitive_count = primitive_count;
 
     if (root >= node_count) return Error.Truncated;
-    return .{ .id = @intCast(root) };
+
+    var decoded: Decoded = .{ .root = .{ .id = @intCast(root) }, .view_count = view_count };
+    i = 0;
+    while (i < view_count) : (i += 1) {
+        const off = views_off + @as(usize, i) * VIEW_BYTES;
+        const expr_id = readI32(bytes, off);
+        if (expr_id < 0 or @as(u32, @intCast(expr_id)) >= node_count) return Error.Truncated;
+        decoded.views[i] = .{
+            .expr_id = expr_id,
+            .palette_idx = readU32(bytes, off + 4),
+        };
+    }
+    return decoded;
 }
 
 fn decodeNode(rec: *const [NODE_BYTES]u8) Error!m.Node {

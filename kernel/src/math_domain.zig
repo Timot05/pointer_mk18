@@ -66,4 +66,7 @@ pub const CameraFrameNodes = camera_frame.CameraFrameNodes;
 pub const WrappedCamera = camera_frame.WrappedCamera;
 pub const MutableCamera = camera_frame.MutableCamera;
 pub const wrapWithCameraFrame = camera_frame.wrapWithCameraFrame;
+pub const CameraAxes = camera_frame.CameraAxes;
+pub const buildCameraAxes = camera_frame.buildCameraAxes;
+pub const wrapWithAxes = camera_frame.wrapWithAxes;
 

@@ -235,10 +235,12 @@ let ``BlockSpec: translate extracts in declaration order with mixed types`` () =
         types)
 
 [<Fact>]
-let ``BlockSpec: union extracts as [a:Field; b:Field] -> Field`` () =
+let ``BlockSpec: union extracts as [target:Field; tool:Field] -> Field`` () =
     let spec = BlockSpec.find "union"
     let extracted = BlockSpec.typedInterface spec
+    let names = extracted.Params |> List.map (fun p -> p.Name)
     let types = extracted.Params |> List.map (fun p -> p.Type)
+    Assert.Equal<string list>([ "target"; "tool" ], names)
     Assert.Equal<Type.T list>([ Type.Field; Type.Field ], types)
 
 [<Fact>]

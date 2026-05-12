@@ -286,10 +286,22 @@ fn renderTileRecurse(
     // additional check the recursion descends to per-pixel level over
     // the entire viewport — correct but monstrously slow.
     //
-    // The signed-distance lowering is Lipschitz with constant 1 (it's
-    // a valid SDF — `unsigned` is Lipschitz-1 and the sign flip only
-    // changes value across the surface itself), so `|sdf(center)| >
-    // tile_radius` is a sound "surface not in tile" predicate.
+    // For a Lipschitz-1 SDF, `|sdf(center)| > tile_radius` is a sound
+    // "surface not in tile" predicate. But some pipelines aren't
+    // Lipschitz-1 — `wing-remap-preview`'s `twoBody` remap divides by
+    // `trailingX - leadingX`, amplifying gradients near the wing tip
+    // by ~1/clearance. Pruning by `tile_radius` alone there would
+    // falsely skip tiles that actually contain surface.
+    //
+    // We compute the gradient analytically at the tile center via
+    // `decodeRegEvalGrad` (one tape walk that yields value + ∂x∂y∂z
+    // in one go) and use `|∇sdf|` as the local Lipschitz estimate.
+    // For Lipschitz-1 SDFs this lands at ≈ 1 and reproduces the simple
+    // `|sdf| > radius` check; for warped SDFs it scales up
+    // automatically. Still a local estimate — the gradient elsewhere
+    // in the tile may be larger — but it's strictly more accurate than
+    // forward-difference probes at the same cost, and is the analytical
+    // counterpart of the same idea.
     const u_c = 0.5 * (u_lo + u_hi);
     const v_c = 0.5 * (v_lo + v_hi);
     const t_c = 0.5 * (t_lo + t_hi);
@@ -297,8 +309,14 @@ fn renderTileRecurse(
     const half_v = 0.5 * (v_hi - v_lo);
     const half_t = 0.5 * (t_hi - t_lo);
     const tile_radius = @sqrt(half_u * half_u + half_v * half_v + half_t * half_t);
-    const center_val = m.decodeRegEvalF32(tape, ctx.ir, ctx.slots, .{ .x = u_c, .y = v_c, .z = t_c });
-    if (@abs(center_val) > tile_radius) return;
+    const center_grad = m.decodeRegEvalGrad(tape, ctx.ir, ctx.slots, .{ .x = u_c, .y = v_c, .z = t_c });
+    const center_val = center_grad[0];
+    const gx = center_grad[1];
+    const gy = center_grad[2];
+    const gz = center_grad[3];
+    const grad_mag = @sqrt(gx * gx + gy * gy + gz * gz);
+    const lipschitz = @max(@as(f32, 1.0), grad_mag);
+    if (@abs(center_val) > tile_radius * lipschitz) return;
 
     if (level == FINEST_TILE_LEVEL) {
         if (ctx.max_level > FINEST_TILE_LEVEL) {
@@ -383,23 +401,13 @@ fn stampTileBlock(
     const t_c = 0.5 * (t_lo + t_hi);
 
     // One Grad eval at the tile center → value + analytical normal.
+    //
+    // No sphere-tracing-style guard here. `renderTileRecurse` already
+    // ran a Lipschitz-scaled `|sdf| > radius * lipschitz` check before
+    // descending to this tile; duplicating a stricter Lipschitz-1 check
+    // here would over-prune warped SDFs (visible as missing patches on
+    // the wing surface).
     const g = m.decodeRegEvalGrad(tape, ctx.ir, ctx.slots, .{ .x = u_c, .y = v_c, .z = t_c });
-
-    // Sphere-tracing-style sign check: if the SDF magnitude at the tile
-    // centre is larger than the tile's bounding-sphere radius, the surface
-    // can't intersect this tile and we shouldn't stamp it. This catches the
-    // pathological case where `decodeRegEvalIntervalWithTrace` returned a
-    // loose interval that straddles zero (typical for closed-loop signed
-    // distance: `unsigned * (-compare(|winding|, π))` multiplies a positive
-    // unsigned interval by a [-1, 1] sign interval → always straddles 0,
-    // even tiles miles from the actual surface). Without this guard those
-    // tiles get blanket-stamped with whatever (often near-fallback) normal
-    // the centre-point grad produced — i.e. brown screen.
-    const half_u = 0.5 * (u_hi - u_lo);
-    const half_v = 0.5 * (v_hi - v_lo);
-    const half_t = 0.5 * (t_hi - t_lo);
-    const tile_radius = @sqrt(half_u * half_u + half_v * half_v + half_t * half_t);
-    if (@abs(g[0]) > tile_radius) return;
 
     const gx = g[1];
     const gy = g[2];

@@ -188,7 +188,23 @@ let install
                             Store.dispatch AppStore.store (ViewerToolClick(u, v))
                         | None -> ()
                     else
-                        dragPickable <- topPickable
+                        // Sketch entities (points / lines / dimension labels)
+                        // are only drag-targetable when sketch-edit mode is
+                        // on — matches main-branch behaviour where you have
+                        // to explicitly enter edit mode before nudging
+                        // points around. Selection-side gating
+                        // (`reduceSelectionCandidates` → `belongsToActiveSketch`)
+                        // already filters them; we mirror that here so the
+                        // mousemove drag path doesn't fire `BeginSketchDrag`
+                        // for clicks that won't even select.
+                        let editMode = viewState.SketchUi.EditMode
+                        let dragCandidate =
+                            match topPickable with
+                            | Some (PickPoint _) | Some (PickLine _)
+                            | Some (PickCircle _) | Some (PickArc _)
+                            | Some (PickLoop _) | Some (PickDimension _) when not editMode -> None
+                            | other -> other
+                        dragPickable <- dragCandidate
                         Store.dispatch AppStore.store
                             (ViewerPick(selectionIntent e, candidates))))
 

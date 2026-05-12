@@ -100,7 +100,7 @@ let ``union of two spheres roots a Min binary node`` () =
         notebookOf [
             nativeBlock 0 "a" "sphere" [ "radius", ArgScalar 1.0 ]
             nativeBlock 1 "b" "sphere" [ "radius", ArgScalar 2.0 ]
-            nativeBlock 2 "u" "union" [ "a", ArgRef (Some 0); "b", ArgRef (Some 1) ]
+            nativeBlock 2 "u" "union" [ "target", ArgRef (Some 0); "tool", ArgRef (Some 1) ]
         ]
     let result = NotebookEval.eval nb
     let be = blockEvalOf 2 result

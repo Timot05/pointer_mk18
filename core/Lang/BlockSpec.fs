@@ -170,25 +170,25 @@ module BlockSpec =
           Body = lambda [ "rootY", Type.Scalar; "child", Type.Field ] body
           ScalarDefaults = Map.ofList [ "rootY", 0.0 ] }
 
-    /// `union a b` — `min(a, b)`.
+    /// `union target tool` — `min(target, tool)`.
     let private unionSpec : BlockSpec =
-        let body = minE (varE "a") (varE "b")
+        let body = minE (varE "target") (varE "tool")
         { Name = "union"
-          Body = lambda [ "a", Type.Field; "b", Type.Field ] body
+          Body = lambda [ "target", Type.Field; "tool", Type.Field ] body
           ScalarDefaults = Map.empty }
 
-    /// `intersect a b` — `max(a, b)`.
+    /// `intersect target tool` — `max(target, tool)`.
     let private intersectSpec : BlockSpec =
-        let body = maxE (varE "a") (varE "b")
+        let body = maxE (varE "target") (varE "tool")
         { Name = "intersect"
-          Body = lambda [ "a", Type.Field; "b", Type.Field ] body
+          Body = lambda [ "target", Type.Field; "tool", Type.Field ] body
           ScalarDefaults = Map.empty }
 
-    /// `subtract a b` — `max(a, -b)` (remove `b` from `a`).
+    /// `subtract target tool` — `max(target, -tool)` (remove `tool` from `target`).
     let private subtractSpec : BlockSpec =
-        let body = maxE (varE "a") (negE (varE "b"))
+        let body = maxE (varE "target") (negE (varE "tool"))
         { Name = "subtract"
-          Body = lambda [ "a", Type.Field; "b", Type.Field ] body
+          Body = lambda [ "target", Type.Field; "tool", Type.Field ] body
           ScalarDefaults = Map.empty }
 
     /// `thicken amount child` — shifts iso-surface outward by `amount`.

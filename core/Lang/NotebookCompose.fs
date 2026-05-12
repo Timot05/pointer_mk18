@@ -92,6 +92,17 @@ module NotebookCompose =
     /// UI that this block has a missing input.
     let [<Literal>] private UNWIRED_PLACEHOLDER = "<unwired>"
 
+    let private tryFindBlockArg (specName: string) (paramName: string) (args: Map<string, BlockArg>) : BlockArg option =
+        match Map.tryFind paramName args with
+        | Some arg -> Some arg
+        | None ->
+            // Legacy documents used `a` / `b` for boolean operands. New
+            // specs use target/tool, but existing blocks should keep wiring.
+            match specName, paramName with
+            | ("union" | "intersect" | "subtract"), "target" -> Map.tryFind "a" args
+            | ("union" | "intersect" | "subtract"), "tool" -> Map.tryFind "b" args
+            | _ -> None
+
     // ── from-sketch lowering ───────────────────────────────────────────────
 
     let private planeMap (p: Server.SketchPlane) : MathIr.Plane =
@@ -414,7 +425,7 @@ module NotebookCompose =
                     let argExprs =
                         typed.Params
                         |> List.map (fun p ->
-                            match Map.tryFind p.Name args with
+                            match tryFindBlockArg specName p.Name args with
                             | Some (ArgScalar n) ->
                                 numEAt bsp n
                             | Some (ArgRef (Some refId)) ->
@@ -719,4 +730,3 @@ module NotebookCompose =
                 Error [ Typecheck.InvalidOperand("notebook produced no Field render root", { Start = 0; Stop = 0 }) ]
             | Error e ->
                 Error [ Typecheck.InvalidOperand(e.Message, e.Span) ]
-

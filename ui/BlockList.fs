@@ -68,6 +68,15 @@ let private bodyKindLabel (body: Notebook.BlockBody) : string =
     | Notebook.NativeBody(name, _) -> name
     | Notebook.SketchBody _ -> "sketch"
 
+let private tryFindBlockArg (specName: string) (paramName: string) (args: Map<string, Notebook.BlockArg>) : Notebook.BlockArg option =
+    match Map.tryFind paramName args with
+    | Some arg -> Some arg
+    | None ->
+        match specName, paramName with
+        | ("union" | "intersect" | "subtract"), "target" -> Map.tryFind "a" args
+        | ("union" | "intersect" | "subtract"), "tool" -> Map.tryFind "b" args
+        | _ -> None
+
 // ── Visibility badge (reuses `.visibility-badge`) ──────────────────────────
 
 let private visibilityGlyph (v: Notebook.BlockVisibility) : string =
@@ -202,10 +211,14 @@ let private renderInputRow
     row.appendChild (Dom.elText "span" "input-row-label" param.Name :> Node) |> ignore
 
     let editor =
+        let specName =
+            match block.Body with
+            | Notebook.NativeBody(name, _) -> name
+            | _ -> ""
         match param.Type with
         | Type.Scalar ->
             let v =
-                match Map.tryFind param.Name args with
+                match tryFindBlockArg specName param.Name args with
                 | Some (Notebook.ArgScalar n) -> n
                 | _ -> 0.0
             renderScalarEditor dispatch block.Id param.Name v
@@ -213,7 +226,7 @@ let private renderInputRow
         | Type.Sketch
         | Type.Frame ->
             let r =
-                match Map.tryFind param.Name args with
+                match tryFindBlockArg specName param.Name args with
                 | Some (Notebook.ArgRef ref) -> ref
                 | _ -> None
             renderRefBubble dispatch doc block param.Name param.Type r :> HTMLElement

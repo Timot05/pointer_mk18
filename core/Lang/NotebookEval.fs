@@ -24,6 +24,17 @@ module NotebookEval =
     open Value
     open Notebook
 
+    let private tryFindBlockArg (specName: string) (paramName: string) (args: Map<string, BlockArg>) : BlockArg option =
+        match Map.tryFind paramName args with
+        | Some arg -> Some arg
+        | None ->
+            // Back-compat for boolean blocks created before the UI moved
+            // from `a`/`b` to target/tool.
+            match specName, paramName with
+            | ("union" | "intersect" | "subtract"), "target" -> Map.tryFind "a" args
+            | ("union" | "intersect" | "subtract"), "tool" -> Map.tryFind "b" args
+            | _ -> None
+
     /// Build the eval env for a single native block — every input the spec
     /// declares gets bound under its name. Scalars are inlined as MathIR
     /// `Const` nodes so the actual numeric value flows into the kernel
@@ -39,7 +50,7 @@ module NotebookEval =
         let env = newEnv None
         let mutable err : EvalError option = None
         for p in typed.Params do
-            match Map.tryFind p.Name args with
+            match tryFindBlockArg specName p.Name args with
             | None ->
                 if err.IsNone then
                     err <- Some

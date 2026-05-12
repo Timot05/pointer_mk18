@@ -773,12 +773,25 @@ module Editor =
                 | _ ->
                     state, noEffects
         | FinishSketchDrag ->
+            // Drag-and-release shouldn't leave the point/label selected —
+            // the click that started the drag put it in `SelectedTargets`
+            // (via the mousedown's `ViewerPick`), but a drag is a transient
+            // interaction, not a "pick this for further edits" gesture.
+            // `FinishSketchDrag` only fires after `dragActive` flipped past
+            // `DRAG_THRESHOLD_PX`, so plain click-to-select on a point
+            // (which never crosses threshold and dispatches no
+            // `FinishSketchDrag`) keeps the new selection.
             match state.ActiveSketchDrag with
             | Some drag ->
                 if isLabelDrag drag then
-                    { state with ActiveSketchDrag = None; PendingSketchDragCommit = false }, noEffects
+                    { state with
+                        ActiveSketchDrag = None
+                        PendingSketchDragCommit = false
+                        SelectedTargets = [] }, noEffects
                 else
-                    { state with PendingSketchDragCommit = true }, [ FinalizeSketchDrag drag ]
+                    { state with
+                        PendingSketchDragCommit = true
+                        SelectedTargets = [] }, [ FinalizeSketchDrag drag ]
             | None ->
                 { state with PendingSketchDragCommit = false; SolvedSketchParams = Map.empty }, noEffects
         | CancelSketchDrag ->

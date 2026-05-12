@@ -183,6 +183,8 @@ type Message =
     /// → Isosurface → Hidden. The badge in the block list is the visible
     /// trigger; the keyboard shortcut hooks the same message.
     | CycleBlockVisibility of Server.Lang.Notebook.BlockId
+    /// Set the block's isosurface display colour palette index.
+    | SetBlockColor of Server.Lang.Notebook.BlockId * colorIndex: int
     /// Replace a sketch block's `ActionSketch` payload (used by
     /// SketchAuthoring tools, gizmo drag commits, dimension edits).
     | UpdateSketchBlockSketch of Server.Lang.Notebook.BlockId * ActionSketch
@@ -1025,6 +1027,7 @@ module Editor =
                         Name = sprintf "%s_%d" specName id
                         Body = Server.Lang.Notebook.NativeBody(specName, args)
                         Visibility = Server.Lang.Notebook.VIsosurface
+                        ColorIndex = 0
                         SlicePlane = Server.Lang.Notebook.defaultSlicePlane
                     }
                     { state with
@@ -1044,6 +1047,7 @@ module Editor =
                             Plane = SketchPlane.defaults
                         }
                         Visibility = Server.Lang.Notebook.VIsosurface
+                        ColorIndex = 0
                         SlicePlane = Server.Lang.Notebook.defaultSlicePlane
                     }
                     { state with
@@ -1165,6 +1169,14 @@ module Editor =
                         state.Doc.Blocks
                         |> List.map (fun b ->
                             if b.Id = id then { b with Visibility = nextVis b.Visibility }
+                            else b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
+                | SetBlockColor(id, colorIndex) ->
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id = id then { b with ColorIndex = colorIndex }
                             else b)
                     { state with Doc = { state.Doc with Blocks = blocks } }
                     |> recompileNotebook

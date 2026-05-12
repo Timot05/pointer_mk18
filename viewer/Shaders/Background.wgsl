@@ -24,8 +24,37 @@ struct FieldCamera {
 @group(0) @binding(0) var gbuffer: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var<uniform> field: FieldCamera;
+// Per-pixel palette idx written by `cpu_render` alongside the gbuffer.
+// `0xFFFFFFFF` means "no view hit at this pixel" — use the fallback base.
+@group(0) @binding(3) var palette_tex: texture_2d<u32>;
 
 @group(1) @binding(0) var<uniform> cam: Camera;
+
+// (base_rgb, lit_rgb) per palette index — mirror of `cpu_render.PALETTE`.
+// Diffuse lighting lerps between base and lit. Keep in sync with
+// `kernel/src/cpu_render.zig:PALETTE`.
+const PALETTE_BASE: array<vec3<f32>, 9> = array<vec3<f32>, 9>(
+    vec3<f32>(0.286, 0.374, 0.431),  // 0: #85AEC8
+    vec3<f32>(0.113, 0.063, 0.269),  // 1: #341D7C
+    vec3<f32>(0.518, 0.400, 0.075),  // 2: #F1BA23
+    vec3<f32>(0.550, 0.550, 0.550),  // 3: #FFFFFF
+    vec3<f32>(0.371, 0.220, 0.043),  // 4: #AC6614
+    vec3<f32>(0.492, 0.462, 0.378),  // 5: #E4D6AF
+    vec3<f32>(0.271, 0.216, 0.000),  // 6: #7D6400
+    vec3<f32>(0.550, 0.550, 0.367),  // 7: #FFFFAA
+    vec3<f32>(0.451, 0.000, 0.011),  // 8: #D10005
+);
+const PALETTE_LIT: array<vec3<f32>, 9> = array<vec3<f32>, 9>(
+    vec3<f32>(0.522, 0.682, 0.784),
+    vec3<f32>(0.204, 0.114, 0.486),
+    vec3<f32>(0.945, 0.729, 0.137),
+    vec3<f32>(1.000, 1.000, 1.000),
+    vec3<f32>(0.675, 0.400, 0.078),
+    vec3<f32>(0.894, 0.839, 0.686),
+    vec3<f32>(0.490, 0.392, 0.000),
+    vec3<f32>(1.000, 1.000, 0.667),
+    vec3<f32>(0.820, 0.000, 0.020),
+);
 
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
@@ -60,7 +89,7 @@ fn project_world(pos: vec3<f32>) -> vec4<f32> {
         vec4<f32>(r.z, u.z, -f.z, 0.0),
         vec4<f32>(-dot(r, cam.eye), -dot(u, cam.eye), dot(f, cam.eye), 1.0),
     );
-    let near = 0.001;
+    let near = -1000.0;
     let far = 1000.0;
     let h = cam.view_half_h;
     let w = cam.aspect * h;
@@ -92,18 +121,38 @@ fn fs(in: VsOut) -> FsOut {
 
     let clip = project_world(world);
 
+    // Look up the per-block base color from the palette texture. The
+    // r32uint texture stores the winning view's palette idx per pixel;
+    // `0xFFFFFFFF` is the kernel's "miss/background" sentinel and falls
+    // back to a neutral default.
+    let palette_xy = vec2<i32>(
+        i32(in.uv.x * f32(textureDimensions(palette_tex).x)),
+        i32(in.uv.y * f32(textureDimensions(palette_tex).y)),
+    );
+    let palette_idx_raw = textureLoad(palette_tex, palette_xy, 0).r;
+    let has_palette = palette_idx_raw != 0xFFFFFFFFu;
+    let palette_idx = i32(palette_idx_raw % 9u);
+    let base = select(
+        vec3<f32>(0.62, 0.55, 0.48),
+        PALETTE_BASE[palette_idx],
+        has_palette);
+    let lit = select(
+        vec3<f32>(0.62, 0.55, 0.48),
+        PALETTE_LIT[palette_idx],
+        has_palette);
+
     // Three-light diffuse rig: ambient + key + fill — same as the old
-    // raymarch shader.
+    // raymarch shader. Lerps between base and lit by the diffuse term.
     let key_dir = normalize(vec3<f32>(0.4, 0.3, 0.8));
     let fill_dir = normalize(vec3<f32>(-0.5, -0.4, 0.3));
     let key = max(dot(n, key_dir), 0.0) * 0.5;
     let fill = max(dot(n, fill_dir), 0.0) * 0.2;
-    let ambient = 0.45;
-    let shade = ambient + key + fill;
-    let base = vec3<f32>(0.62, 0.55, 0.48);
+    let ambient = 0.25;
+    let diffuse = clamp(ambient + key + fill, 0.0, 1.0);
+    let color = mix(base, lit, diffuse);
 
     var out: FsOut;
-    out.color = vec4<f32>(base * shade, 1.0);
+    out.color = vec4<f32>(color, 1.0);
     out.depth = clip.z / clip.w;
     return out;
 }

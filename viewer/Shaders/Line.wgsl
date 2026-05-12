@@ -41,7 +41,7 @@ fn project_world(pos: vec3<f32>) -> vec4<f32> {
     // Orthographic slab: vertical half-extent comes from the CPU-side
     // camera uniform (= Distance * tan(HALF_FOV)), so zoom still feels
     // like a dolly. Width is derived from aspect.
-    let near = 0.001;
+    let near = -1000.0;
     let far = 1000.0;
     let h = cam.view_half_h;
     let w = cam.aspect * h;

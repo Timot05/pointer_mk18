@@ -8,11 +8,6 @@ open Browser.Types
 
 // ---------------------------------------------------------------------------
 // Top bar: logo + File menu (Save / Load / Clear).
-//
-// Save and Load currently stubbed — full JSON round-trip between the F#
-// domain and the on-disk format is a separate problem (Fable's default
-// union encoding differs from the .NET server's `case`+NamedFields format).
-// Clear dispatches ClearModel directly.
 // ---------------------------------------------------------------------------
 
 let private modKey : string =
@@ -30,8 +25,7 @@ let private dropdownItem (label: string) (shortcut: string option) : HTMLButtonE
 let render
         (dispatch: Message -> unit)
         (onSave: unit -> unit)
-        (onLoad: unit -> unit)
-        (onExportStl: unit -> unit) : HTMLElement =
+        (onLoad: unit -> unit) : HTMLElement =
     let topbar = Dom.el "div" "topbar"
     topbar.appendChild (Dom.elText "span" "topbar-logo" "Dekal" :> Node) |> ignore
 
@@ -54,14 +48,6 @@ let render
         fun _ ->
             fileDropdown?style?display <- "none"
             onLoad ()
-    )
-
-    let exportStlBtn = dropdownItem "Export STL" None
-    exportStlBtn.addEventListener (
-        "click",
-        fun _ ->
-            fileDropdown?style?display <- "none"
-            onExportStl ()
     )
 
     let clearBtn = dropdownItem "Clear" None
@@ -87,7 +73,6 @@ let render
 
     fileDropdown.appendChild (saveBtn :> Node) |> ignore
     fileDropdown.appendChild (loadBtn :> Node) |> ignore
-    fileDropdown.appendChild (exportStlBtn :> Node) |> ignore
     fileDropdown.appendChild (clearBtn :> Node) |> ignore
     fileMenu.appendChild (fileBtn :> Node) |> ignore
     fileMenu.appendChild (fileDropdown :> Node) |> ignore

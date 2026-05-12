@@ -21,11 +21,10 @@ let render
         (viewerHost: HTMLElement)
         (onSave: unit -> unit)
         (onLoad: unit -> unit)
-        (onExportStl: unit -> unit)
         : HTMLElement =
     let root = Dom.el "div" "ui-root"
 
-    root.appendChild (TopBar.render dispatch onSave onLoad onExportStl :> Node) |> ignore
+    root.appendChild (TopBar.render dispatch onSave onLoad :> Node) |> ignore
 
     let layout = Dom.el "div" "layout"
     let leftHost = Dom.el "div" "panel-host panel-host-actions"

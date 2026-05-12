@@ -34,6 +34,9 @@ let private postMessagePlain (msg: obj) : unit = jsNative
 [<Emit("new Float32Array($0).buffer")>]
 let private copyToArrayBuffer (view: obj) : obj = jsNative
 
+[<Emit("new Uint32Array($0).buffer")>]
+let private copyU32ToArrayBuffer (view: obj) : obj = jsNative
+
 let mutable private exports : Wasm.Exports option = None
 
 let private handle (ev: obj) =
@@ -80,9 +83,11 @@ let private handle (ev: obj) =
                 x.render_voxels
                     (tileW, tileH, fullW, fullH, tileX, tileY,
                      vhw, vhh, half, level)
-            let buffer =
-                if written > 0 then copyToArrayBuffer (Wasm.gbufferView x tileW tileH)
-                else box null
+            let buffer, paletteBuffer =
+                if written > 0 then
+                    copyToArrayBuffer (Wasm.gbufferView x tileW tileH),
+                    copyU32ToArrayBuffer (Wasm.paletteView x tileW tileH)
+                else box null, box null
             let msg =
                 {| kind = "rendered"
                    epoch = epoch
@@ -92,9 +97,10 @@ let private handle (ev: obj) =
                    tileW = tileW
                    tileH = tileH
                    written = written
-                   buffer = buffer |}
+                   buffer = buffer
+                   paletteBuffer = paletteBuffer |}
             if written > 0 then
-                postMessageTransfer msg [| buffer |]
+                postMessageTransfer msg [| buffer; paletteBuffer |]
             else
                 postMessagePlain msg
         | None ->

@@ -226,6 +226,7 @@ module Document =
                 { Sketch = lineSketch 0.0 0.0 0.25 5.0
                   Plane = XY }
             Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 0
             SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
           { Id = 1
             Name = "trailing"
@@ -233,6 +234,7 @@ module Document =
                 { Sketch = lineSketch 2.0 0.0 1.25 5.0
                   Plane = XY }
             Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 0
             SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
           { Id = 2
             Name = "half_wing"
@@ -243,6 +245,7 @@ module Document =
                         [ "leading", Server.Lang.Notebook.ArgRef(Some 0)
                           "trailing", Server.Lang.Notebook.ArgRef(Some 1) ])
             Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 0
             SlicePlane =
                 { Server.Lang.Notebook.defaultSlicePlane with
                     Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } }
@@ -255,6 +258,7 @@ module Document =
                         [ "rootY", Server.Lang.Notebook.ArgScalar 0.0
                           "child", Server.Lang.Notebook.ArgRef(Some 2) ])
             Visibility = Server.Lang.Notebook.VIsosurface
+            ColorIndex = 0
             SlicePlane =
                 { Server.Lang.Notebook.defaultSlicePlane with
                     Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } } ]

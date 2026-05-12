@@ -70,8 +70,8 @@ let private downloadText (filename: string) (contents: string) =
     revokeObjectUrl url
 
 /// Run `mesh_build` against an already-encoded IR blob and download the
-/// result as ASCII STL. Shared by `downloadCurrentStl` (whole scene) and
-/// `downloadBlockStl` (per-block right-click export).
+/// result as ASCII STL. Used by `downloadBlockStl` (per-block right-click
+/// export).
 let private runMeshExport (filename: string) (bytes: obj) : JS.Promise<unit> =
     promise {
         let! wasm = Wasm.load "/kernel/viewer.wasm"
@@ -79,14 +79,22 @@ let private runMeshExport (filename: string) (bytes: obj) : JS.Promise<unit> =
         if uploadCode <> 0 then
             window.alert (sprintf "Kernel rejected the current scene (IR upload code %d)." uploadCode)
         else
-            // `mesh_build_auto` interval-prunes a large root box to find a
-            // tight AABB around the surface, then meshes it — so the octree
-            // depth budget goes to the surface instead of empty space.
-            // Falls back to the old fixed-cube `mesh_build` if the auto
-            // path can't find a surface in its initial search box (code 5).
+            // `mesh_build_auto` interval-prunes (and Lipschitz-prunes) a
+            // large root box to find a tight AABB around the surface, then
+            // meshes it — so the octree depth budget goes to the surface
+            // instead of empty space. Falls back to the fixed-cube
+            // `mesh_build(20, 7)` if auto can't find a surface in its
+            // search box (code 5) or finds one but produces no triangles
+            // (code 4 — happens when the field's Lipschitz estimate at
+            // the centre is too pessimistic and bounds end up too tight).
+            // Depth 10 is the kernel's max (`web_main.zig` rejects >10).
+            // At this depth the octree resolves up to 1024 leaves per
+            // axis — fine enough for visibly smooth surfaces on
+            // notebook-scale scenes. Export only runs on right-click so
+            // a few seconds is acceptable.
             let meshCode =
-                let auto = wasm.mesh_build_auto 7
-                if auto = 5 then wasm.mesh_build (20.0, 7) else auto
+                let auto = wasm.mesh_build_auto 10
+                if auto = 4 || auto = 5 then wasm.mesh_build (20.0, 10) else auto
             if meshCode <> 0 then
                 window.alert (sprintf "Mesh export failed (code %d)." meshCode)
             else
@@ -97,16 +105,6 @@ let private runMeshExport (filename: string) (bytes: obj) : JS.Promise<unit> =
                 else
                     downloadText filename (buildAsciiStl vertices triangles)
     }
-
-let downloadCurrentStl () : unit =
-    promise {
-        match AppStore.store.State.LastNotebookBytes with
-        | None ->
-            window.alert "No visible isosurface is available to export."
-        | Some bytes ->
-            do! runMeshExport "dekal-export.stl" bytes
-    }
-    |> ignore
 
 /// Re-serialize the current notebook IR with `block`'s field expression as
 /// the scene root, then run the mesh-build pipeline. Returns silently if

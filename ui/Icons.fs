@@ -62,6 +62,7 @@ let private descriptorForSpecName (name: string) : obj =
     | "intersect" -> joinInner
     | "subtract" -> joinLeft
     | "thicken" -> containerImage
+    | "shell" -> circleDash
     | "from-sketch" -> shapeUnite
     | "wing-remap-preview" -> zAxis
     | _ -> layers

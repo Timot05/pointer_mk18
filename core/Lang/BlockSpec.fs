@@ -99,6 +99,19 @@ module BlockSpec =
           Body = lambda [ "radius", Type.Scalar ] body
           ScalarDefaults = Map.ofList [ "radius", 1.0 ] }
 
+    /// `halfplane axis offset` — axis-aligned halfspace.
+    /// `axis` is a discrete choice (0=X, 1=Y, 2=Z) stored as an `ArgScalar`
+    /// and rendered in the UI as a dropdown (see `BlockList.renderInputRow`).
+    /// SDF: `<axis> - offset`. The body below is a typed placeholder;
+    /// `NotebookCompose` intercepts the `halfplane` spec name and emits
+    /// the real AST with the concrete axis baked in — same pattern as
+    /// `from-sketch`.
+    let private halfplaneSpec : BlockSpec =
+        let placeholder = sqrtE (sqE (axE AxisX)) -. nE 0.0
+        { Name = "halfplane"
+          Body = lambda [ "axis", Type.Scalar; "offset", Type.Scalar ] placeholder
+          ScalarDefaults = Map.ofList [ "axis", 0.0; "offset", 0.0 ] }
+
     /// `box width height depth` — outside + inside form.
     /// outside = ||max(|p| - half, 0)||
     /// inside  = min(max(bx, max(by, bz)), 0)
@@ -215,6 +228,21 @@ module BlockSpec =
                     body
           ScalarDefaults = Map.ofList [ "amount", 0.1 ] }
 
+    /// `shell thickness child` — hollows the shape inward. The outer
+    /// surface stays at the original iso (`f = 0`); the inner surface is
+    /// the inward offset (`f = -thickness`). SDF: `max(f, -(f + t))` —
+    /// the intersection of the original interior with the complement of
+    /// the inward-offset interior. The shape doesn't grow.
+    let private shellSpec : BlockSpec =
+        let child = varE "child"
+        let t = varE "thickness"
+        let body = maxE child (negE (child +. t))
+        { Name = "shell"
+          Body = lambda
+                    [ "thickness", Type.Scalar; "child", Type.Field ]
+                    body
+          ScalarDefaults = Map.ofList [ "thickness", 0.05 ] }
+
     /// `from-sketch sketch` — lower a 2D sketch to a 3D field. The body
     /// here is a placeholder; `NotebookCompose.compose` intercepts blocks
     /// with this spec name and emits an inlined `EFold(Min, [...primitive
@@ -244,12 +272,14 @@ module BlockSpec =
     do register sphereSpec
     do register boxSpec
     do register cylinderSpec
+    do register halfplaneSpec
     do register translateSpec
     do register mirrorSymmetricYSpec
     do register unionSpec
     do register intersectSpec
     do register subtractSpec
     do register thickenSpec
+    do register shellSpec
     do register fromSketchSpec
     do register wingRemapPreviewSpec
 

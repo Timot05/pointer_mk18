@@ -607,6 +607,22 @@ body {
   color: var(--error-text);
 }
 
+/* Notebook-level compile failure banner — appended at the bottom of the
+   block list when `LastNotebookError` is set (typecheck errors not
+   anchored to a single block, eval errors, serialise failures, "no
+   render root", etc.). Visually consistent with `.action-row.has-error`. */
+.panel-error {
+  margin: 8px;
+  padding: 8px 10px;
+  background: var(--error-soft);
+  border: 1px solid var(--error-border);
+  border-radius: 3px;
+  color: var(--error-text);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
 .action-main {
   display: flex;
   align-items: center;
@@ -1184,6 +1200,15 @@ body {
 
 .block-context-item:hover {
   background: var(--bg-page);
+}
+
+.block-color-menu {
+  min-width: 154px;
+}
+
+.block-color-menu .color-row {
+  display: flex;
+  padding: 4px;
 }
 
 .action-picker-input {

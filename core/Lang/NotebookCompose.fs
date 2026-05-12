@@ -55,6 +55,9 @@ module NotebookCompose =
         /// Visibility kind of each visible field name, paired by index with
         /// `VisibleFieldNames`. Drives the renderer's per-view shading mode.
         VisibleFieldKinds: BlockVisibility list
+        /// Colour palette index of each visible field name, paired by index
+        /// with `VisibleFieldNames`.
+        VisibleFieldColorIndices: int list
     }
 
     // ── AST construction helpers ───────────────────────────────────────────
@@ -380,6 +383,7 @@ module NotebookCompose =
         let visibleFieldNames = ResizeArray<string>()
         let visibleFieldBlockIds = ResizeArray<BlockId>()
         let visibleFieldKinds = ResizeArray<BlockVisibility>()
+        let visibleFieldColorIndices = ResizeArray<int>()
 
         for block in notebook.Blocks do
             match block.Body with
@@ -394,6 +398,37 @@ module NotebookCompose =
                     // typechecker reports it cleanly.
                     let call = applyChainAt bsp (varEAt bsp specName) []
                     stmts.Add(SLet([ userAt block.Name bsp ], call))
+                | Some spec when specName = "halfplane" ->
+                    // Lower `halfplane axis offset` to `<axis> - offset`.
+                    // `axis` is encoded as an `ArgScalar` (0=X, 1=Y, 2=Z) so
+                    // the BlockList UI can render it as a dropdown without
+                    // a new `BlockArg` case.
+                    let axisChoice =
+                        match Map.tryFind "axis" args with
+                        | Some (ArgScalar n) ->
+                            match int (round n) with
+                            | 1 -> AxisY
+                            | 2 -> AxisZ
+                            | _ -> AxisX
+                        | _ -> AxisX
+                    let offsetExpr =
+                        match Map.tryFind "offset" args with
+                        | Some (ArgScalar n) -> numEAt bsp n
+                        | _ -> numEAt bsp 0.0
+                    let body = mkAt bsp (EBinary(BinaryOp.Sub, mkAt bsp (EAxis axisChoice), offsetExpr))
+                    stmts.Add(SLet([ userAt block.Name bsp ], body))
+
+                    let outTy = specOutputType spec
+                    blockOutputs <- Map.add block.Id outTy blockOutputs
+                    let surfaceVisible =
+                        match block.Visibility with
+                        | VIsosurface           -> true
+                        | VHidden | VFieldLines -> false
+                    if outTy = Type.Field && surfaceVisible then
+                        visibleFieldNames.Add block.Name
+                        visibleFieldBlockIds.Add block.Id
+                        visibleFieldKinds.Add block.Visibility
+                        visibleFieldColorIndices.Add block.ColorIndex
                 | Some spec when specName = "from-sketch" ->
                     // Lower `from-sketch sketch` to an inlined `EFold(Min,
                     // [primitives...])` AST built from the referenced
@@ -419,6 +454,7 @@ module NotebookCompose =
                         visibleFieldNames.Add block.Name
                         visibleFieldBlockIds.Add block.Id
                         visibleFieldKinds.Add block.Visibility
+                        visibleFieldColorIndices.Add block.ColorIndex
                 | Some spec ->
                     let typed = BlockSpec.typedInterface spec
 
@@ -456,6 +492,7 @@ module NotebookCompose =
                         visibleFieldNames.Add block.Name
                         visibleFieldBlockIds.Add block.Id
                         visibleFieldKinds.Add block.Visibility
+                        visibleFieldColorIndices.Add block.ColorIndex
 
         // Render root = sharp `union` over every visible Field block.
         // Empty list → no trailing expression → "no renderable output".
@@ -476,7 +513,8 @@ module NotebookCompose =
           BlockOutputs = blockOutputs
           VisibleFieldNames = visibleFieldNamesList
           VisibleFieldBlockIds = List.ofSeq visibleFieldBlockIds
-          VisibleFieldKinds = List.ofSeq visibleFieldKinds }
+          VisibleFieldKinds = List.ofSeq visibleFieldKinds
+          VisibleFieldColorIndices = List.ofSeq visibleFieldColorIndices }
 
     // ── Evaluation ─────────────────────────────────────────────────────────
 
@@ -590,15 +628,6 @@ module NotebookCompose =
             push id (Typecheck.formatError e)
         acc
 
-    /// Per-view metadata: the block's MathIR root expr + the palette
-    /// index the kernel should use when this view's surface wins at
-    /// a given pixel. Palette indices are derived from BlockId (see
-    /// `paletteIndexFor`), so adding/removing blocks doesn't reshuffle
-    /// existing colours.
-    let private paletteIndexFor (id: BlockId) : uint32 =
-        // 8-colour palette in the kernel; cycle by block id.
-        uint32 (((id % 8) + 8) % 8)
-
     /// Wire-format encoding of `BlockVisibility`. Hidden / field-line
     /// blocks never reach `viewsFromBindings` — only `VIsosurface`
     /// blocks ship as kernel views, so `kindCode` only ever returns 0
@@ -616,10 +645,12 @@ module NotebookCompose =
     let private viewsFromBindings
             (composed: Composed)
             (bindings: Map<string, Value>) : (MathIr.Expr * uint32 * uint32) list =
-        List.zip3 composed.VisibleFieldNames composed.VisibleFieldBlockIds composed.VisibleFieldKinds
-        |> List.choose (fun (name, blockId, kind) ->
+        List.zip3 composed.VisibleFieldNames composed.VisibleFieldColorIndices composed.VisibleFieldKinds
+        |> List.choose (fun (name, colorIndex, kind) ->
             match Map.tryFind name bindings with
-            | Some (VField expr) -> Some (expr, paletteIndexFor blockId, kindCode kind)
+            | Some (VField expr) ->
+                let paletteIndex = uint32 (((colorIndex % 9) + 9) % 9)
+                Some (expr, paletteIndex, kindCode kind)
             | _ -> None)
 
     /// Walk the per-block name → block-id table and the post-eval bindings

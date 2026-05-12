@@ -12,6 +12,7 @@ let private nativeBlock id name specName args : Block =
       Name = name
       Body = NativeBody(specName, Map.ofList args)
       Visibility = VIsosurface
+      ColorIndex = 0
       SlicePlane = defaultSlicePlane }
 
 let private sketchBlockOf id name (sketch: ActionSketch) (plane: SketchPlane) : Block =
@@ -19,6 +20,7 @@ let private sketchBlockOf id name (sketch: ActionSketch) (plane: SketchPlane) : 
       Name = name
       Body = SketchBody { Sketch = sketch; Plane = plane }
       Visibility = VIsosurface
+      ColorIndex = 0
       SlicePlane = defaultSlicePlane }
 
 let private notebookOf (blocks: Block list) : Notebook =
@@ -336,3 +338,11 @@ let ``compileView returns the last Field output as the render root`` () =
     | Error errs ->
         let msg = errs |> List.map Typecheck.formatError |> String.concat "; "
         failwithf "compileView failed: %s" msg
+
+[<Fact>]
+let ``compose preserves visible field color indices`` () =
+    let block =
+        { nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.5 ] with
+            ColorIndex = 8 }
+    let composed = NotebookCompose.compose (notebookOf [ block ])
+    Assert.Equal<int list>([ 8 ], composed.VisibleFieldColorIndices)

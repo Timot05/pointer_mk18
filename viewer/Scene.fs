@@ -414,7 +414,15 @@ let create
                    box
                     {| binding = 2
                        visibility = GPUShaderStage.Fragment
-                       buffer = {| ``type`` = "uniform" |} |} |] }
+                       buffer = {| ``type`` = "uniform" |} |}
+                   // Binding 3: per-pixel palette idx (r32uint).
+                   // `Background.wgsl` uses it to look up the surface
+                   // base color from a const palette table.
+                   box
+                    {| binding = 3
+                       visibility = GPUShaderStage.Fragment
+                       texture =
+                        {| sampleType = "uint"; viewDimension = "2d" |} |} |] }
 
     let backgroundSampler =
         device.createSampler

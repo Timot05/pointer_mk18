@@ -238,6 +238,19 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                     let toolCursorNow = toolCursor.Value
                     let backgroundSome = Option.isSome background.Value
 
+                    // Tick the background state machine every RAF, even on
+                    // idle frames. Without this the quiet-window fallback
+                    // in `Background.update` can't promote refinement
+                    // levels after the camera stops, and the user has to
+                    // jiggle the mouse to trigger the next dirty render.
+                    // `update` is idempotent — cheap when nothing is due.
+                    let bgDirty =
+                        match background.Value with
+                        | Some bg ->
+                            Kernel.Background.update bg
+                            Kernel.Background.consumeDisplayDirty bg
+                        | None -> false
+
                     let camChanged =
                         not (System.Double.IsNaN lastCamAz) && (
                             cam.Azimuth <> lastCamAz
@@ -267,6 +280,7 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                     let dirty =
                         firstFrame || camChanged || stateChanged
                         || toolChanged || bgChanged || scalePending
+                        || bgDirty
 
                     let throttled = now - lastRenderTs < MIN_FRAME_MS
 

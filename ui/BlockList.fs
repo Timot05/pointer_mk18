@@ -76,6 +76,17 @@ let mutable downloadMeshFor : Notebook.BlockId -> unit = fun _ -> ()
 let mutable private currentContextMenu : HTMLElement option = None
 let mutable private contextMenuDismiss : (Event -> unit) option = None
 
+let private fieldPalette : (string * int) list =
+    [ "#85AEC8", 0
+      "#341D7C", 1
+      "#F1BA23", 2
+      "#FFFFFF", 3
+      "#AC6614", 4
+      "#E4D6AF", 5
+      "#7D6400", 6
+      "#FFFFAA", 7
+      "#D10005", 8 ]
+
 let private closeContextMenu () =
     match currentContextMenu with
     | Some el ->
@@ -112,6 +123,46 @@ let private openBlockContextMenu (blockId: Notebook.BlockId) (x: float) (y: floa
 
     // Defer outside-click + blur dismissal one tick so the originating
     // mousedown / contextmenu event doesn't immediately close the menu.
+    let dismiss = fun _ev -> closeContextMenu ()
+    contextMenuDismiss <- Some dismiss
+    window.setTimeout(
+        (fun () ->
+            document.addEventListener ("mousedown", dismiss)
+            window.addEventListener ("blur", dismiss)),
+        0)
+    |> ignore
+
+let private openBlockColorMenu
+        (dispatch: Message -> unit)
+        (block: Notebook.Block)
+        (x: float)
+        (y: float) : unit =
+    closeContextMenu ()
+    let menu = Dom.el "div" "block-context-menu block-color-menu"
+    menu?style?left <- sprintf "%fpx" x
+    menu?style?top <- sprintf "%fpx" y
+
+    let row = Dom.el "div" "color-row"
+    let swatches = Dom.el "div" "color-swatches"
+    for (hex, index) in fieldPalette do
+        let swatch = Dom.el "button" "color-swatch"
+        swatch?style?background <- hex
+        swatch?title <- hex
+        if block.ColorIndex = index then swatch.classList.add "is-active"
+        swatch.addEventListener (
+            "click",
+            fun e ->
+                e.stopPropagation ()
+                closeContextMenu ()
+                dispatch (SetBlockColor(block.Id, index)))
+        swatches.appendChild (swatch :> Node) |> ignore
+    row.appendChild (swatches :> Node) |> ignore
+    menu.appendChild (row :> Node) |> ignore
+
+    menu.addEventListener ("mousedown", fun e -> e.stopPropagation ())
+    document.body.appendChild (menu :> Node) |> ignore
+    currentContextMenu <- Some menu
+
     let dismiss = fun _ev -> closeContextMenu ()
     contextMenuDismiss <- Some dismiss
     window.setTimeout(
@@ -203,6 +254,13 @@ let private renderVisibilityBadge
         fun e ->
             e.stopPropagation ()
             dispatch (CycleBlockVisibility block.Id))
+    btn.addEventListener (
+        "contextmenu",
+        fun e ->
+            e.preventDefault ()
+            e.stopPropagation ()
+            let me = e :?> MouseEvent
+            openBlockColorMenu dispatch block me.clientX me.clientY)
     btn
 
 // ── Scalar input editor (reuses `.input-row-edit`) ─────────────────────────
@@ -236,6 +294,37 @@ let private renderScalarEditor
             | _ -> e.stopPropagation ())
     input.addEventListener ("blur", fun _ -> commit ())
     input :> HTMLElement
+
+// ── Axis dropdown (X / Y / Z), reuses `.input-row-edit` ────────────────────
+//
+// `halfplane` is the only block today with a discrete-choice param. Stored
+// as an `ArgScalar` (0=X, 1=Y, 2=Z) so the existing data model carries it
+// — no new `BlockArg` case needed.
+
+let private renderAxisDropdown
+        (dispatch: Message -> unit)
+        (blockId: Notebook.BlockId)
+        (paramName: string)
+        (current: int) : HTMLElement =
+    let select = document.createElement "select" :?> HTMLSelectElement
+    select.className <- "input-row-edit"
+    let addOption (label: string) (index: int) =
+        let opt = document.createElement "option" :?> HTMLOptionElement
+        opt.value <- string index
+        opt.text <- label
+        if index = current then opt.selected <- true
+        select.appendChild (opt :> Node) |> ignore
+    addOption "X" 0
+    addOption "Y" 1
+    addOption "Z" 2
+    select.addEventListener (
+        "change",
+        fun _ ->
+            match System.Int32.TryParse(select.value) with
+            | true, n ->
+                dispatch (SetBlockArg(blockId, paramName, Notebook.ArgScalar (float n)))
+            | _ -> ())
+    select :> HTMLElement
 
 // ── Ref bubble (reuses `.wire-bubble`) ─────────────────────────────────────
 
@@ -323,6 +412,12 @@ let private renderInputRow
             | Notebook.NativeBody(name, _) -> name
             | _ -> ""
         match param.Type with
+        | Type.Scalar when specName = "halfplane" && param.Name = "axis" ->
+            let current =
+                match tryFindBlockArg specName param.Name args with
+                | Some (Notebook.ArgScalar n) -> int (round n)
+                | _ -> 0
+            renderAxisDropdown dispatch block.Id param.Name current
         | Type.Scalar ->
             let v =
                 match tryFindBlockArg specName param.Name args with
@@ -685,7 +780,10 @@ let private renderPicker (dispatch: Message -> unit) : HTMLElement =
         let items = resultsEl.querySelectorAll ".action-picker-item"
         for i in 0 .. items.length - 1 do
             let el = items.[i] :?> HTMLElement
-            if i = highlighted then el.classList.add "is-active"
+            if i = highlighted then
+                el.classList.add "is-active"
+                let opts = createObj [ "block" ==> "nearest" ]
+                el?scrollIntoView (opts) |> ignore
             else el.classList.remove "is-active"
 
     let commit () =

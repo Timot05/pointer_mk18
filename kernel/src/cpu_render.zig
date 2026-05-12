@@ -76,6 +76,7 @@ const NEG_LIGHT_DIR: [3]f32 = .{ -0.35, -0.55, 0.75 }; // pre-normalized
 pub fn render(
     out_pixels: []u32,
     out_gbuffer: []f32,
+    out_palette: []u32,
     full_w: u32,
     full_h: u32,
     tile_x: u32,
@@ -97,12 +98,13 @@ pub fn render(
     const tile_total: usize = @as(usize, tile_w) * @as(usize, tile_h);
     std.debug.assert(out_pixels.len >= tile_total);
     std.debug.assert(out_gbuffer.len >= tile_total * 4);
+    std.debug.assert(out_palette.len >= tile_total);
     std.debug.assert(tile_x + tile_w <= full_w);
     std.debug.assert(tile_y + tile_h <= full_h);
     std.debug.assert(view_tapes.len == view_palettes.len);
     std.debug.assert(view_tapes.len == view_kinds.len);
 
-    initBuffers(out_pixels, out_gbuffer, tile_total);
+    initBuffers(out_pixels, out_gbuffer, out_palette, tile_total);
 
     const pixel_world = @min(
         2.0 * view_half_w / @as(f32, @floatFromInt(full_w)),
@@ -114,6 +116,7 @@ pub fn render(
     var ctx = RenderCtx{
         .out_pixels = out_pixels,
         .out_gbuffer = out_gbuffer,
+        .out_palette = out_palette,
         .full_w = full_w,
         .full_h = full_h,
         .tile_x = tile_x,
@@ -159,6 +162,10 @@ pub fn render(
 const RenderCtx = struct {
     out_pixels: []u32,
     out_gbuffer: []f32,
+    // Per-pixel palette index, sampled by `Background.wgsl` to pick the
+    // base color. Each entry is the palette idx of the winning view at
+    // that pixel (or `INVALID_PALETTE` for miss/background pixels).
+    out_palette: []u32,
     full_w: u32,
     full_h: u32,
     tile_x: u32,
@@ -184,7 +191,12 @@ inline fn outputIdx(ctx: *const RenderCtx, px: u32, py: u32) usize {
     return @as(usize, py - ctx.tile_y) * @as(usize, ctx.tile_w) + @as(usize, px - ctx.tile_x);
 }
 
-fn initBuffers(pixels: []u32, gbuffer: []f32, total: usize) void {
+/// Reserved palette idx for miss / background pixels (no view won). The
+/// fragment shader treats this as "use the fallback color" rather than
+/// indexing into the palette table.
+pub const INVALID_PALETTE: u32 = 0xFFFFFFFF;
+
+fn initBuffers(pixels: []u32, gbuffer: []f32, palette: []u32, total: usize) void {
     const inf = std.math.inf(f32);
     var i: usize = 0;
     while (i < total) : (i += 1) {
@@ -193,6 +205,7 @@ fn initBuffers(pixels: []u32, gbuffer: []f32, total: usize) void {
         gbuffer[i * 4 + 2] = 0;
         gbuffer[i * 4 + 3] = inf;
         pixels[i] = packRGBA(20, 22, 28, 255);
+        palette[i] = INVALID_PALETTE;
     }
 }
 
@@ -438,6 +451,7 @@ fn stampTileBlock(
                 ctx.out_gbuffer[idx * 4 + 2] = nz;
                 ctx.out_gbuffer[idx * 4 + 3] = t_c;
                 ctx.out_pixels[idx] = color;
+                ctx.out_palette[idx] = palette;
             }
         }
     }
@@ -542,33 +556,33 @@ fn emitLeafSamples(
                 ctx.out_gbuffer[idx * 4 + 2] = nz_n;
                 ctx.out_gbuffer[idx * 4 + 3] = t_hit;
                 ctx.out_pixels[idx] = shade(palette4[l], nx, ny, nz_n);
+                ctx.out_palette[idx] = palette4[l];
             }
         }
     }
 }
 
-/// 8-colour palette indexed by `View.palette_idx`. Indexed mod-8 — the
-/// host derives indices from block ids so adding/removing intermediate
-/// blocks doesn't reshuffle the palette.
+/// Roadrunner field-colour palette indexed by `View.palette_idx`.
 ///
 /// Tuples are (base_r, base_g, base_b, lit_r, lit_g, lit_b) — base is
 /// the ambient floor; lit is the fully-illuminated tint. Diffuse lerps
 /// between the two.
-const PALETTE: [8][6]f32 = .{
-    .{ 0.35, 0.45, 0.55, 0.70, 0.85, 0.90 }, // 0: cool grey (legacy default)
-    .{ 0.55, 0.30, 0.30, 0.95, 0.60, 0.55 }, // 1: red
-    .{ 0.30, 0.50, 0.30, 0.55, 0.90, 0.55 }, // 2: green
-    .{ 0.30, 0.40, 0.60, 0.55, 0.70, 0.95 }, // 3: blue
-    .{ 0.55, 0.50, 0.25, 0.95, 0.85, 0.45 }, // 4: amber
-    .{ 0.45, 0.30, 0.55, 0.80, 0.55, 0.95 }, // 5: violet
-    .{ 0.30, 0.55, 0.55, 0.55, 0.95, 0.95 }, // 6: teal
-    .{ 0.55, 0.40, 0.30, 0.95, 0.70, 0.50 }, // 7: terracotta
+const PALETTE: [9][6]f32 = .{
+    .{ 0.286, 0.374, 0.431, 0.522, 0.682, 0.784 }, // 0: #85AEC8
+    .{ 0.113, 0.063, 0.269, 0.204, 0.114, 0.486 }, // 1: #341D7C
+    .{ 0.518, 0.400, 0.075, 0.945, 0.729, 0.137 }, // 2: #F1BA23
+    .{ 0.550, 0.550, 0.550, 1.000, 1.000, 1.000 }, // 3: #FFFFFF
+    .{ 0.371, 0.220, 0.043, 0.675, 0.400, 0.078 }, // 4: #AC6614
+    .{ 0.492, 0.462, 0.378, 0.894, 0.839, 0.686 }, // 5: #E4D6AF
+    .{ 0.271, 0.216, 0.000, 0.490, 0.392, 0.000 }, // 6: #7D6400
+    .{ 0.550, 0.550, 0.367, 1.000, 1.000, 0.667 }, // 7: #FFFFAA
+    .{ 0.451, 0.000, 0.011, 0.820, 0.000, 0.020 }, // 8: #D10005
 };
 
 inline fn shade(palette_idx: u32, nx: f32, ny: f32, nz: f32) u32 {
     const ldot = nx * NEG_LIGHT_DIR[0] + ny * NEG_LIGHT_DIR[1] + nz * NEG_LIGHT_DIR[2];
     const diffuse = std.math.clamp(ldot * 0.75 + 0.25, 0.0, 1.0);
-    const c = PALETTE[palette_idx & 7];
+    const c = PALETTE[palette_idx % PALETTE.len];
     const r = c[0] + (c[3] - c[0]) * diffuse;
     const g = c[1] + (c[4] - c[1]) * diffuse;
     const b = c[2] + (c[5] - c[2]) * diffuse;

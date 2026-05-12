@@ -141,7 +141,7 @@ let private buildWgsl (ir: MathIr.MathIR) (inputs: SliceInput list) : string =
     sb.AppendLine "    vec4<f32>(r.z, u.z, -f.z, 0.0)," |> ignore
     sb.AppendLine "    vec4<f32>(-dot(r, cam.eye), -dot(u, cam.eye), dot(f, cam.eye), 1.0)," |> ignore
     sb.AppendLine "  );" |> ignore
-    sb.AppendLine "  let near = 0.001;" |> ignore
+    sb.AppendLine "  let near = -1000.0;" |> ignore
     sb.AppendLine "  let far = 1000.0;" |> ignore
     sb.AppendLine "  let h = cam.view_half_h;" |> ignore
     sb.AppendLine "  let w = cam.aspect * h;" |> ignore

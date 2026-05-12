@@ -35,6 +35,10 @@ pub const MAX_TILE_DIM: u32 = 1024;
 // pixels — not the entire canvas. Host reads `gbuffer` via `gbuffer_ptr`.
 var pixels: [MAX_TILE_DIM * MAX_TILE_DIM]u32 = undefined;
 var gbuffer: [MAX_TILE_DIM * MAX_TILE_DIM * 4]f32 = undefined;
+/// Per-pixel palette idx. The host uploads this as an `r32uint` texture
+/// alongside the gbuffer; `Background.wgsl` looks up the palette color
+/// to use as the surface base. See `cpu_render.RenderCtx.out_palette`.
+var palette_buf: [MAX_TILE_DIM * MAX_TILE_DIM]u32 = undefined;
 
 var camera_buffer: [12]f32 align(4) = undefined;
 
@@ -139,6 +143,10 @@ pub export fn gbuffer_ptr() [*]f32 {
     return @ptrCast(&gbuffer);
 }
 
+pub export fn palette_buffer_ptr() [*]u32 {
+    return @ptrCast(&palette_buf);
+}
+
 /// Render the requested tile sub-rect of a `full_w × full_h` image into
 /// the host-visible `gbuffer`, packed as `tile_w × tile_h × (nx, ny, nz,
 /// wcz)`. Returns `tile_w * tile_h` on success, 0 on bad input or
@@ -167,6 +175,7 @@ pub export fn render_voxels(
     cpu_render.render(
         pixels[0..tile_total],
         gbuffer[0 .. tile_total * 4],
+        palette_buf[0..tile_total],
         full_w, full_h,
         tile_x, tile_y, tile_w, tile_h,
         &scene_tape,
@@ -236,20 +245,33 @@ pub export fn mesh_build(half_extent: f32, max_depth: u32) u32 {
     return 0;
 }
 
-// `mesh_build_auto`: figure out the bounding box from the IR via coarse
-// interval pruning, then mesh. The user-facing path (right-click "Download
-// mesh" in the BlockList) calls this so the AABB matches the surface,
-// instead of relying on a hardcoded cube.
+// `mesh_build_auto`: figure out the bounding box from the IR by recursively
+// subdividing a large root box and pruning cells that can't contain the
+// surface. The user-facing path (right-click "Download mesh" in the
+// BlockList) calls this so the AABB matches the surface, instead of
+// relying on a hardcoded cube.
 //
-// Algorithm: subdivide a large root box [-SEARCH_HALF_EXTENT, +…]³ with
-// `decodeRegEvalInterval` (same primitive the octree builder uses to prune
-// children). At each cell, `lo > 0` ⇒ no surface, `hi < 0` ⇒ fully interior
-// — both prune. Surface-crossing leaves at SEARCH_DEPTH are unioned into a
-// tight AABB which is then padded by half a leaf width to avoid clipping
-// the surface at the AABB boundary (DC artifacts).
+// Two prunes are applied per cell:
+//
+//   1. Interval prune. `decodeRegEvalInterval` over the cell → `[lo, hi]`.
+//      `lo > 0` ⇒ no surface; `hi < 0` ⇒ fully interior. Cheap and tight
+//      for most ops, but `curve_distance_along` returns `unknown()` so any
+//      field that uses it (notably `wing-remap-preview`) gets `±1e30` here
+//      and the interval prune does nothing.
+//
+//   2. Lipschitz-aware sphere-tracing prune. Sample value + gradient at
+//      the cell centre. If `|f(c)| > half_diag * max(1, |∇f|)`, no point
+//      in the cell is closer than that, so the surface can't reach in.
+//      Works regardless of which ops compose the field — same technique
+//      `cpu_render` uses for raymarch pruning. The `max(1, |∇f|)` factor
+//      handles fields that aren't unit-Lipschitz (remapped / scaled SDFs).
+//
+// Surface-crossing leaves at SEARCH_DEPTH are unioned into a tight AABB,
+// padded by half a leaf width to avoid clipping the surface at the AABB
+// boundary (which produces DC artifacts).
 
 const SEARCH_HALF_EXTENT: f32 = 256.0;
-const SEARCH_DEPTH: u32 = 6;
+const SEARCH_DEPTH: u32 = 7;
 
 fn unionAabb(into: *?mesh_mod.Aabb, cell: mesh_mod.Aabb) void {
     if (into.*) |existing| {
@@ -271,8 +293,24 @@ fn unionAabb(into: *?mesh_mod.Aabb, cell: mesh_mod.Aabb) void {
 }
 
 fn searchBoundsRecurse(cell: mesh_mod.Aabb, depth: u32, tight: *?mesh_mod.Aabb) void {
+    // 1. Interval prune (cheap; conservative; useless when the IR contains
+    //    `curve_distance_along` — see comment block above).
     const iv = meshInterval(null, cell);
     if (iv.lo > 0.0 or iv.hi < 0.0) return;
+
+    // 2. Lipschitz-aware sphere-tracing prune.
+    const cx = 0.5 * (cell.min.x + cell.max.x);
+    const cy = 0.5 * (cell.min.y + cell.max.y);
+    const cz = 0.5 * (cell.min.z + cell.max.z);
+    const g = m.decodeRegEvalGrad(&mesh_tape, &math_ir, &.{}, .{ .x = cx, .y = cy, .z = cz });
+    const f_center = g[0];
+    const grad_mag = @sqrt(g[1] * g[1] + g[2] * g[2] + g[3] * g[3]);
+    const lipschitz = @max(@as(f32, 1.0), grad_mag);
+    const dx = cell.max.x - cell.min.x;
+    const dy = cell.max.y - cell.min.y;
+    const dz = cell.max.z - cell.min.z;
+    const half_diag = 0.5 * @sqrt(dx * dx + dy * dy + dz * dz);
+    if (@abs(f_center) > half_diag * lipschitz) return;
 
     if (depth == 0) {
         unionAabb(tight, cell);

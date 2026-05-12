@@ -76,6 +76,9 @@ module Notebook =
         Name: string
         Body: BlockBody
         Visibility: BlockVisibility
+        /// Index into the renderer's fixed field-colour palette. This is a
+        /// display setting, not part of the block's value semantics.
+        ColorIndex: int
         /// Slice plane used when `Visibility = VFieldLines`. Carried on every
         /// block so toggling visibility kinds preserves the user's plane
         /// choice. Initialised to `defaultSlicePlane` for new blocks.

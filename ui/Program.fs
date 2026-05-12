@@ -18,6 +18,9 @@ let private urlCreateObjectUrl (blob: obj) : string = jsNative
 [<Emit("URL.revokeObjectURL($0)")>]
 let private urlRevokeObjectUrl (url: string) : unit = jsNative
 
+[<Emit("new FileReader()")>]
+let private newFileReader () : obj = jsNative
+
 // --------------------------------------------------------------------------
 // Entry point. Owns:
 //   - the singleton F# editor store (via AppStore)
@@ -52,15 +55,41 @@ let private viewerHost =
 // --------------------------------------------------------------------------
 
 let private onSave () =
-    // Save / load was action-graph flavoured. Notebook-mode persistence
-    // is a future feature — needs a block-aware on-disk format.
-    console.warn "Save is not implemented in notebook mode"
+    let doc = store.State.Doc
+    let json = Fable.Core.JS.JSON.stringify(doc, space = 2)
+    let baseName =
+        let trimmed = doc.Name.Trim().ToLower()
+        if trimmed = "" || trimmed = "untitled" then "pointer-model" else trimmed
+    let blob = newBlob [| json :> obj |] {| ``type`` = "application/json" |}
+    let url = urlCreateObjectUrl blob
+    let link = document.createElement "a" :?> HTMLAnchorElement
+    link.href <- url
+    link?download <- sprintf "%s.json" baseName
+    link.click ()
+    urlRevokeObjectUrl url
 
 let private onLoad () =
-    console.warn "Load is not implemented in notebook mode"
-
-let private onExportStl () =
-    MeshExport.downloadCurrentStl ()
+    let input = document.createElement "input" :?> HTMLInputElement
+    input.``type`` <- "file"
+    input.accept <- "application/json,.json"
+    input.addEventListener (
+        "change",
+        fun _ ->
+            let files = input.files
+            if files.length > 0 then
+                let file = files.[0]
+                let reader : obj = newFileReader ()
+                reader?onload <- (fun _ ->
+                    let text : string = unbox reader?result
+                    try
+                        let parsed = Fable.Core.JS.JSON.parse(text)
+                        let doc : Server.Document = unbox parsed
+                        dispatch (ReplaceDocument doc)
+                    with ex ->
+                        console.error ("Failed to load: " + ex.Message))
+                reader?readAsText(file) |> ignore
+    )
+    input.click ()
 
 // `BlockList` is compiled before `MeshExport` so it can't reference it
 // statically; bind the per-block mesh-export hook here, after both are in
@@ -73,7 +102,7 @@ BlockList.downloadMeshFor <- MeshExport.downloadBlockStl
 
 let private renderInto (root: Browser.Types.HTMLElement) =
     let doc = DocumentPipeline.documentView store.State
-    let shell = Shell.render dispatch doc viewerHost onSave onLoad onExportStl
+    let shell = Shell.render dispatch doc viewerHost onSave onLoad
     root.innerHTML <- ""
     root.appendChild shell |> ignore
 
@@ -95,7 +124,7 @@ let private actionListSignature (doc: DocumentView) =
                 |> String.concat ","
             sprintf "%s(%s)" name argDigest
         | Server.Lang.Notebook.SketchBody _ -> "sketch"
-    let rows = doc.Blocks |> List.map (fun b -> b.Id, b.Name, bodyTag b.Body, b.Visibility)
+    let rows = doc.Blocks |> List.map (fun b -> b.Id, b.Name, bodyTag b.Body, b.Visibility, b.ColorIndex)
     sprintf "%A|%A|%A|%A"
         doc.SelectedBlockId
         doc.ExpandedBlockIds

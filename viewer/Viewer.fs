@@ -17,7 +17,7 @@ let private makeResizeObserver (cb: obj -> unit) : obj = jsNative
 [<Emit("$0.observe($1)")>]
 let private observe (observer: obj) (target: obj) : unit = jsNative
 
-let private mountCanvas (root: HTMLElement) : HTMLElement * HTMLCanvasElement * HTMLElement =
+let private mountCanvas (root: HTMLElement) : HTMLElement * HTMLCanvasElement =
     let shadow =
         if isNull root.shadowRoot then root?attachShadow({| mode = "open" |})
         else root.shadowRoot
@@ -37,30 +37,11 @@ let private mountCanvas (root: HTMLElement) : HTMLElement * HTMLCanvasElement * 
     canvas?style?cursor <- "default"
     container.appendChild canvas |> ignore
 
-    // FPS HUD — absolute-positioned overlay in the top-right of the
-    // viewer. Updated from the RAF callback; pointer-events: none so it
-    // never intercepts mouse interaction.
-    let fps : HTMLElement = unbox (document.createElement "div")
-    fps?style?position <- "absolute"
-    fps?style?top <- "8px"
-    fps?style?right <- "8px"
-    fps?style?padding <- "4px 8px"
-    fps?style?fontFamily <- "ui-monospace, SFMono-Regular, Menlo, monospace"
-    fps?style?fontSize <- "11px"
-    fps?style?lineHeight <- "1.4"
-    fps?style?color <- "#1a1a1a"
-    fps?style?background <- "rgba(255, 255, 255, 0.75)"
-    fps?style?borderRadius <- "4px"
-    fps?style?pointerEvents <- "none"
-    fps?style?zIndex <- "10"
-    fps?textContent <- "— FPS"
-    container.appendChild fps |> ignore
-
-    container, canvas, fps
+    container, canvas
 
 let mount (root: HTMLElement) : JS.Promise<obj> =
     promise {
-        let container, canvas, fpsEl = mountCanvas root
+        let container, canvas = mountCanvas root
 
         match WebGPU.gpu () with
         | None ->
@@ -219,8 +200,6 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 // res mode kicks in *on the first moving frame* and no
                 // motion happens during skipped frames anyway.
                 let MIN_FRAME_MS = 16.0
-                let mutable emaMs = 0.0
-                let mutable lastHudTs = 0.0
                 let mutable lastRenderTs = 0.0
                 let mutable lastCamAz = System.Double.NaN
                 let mutable lastCamEl = 0.0
@@ -301,12 +280,6 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
 
                         setRenderScale desiredScale
 
-                        // Measure the CPU-side cost of building + submitting
-                        // this frame's command buffer. GPU execution is
-                        // asynchronous so this understates total GPU cost,
-                        // but it's the cost that blocks the main thread —
-                        // which is what the user sees as "frame cost".
-                        let renderStart = WebGPU.performanceNow ()
                         Render.renderFrame scene toolCursor.Value background.Value fieldSlice
                         // Keep the compute-pick geometry buffers in sync
                         // with whatever Render just drew, using the same
@@ -316,18 +289,7 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                         // line up.
                         let vs = ViewerPipeline.viewerState state
                         PickCompute.update pickCompute state vs
-                        let renderEnd = WebGPU.performanceNow ()
-                        let renderMs = renderEnd - renderStart
-                        let alpha = 0.2
-                        emaMs <-
-                            if emaMs = 0.0 then renderMs
-                            else (1.0 - alpha) * emaMs + alpha * renderMs
                         lastRenderTs <- now
-
-                        if now - lastHudTs > 250.0 && emaMs > 0.0 then
-                            let suffix = if moving then " · LOW" else ""
-                            fpsEl?textContent <- sprintf "%.1f ms%s" emaMs suffix
-                            lastHudTs <- now
 
                     WebGPU.requestAnimationFrame frame |> ignore
                 WebGPU.requestAnimationFrame frame |> ignore

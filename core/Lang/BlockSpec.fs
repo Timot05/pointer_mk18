@@ -142,14 +142,14 @@ module BlockSpec =
                     body
           ScalarDefaults = Map.ofList [ "width", 1.0; "height", 1.0; "depth", 1.0 ] }
 
-    /// `cylinder radius height` — Y-axis cylinder.
-    /// max(sqrt(x² + z²) - r, |y| - h/2)
+    /// `cylinder radius height` — Z-axis cylinder.
+    /// max(sqrt(x² + y²) - r, |z| - h/2)
     let private cylinderSpec : BlockSpec =
         let r = varE "radius"
         let h = varE "height"
         let two = nE 2.0
-        let radial = sqrtE (sqE (axE AxisX) +. sqE (axE AxisZ)) -. r
-        let axial = absE (axE AxisY) -. (h /. two)
+        let radial = sqrtE (sqE (axE AxisX) +. sqE (axE AxisY)) -. r
+        let axial = absE (axE AxisZ) -. (h /. two)
         let body = maxE radial axial
         { Name = "cylinder"
           Body = lambda

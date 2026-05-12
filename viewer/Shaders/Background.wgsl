@@ -105,7 +105,18 @@ fn project_world(pos: vec3<f32>) -> vec4<f32> {
 @fragment
 fn fs(in: VsOut) -> FsOut {
     let g = textureSample(gbuffer, samp, in.uv);
-    let n = g.xyz;
+    // The kernel evaluates the SDF in *camera* coordinates (the wrap-axes
+    // pass replaces world XYZ with `eye + u·right + v·up + t·basis_z`),
+    // so the gradient it writes into the gbuffer is camera-space. Project
+    // it back onto the world axes — otherwise every surface gets the
+    // same shade because the lights end up camera-attached, which reads
+    // as flat lighting that doesn't tell you which face is "up". The
+    // basis vectors are world-space and live on `FieldCamera`.
+    let n_cam = g.xyz;
+    let n = normalize(
+        n_cam.x * field.basis_x.xyz
+        + n_cam.y * field.basis_y.xyz
+        + n_cam.z * field.basis_z.xyz);
     let wcz = g.w;
 
     // Miss pixels write wcz = -inf from the kernel.
@@ -141,18 +152,32 @@ fn fs(in: VsOut) -> FsOut {
         PALETTE_LIT[palette_idx],
         has_palette);
 
-    // Three-light diffuse rig: ambient + key + fill — same as the old
-    // raymarch shader. Lerps between base and lit by the diffuse term.
+    // Three-light diffuse rig (key + fill + low ambient) plus a Fresnel
+    // rim term that brightens silhouette pixels — where the surface normal
+    // is perpendicular to the view direction the rim peaks. This pops the
+    // outline against the page background and keeps interior contrast
+    // high. The ambient was lowered from 0.25 → 0.15 to deepen the
+    // shadow side; key was bumped 0.5 → 0.6 to widen the lit-to-shadow
+    // gradient. Net effect: clearer surface curvature reading + a thin
+    // bright halo on edges.
     let key_dir = normalize(vec3<f32>(0.4, 0.3, 0.8));
     let fill_dir = normalize(vec3<f32>(-0.5, -0.4, 0.3));
-    let key = max(dot(n, key_dir), 0.0) * 0.5;
+    let key = max(dot(n, key_dir), 0.0) * 0.6;
     let fill = max(dot(n, fill_dir), 0.0) * 0.2;
-    let ambient = 0.25;
+    let ambient = 0.15;
     let diffuse = clamp(ambient + key + fill, 0.0, 1.0);
-    let color = mix(base, lit, diffuse);
+    let shaded = mix(base, lit, diffuse);
+
+    // Fresnel rim. `abs(dot(n, forward))` is 1 when the surface faces the
+    // camera (or directly away) and 0 at the silhouette. A higher power
+    // tightens the rim to a thinner band right at the edge; lower
+    // strength keeps it from reading as a specular highlight.
+    let view_align = abs(dot(n, cam.forward));
+    let rim = pow(1.0 - clamp(view_align, 0.0, 1.0), 5.0);
+    let color = shaded + rim * 0.2 * lit;
 
     var out: FsOut;
-    out.color = vec4<f32>(color, 1.0);
+    out.color = vec4<f32>(min(color, vec3<f32>(1.0, 1.0, 1.0)), 1.0);
     out.depth = clip.z / clip.w;
     return out;
 }

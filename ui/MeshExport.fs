@@ -5,6 +5,8 @@ open Fable.Core
 open Fable.Core.JsInterop
 open Browser.Dom
 open Browser.Types
+open Server
+open Server.Lang
 open Kernel
 
 [<Emit("new Blob($0, $1)")>]
@@ -67,26 +69,61 @@ let private downloadText (filename: string) (contents: string) =
     a.remove ()
     revokeObjectUrl url
 
+/// Run `mesh_build` against an already-encoded IR blob and download the
+/// result as ASCII STL. Shared by `downloadCurrentStl` (whole scene) and
+/// `downloadBlockStl` (per-block right-click export).
+let private runMeshExport (filename: string) (bytes: obj) : JS.Promise<unit> =
+    promise {
+        let! wasm = Wasm.load "/kernel/viewer.wasm"
+        let uploadCode = Wasm.uploadIr wasm bytes
+        if uploadCode <> 0 then
+            window.alert (sprintf "Kernel rejected the current scene (IR upload code %d)." uploadCode)
+        else
+            // `mesh_build_auto` interval-prunes a large root box to find a
+            // tight AABB around the surface, then meshes it — so the octree
+            // depth budget goes to the surface instead of empty space.
+            // Falls back to the old fixed-cube `mesh_build` if the auto
+            // path can't find a surface in its initial search box (code 5).
+            let meshCode =
+                let auto = wasm.mesh_build_auto 7
+                if auto = 5 then wasm.mesh_build (20.0, 7) else auto
+            if meshCode <> 0 then
+                window.alert (sprintf "Mesh export failed (code %d)." meshCode)
+            else
+                let vertices = Wasm.meshVertices wasm
+                let triangles = Wasm.meshTriangles wasm
+                if vertices.Length = 0 || triangles.Length = 0 then
+                    window.alert "Mesh export produced no triangles."
+                else
+                    downloadText filename (buildAsciiStl vertices triangles)
+    }
+
 let downloadCurrentStl () : unit =
     promise {
         match AppStore.store.State.LastNotebookBytes with
         | None ->
             window.alert "No visible isosurface is available to export."
         | Some bytes ->
-            let! wasm = Wasm.load "/kernel/viewer.wasm"
-            let uploadCode = Wasm.uploadIr wasm bytes
-            if uploadCode <> 0 then
-                window.alert (sprintf "Kernel rejected the current scene (IR upload code %d)." uploadCode)
-            else
-                let meshCode = wasm.mesh_build (20.0, 7)
-                if meshCode <> 0 then
-                    window.alert (sprintf "Mesh export failed (code %d)." meshCode)
-                else
-                    let vertices = Wasm.meshVertices wasm
-                    let triangles = Wasm.meshTriangles wasm
-                    if vertices.Length = 0 || triangles.Length = 0 then
-                        window.alert "Mesh export produced no triangles."
-                    else
-                        downloadText "dekal-export.stl" (buildAsciiStl vertices triangles)
+            do! runMeshExport "dekal-export.stl" bytes
+    }
+    |> ignore
+
+/// Re-serialize the current notebook IR with `block`'s field expression as
+/// the scene root, then run the mesh-build pipeline. Returns silently if
+/// the block isn't a Field producer (no entry in `NotebookFieldExprByBlock`).
+let downloadBlockStl (blockId: Notebook.BlockId) : unit =
+    promise {
+        let state = AppStore.store.State
+        match state.NotebookIr, Map.tryFind blockId state.NotebookFieldExprByBlock with
+        | Some ir, Some expr ->
+            let name =
+                state.Doc.Blocks
+                |> List.tryFind (fun b -> b.Id = blockId)
+                |> Option.map (fun b -> b.Name)
+                |> Option.defaultValue (sprintf "block-%d" blockId)
+            let bytes = MathIrCodec.serialize ir expr []
+            do! runMeshExport (sprintf "%s.stl" name) bytes
+        | _ ->
+            window.alert "This block doesn't produce a field — nothing to extract."
     }
     |> ignore

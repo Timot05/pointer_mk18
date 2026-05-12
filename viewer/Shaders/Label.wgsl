@@ -10,6 +10,7 @@ struct LabelUniforms {
     frame_pos: vec4<f32>,
     frame_x: vec4<f32>,
     frame_y: vec4<f32>,
+    tint: vec4<f32>,
 };
 
 const ATLAS_PX_RANGE: f32 = 4.0;
@@ -31,6 +32,7 @@ struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) tint: vec4<f32>,
 };
 
 fn project_world(pos: vec3<f32>) -> vec4<f32> {
@@ -81,6 +83,7 @@ fn vs(input: VsIn) -> VsOut {
     out.clip_pos = project_world(anchor_world + plane_offset_world);
     out.uv = input.uv;
     out.color = input.color;
+    out.tint = label.tint;
     return out;
 }
 
@@ -97,5 +100,5 @@ fn fs(input: VsOut) -> @location(0) vec4<f32> {
     let screen_px_range = max(0.5 * (unit_range / uv_deriv.x + unit_range / uv_deriv.y), 1.0);
     let screen_px_distance = screen_px_range * (sd - 0.5);
     let alpha = clamp(screen_px_distance + 0.5, 0.0, 1.0);
-    return vec4<f32>(input.color.rgb, input.color.a * alpha);
+    return vec4<f32>(input.color.rgb * input.tint.rgb, input.color.a * alpha * input.tint.a);
 }

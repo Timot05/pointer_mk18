@@ -95,12 +95,12 @@ let ``mirror symmetric y wraps an upstream field in a RemapAxes node`` () =
     | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]
-let ``union of two spheres roots a Min binary node`` () =
+let ``union of two spheres accepts target tool and radius inputs`` () =
     let nb =
         notebookOf [
             nativeBlock 0 "a" "sphere" [ "radius", ArgScalar 1.0 ]
             nativeBlock 1 "b" "sphere" [ "radius", ArgScalar 2.0 ]
-            nativeBlock 2 "u" "union" [ "target", ArgRef (Some 0); "tool", ArgRef (Some 1) ]
+            nativeBlock 2 "u" "union" [ "target", ArgRef (Some 0); "tool", ArgRef (Some 1); "radius", ArgScalar 0.25 ]
         ]
     let result = NotebookEval.eval nb
     let be = blockEvalOf 2 result
@@ -109,7 +109,7 @@ let ``union of two spheres roots a Min binary node`` () =
     | Some (Value.VField root) ->
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
-        Assert.Equal(int MathIr.Binary.Min, rootNode.Op)
+        Assert.Equal(int MathIr.Binary.Sub, rootNode.Op)
     | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]

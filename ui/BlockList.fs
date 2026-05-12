@@ -29,6 +29,112 @@ let private formatFloat (v: float) : string =
 
 let [<Literal>] private WIRE_MIME = "application/x-block-wire"
 
+/// MIME carrying the source `BlockId` for drag-and-drop reordering of the
+/// block list. Distinct from `WIRE_MIME` so a row's drop handler can tell
+/// a wire-bubble drag (wire a ref) apart from a row drag (reorder block).
+let [<Literal>] private BLOCK_MIME = "application/x-block-id"
+
+let private dataTransferHasBlock (de: DragEvent) : bool =
+    let types = de.dataTransfer.types
+    let mutable found = false
+    for i in 0 .. types.length - 1 do
+        if types.[i] = BLOCK_MIME then found <- true
+    found
+
+/// Single drop-indicator state shared across all rows. Previously each row
+/// owned its own class and the cursor crossing a row boundary could leave
+/// stale classes on the neighbour — visible as two adjacent indicator lines
+/// stacked. With a shared ref we clear the previous indicator unconditionally
+/// before setting the new one.
+let mutable private currentDropIndicator : HTMLElement option = None
+
+let private clearDropIndicator () =
+    match currentDropIndicator with
+    | Some el ->
+        el.classList.remove "is-drop-above"
+        el.classList.remove "is-drop-below"
+        currentDropIndicator <- None
+    | None -> ()
+
+let private setDropIndicator (el: HTMLElement) (cls: string) =
+    match currentDropIndicator with
+    | Some prev when not (System.Object.ReferenceEquals(prev, el)) ->
+        prev.classList.remove "is-drop-above"
+        prev.classList.remove "is-drop-below"
+    | _ -> ()
+    el.classList.remove "is-drop-above"
+    el.classList.remove "is-drop-below"
+    el.classList.add cls
+    currentDropIndicator <- Some el
+
+// ── Per-block context menu (right-click) ───────────────────────────────────
+
+/// Wired by `Shell.mount` after `MeshExport` is in scope (this module is
+/// compiled before `MeshExport`, so we can't take a static dependency).
+let mutable downloadMeshFor : Notebook.BlockId -> unit = fun _ -> ()
+
+let mutable private currentContextMenu : HTMLElement option = None
+let mutable private contextMenuDismiss : (Event -> unit) option = None
+
+let private closeContextMenu () =
+    match currentContextMenu with
+    | Some el ->
+        if not (isNull el.parentNode) then el.parentNode.removeChild el |> ignore
+    | None -> ()
+    currentContextMenu <- None
+    match contextMenuDismiss with
+    | Some h ->
+        document.removeEventListener ("mousedown", h)
+        window.removeEventListener ("blur", h)
+        contextMenuDismiss <- None
+    | None -> ()
+
+let private openBlockContextMenu (blockId: Notebook.BlockId) (x: float) (y: float) : unit =
+    closeContextMenu ()
+    let menu = Dom.el "div" "block-context-menu"
+    menu?style?left <- sprintf "%fpx" x
+    menu?style?top <- sprintf "%fpx" y
+
+    let item = Dom.elText "button" "block-context-item" "Download mesh"
+    item.addEventListener (
+        "click",
+        fun e ->
+            e.stopPropagation ()
+            closeContextMenu ()
+            downloadMeshFor blockId)
+    menu.appendChild (item :> Node) |> ignore
+
+    // Stop clicks inside the menu from triggering the outside-click handler.
+    menu.addEventListener ("mousedown", fun e -> e.stopPropagation ())
+
+    document.body.appendChild (menu :> Node) |> ignore
+    currentContextMenu <- Some menu
+
+    // Defer outside-click + blur dismissal one tick so the originating
+    // mousedown / contextmenu event doesn't immediately close the menu.
+    let dismiss = fun _ev -> closeContextMenu ()
+    contextMenuDismiss <- Some dismiss
+    window.setTimeout(
+        (fun () ->
+            document.addEventListener ("mousedown", dismiss)
+            window.addEventListener ("blur", dismiss)),
+        0)
+    |> ignore
+
+/// Walk `nextElementSibling` chain past non-action-row siblings (e.g.
+/// `.input-row` belonging to an expanded block above this one) to find the
+/// next sibling that's actually a block row.
+let private nextActionRow (el: HTMLElement) : HTMLElement option =
+    let mutable cur : obj = (el :> obj)?nextElementSibling
+    let mutable result : HTMLElement option = None
+    while not (isNull cur) && result.IsNone do
+        let candidate : HTMLElement = unbox cur
+        if candidate.classList.contains "action-row" then
+            result <- Some candidate
+        else
+            cur <- candidate?nextElementSibling
+    result
+
 /// Typed MIME marker — set by `renderRefBubble` on dragstart, scanned by
 /// each row's dragover handler to gate drops by `Type.T` compatibility.
 /// We can't read the payload data on dragover (browsers expose data only
@@ -75,6 +181,7 @@ let private tryFindBlockArg (specName: string) (paramName: string) (args: Map<st
         match specName, paramName with
         | ("union" | "intersect" | "subtract"), "target" -> Map.tryFind "a" args
         | ("union" | "intersect" | "subtract"), "tool" -> Map.tryFind "b" args
+        | ("union" | "intersect" | "subtract"), "radius" -> Some (Notebook.ArgScalar 0.0)
         | _ -> None
 
 // ── Visibility badge (reuses `.visibility-badge`) ──────────────────────────
@@ -284,7 +391,44 @@ let private renderRow
         (block: Notebook.Block) : HTMLElement =
 
     let row = Dom.el "div" "action-row"
+    row?draggable <- true
     if doc.SelectedBlockId = Some block.Id then row.classList.add "is-selected"
+
+    // Right-click → "Download mesh" for blocks whose output is a Field
+    // (sketch blocks and anything that doesn't type-check as Field gets the
+    // native browser menu so the absence of an app-level action is obvious).
+    let canExportMesh =
+        match Map.tryFind block.Id doc.BlockOutputs with
+        | Some Type.Field -> true
+        | _ -> false
+    if canExportMesh then
+        row.addEventListener (
+            "contextmenu",
+            fun ev ->
+                ev.preventDefault ()
+                ev.stopPropagation ()
+                let me = ev :?> MouseEvent
+                openBlockContextMenu block.Id me.clientX me.clientY)
+
+    // Row-level drag for reordering. The wire-bubble dragstart in
+    // `renderRefBubble` calls `stopPropagation`, so it never bubbles up
+    // here — this handler only fires on the row chrome (caret, icon,
+    // title, etc.), not on the ref bubbles inside.
+    row.addEventListener (
+        "dragstart",
+        fun ev ->
+            let de = ev :?> DragEvent
+            de.dataTransfer.effectAllowed <- "move"
+            de.dataTransfer.setData (BLOCK_MIME, string block.Id) |> ignore
+            row.classList.add "is-dragging")
+    row.addEventListener (
+        "dragend",
+        fun _ ->
+            row.classList.remove "is-dragging"
+            // Drag canceled outside a drop zone — indicator on whichever
+            // row was last hovered would otherwise stick until the next
+            // drag begins.
+            clearDropIndicator ())
 
     // Pick-mode: highlight rows that are valid commit targets.
     let pickTarget =
@@ -388,22 +532,67 @@ let private renderRow
     // `BlockOutputs` map missed it), the type gate is skipped — we still
     // require a wire MIME to be present.
     let blockOutputTy = Map.tryFind block.Id doc.BlockOutputs
-    let acceptsDrag (de: DragEvent) =
+    let acceptsWireDrag (de: DragEvent) =
         match blockOutputTy with
         | Some ty -> dataTransferAcceptsType de ty
         | None -> dataTransferHasWire de
+    // For block-reorder drags, splitting top/bottom halves of the row
+    // selects insert-before vs insert-after semantics: above midline →
+    // drop lands before this block; below midline → drop lands after.
+    let dropInsertsAfter (de: DragEvent) : bool =
+        let rect = (row :> obj)?getBoundingClientRect ()
+        let top : float = rect?top
+        let h : float = rect?height
+        let y : float = de?clientY
+        y > top + h * 0.5
     row.addEventListener (
         "dragover",
         fun ev ->
             let de = ev :?> DragEvent
-            if acceptsDrag de then
+            if acceptsWireDrag de then
                 ev.preventDefault ()
-                de.dataTransfer.dropEffect <- "move")
+                de.dataTransfer.dropEffect <- "move"
+                clearDropIndicator ()
+            elif dataTransferHasBlock de then
+                ev.preventDefault ()
+                de.dataTransfer.dropEffect <- "move"
+                // Project the cursor's half into a SINGLE indicator row:
+                //  - Top half of this row → drop above THIS row (line on its top).
+                //  - Bottom half + next row exists → drop above the NEXT row
+                //    (line on next row's top — same physical y as "below this
+                //    row", but only one element gets the class).
+                //  - Bottom half + last row → drop at end (line on this row's
+                //    bottom; the only place "below this row" can land).
+                if dropInsertsAfter de then
+                    match nextActionRow row with
+                    | Some next -> setDropIndicator next "is-drop-above"
+                    | None -> setDropIndicator row "is-drop-below"
+                else
+                    setDropIndicator row "is-drop-above")
+    row.addEventListener (
+        "dragleave",
+        fun ev ->
+            // dragleave fires when the cursor enters a child of the row too.
+            // Guard with `relatedTarget` so we only clear when the cursor
+            // actually leaves the row's bounding box — otherwise indicator
+            // flickers as the cursor passes over child icons / labels.
+            let de = ev :?> DragEvent
+            let related : obj = de?relatedTarget
+            let leftRow =
+                isNull related || not ((row :> obj)?contains(related) |> unbox<bool>)
+            if leftRow then
+                // Only clear if THIS row owned the indicator. Cursor moving
+                // from row N's bottom-half to row N+1 leaves row N but the
+                // indicator is on row N+1 — must not clobber it.
+                match currentDropIndicator with
+                | Some el when System.Object.ReferenceEquals(el, row) -> clearDropIndicator ()
+                | _ -> ())
     row.addEventListener (
         "drop",
         fun ev ->
             let de = ev :?> DragEvent
-            if acceptsDrag de then
+            clearDropIndicator ()
+            if acceptsWireDrag de then
                 ev.preventDefault ()
                 let raw : string = de.dataTransfer.getData WIRE_MIME
                 let parts = raw.Split('|')
@@ -413,7 +602,28 @@ let private renderRow
                         // No upstream check — SetBlockArg auto-reorders
                         // the dragged source into upstream position.
                         dispatch (SetBlockArg(sourceId, parts.[1], Notebook.ArgRef (Some block.Id)))
-                    | _ -> ())
+                    | _ -> ()
+            elif dataTransferHasBlock de then
+                ev.preventDefault ()
+                let raw : string = de.dataTransfer.getData BLOCK_MIME
+                match System.Int32.TryParse raw with
+                | true, sourceId when sourceId <> block.Id ->
+                    // Compute insertBefore from half-row position. If the
+                    // drop is in the bottom half AND this block is the
+                    // last one, insertBefore = None means "to the end".
+                    let after = dropInsertsAfter de
+                    let insertBefore =
+                        if after then
+                            let nextIdx =
+                                doc.Blocks
+                                |> List.tryFindIndex (fun b -> b.Id = block.Id)
+                                |> Option.map (fun i -> i + 1)
+                            match nextIdx with
+                            | Some i when i < List.length doc.Blocks -> Some doc.Blocks.[i].Id
+                            | _ -> None
+                        else Some block.Id
+                    dispatch (MoveBlock(sourceId, insertBefore))
+                | _ -> ())
 
     row.addEventListener (
         "click",
@@ -446,6 +656,13 @@ let private allPaletteEntries () : (string * Message) list =
 
 let mutable private paletteOpen = false
 
+let isPaletteOpen () = paletteOpen
+
+let closePalette () =
+    paletteOpen <- false
+    let existing = document.querySelector ".action-picker"
+    if not (isNull existing) then existing.remove ()
+
 let private renderPicker (dispatch: Message -> unit) : HTMLElement =
     let picker = Dom.el "div" "action-picker"
 
@@ -471,15 +688,11 @@ let private renderPicker (dispatch: Message -> unit) : HTMLElement =
             if i = highlighted then el.classList.add "is-active"
             else el.classList.remove "is-active"
 
-    let closePicker () =
-        paletteOpen <- false
-        picker.remove ()
-
     let commit () =
         if highlighted >= 0 && highlighted < current.Length then
             let _, msg = current.[highlighted]
             dispatch msg
-        closePicker ()
+        closePalette ()
 
     let rebuild () =
         resultsEl.innerHTML <- ""
@@ -537,7 +750,7 @@ let private renderPicker (dispatch: Message -> unit) : HTMLElement =
                 commit ()
             | "Escape" ->
                 e.preventDefault (); e.stopPropagation ()
-                closePicker ()
+                closePalette ()
             | _ -> ())
 
     window.requestAnimationFrame (fun _ -> input.focus ()) |> ignore
@@ -551,11 +764,14 @@ let togglePalette (dispatch: Message -> unit) =
     | :? HTMLElement as host ->
         let existing = host.querySelector ".action-picker"
         if not (isNull existing) then
-            paletteOpen <- false
-            existing.remove ()
+            closePalette ()
         else
             paletteOpen <- true
-            host.appendChild (renderPicker dispatch :> Node) |> ignore
+            let parent =
+                match host.querySelector ".panel" with
+                | :? HTMLElement as panel -> panel
+                | _ -> host
+            parent.appendChild (renderPicker dispatch :> Node) |> ignore
     | _ -> ()
 
 // ── Top-level render ──────────────────────────────────────────────────────
@@ -563,7 +779,23 @@ let togglePalette (dispatch: Message -> unit) =
 let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
     let panel = Dom.el "div" "panel"
 
-    let header = Dom.elText "div" "panel-header" "Blocks"
+    let header = Dom.el "div" "panel-header"
+    header.appendChild (Dom.elText "h2" "" "Actions" :> Node) |> ignore
+
+    let rightGroup = Dom.el "div" "header-right"
+    let paletteBtn = Dom.el "button" "palette-hint-btn"
+    paletteBtn.appendChild (Dom.elText "kbd" "" "\u2318" :> Node) |> ignore
+    paletteBtn.appendChild (Dom.elText "span" "palette-hint-plus" "+" :> Node) |> ignore
+    paletteBtn.appendChild (Dom.elText "kbd" "" "K" :> Node) |> ignore
+    paletteBtn.appendChild (document.createTextNode " " :> Node) |> ignore
+    paletteBtn.appendChild (Dom.elText "span" "" "palette" :> Node) |> ignore
+    paletteBtn.addEventListener (
+        "click",
+        fun ev ->
+            ev.stopPropagation ()
+            togglePalette dispatch)
+    rightGroup.appendChild (paletteBtn :> Node) |> ignore
+    header.appendChild (rightGroup :> Node) |> ignore
     panel.appendChild (header :> Node) |> ignore
 
     let list = Dom.el "div" "block-list"
@@ -608,5 +840,7 @@ let syncPanel (root: HTMLElement) (dispatch: Message -> unit) (doc: DocumentView
         | :? HTMLElement as list -> list.scrollTop <- prevScroll
         | _ -> ()
         if not (isNull pickerNode) then
-            host.appendChild (pickerNode :> Node) |> ignore
+            match host.querySelector ".panel" with
+            | :? HTMLElement as panel -> panel.appendChild (pickerNode :> Node) |> ignore
+            | _ -> host.appendChild (pickerNode :> Node) |> ignore
     | _ -> ()

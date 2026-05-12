@@ -161,8 +161,13 @@ let register
                     onLoad ()
                 | _ -> ()
             else
-                // Palette open — let the palette handle everything.
-                if getPaletteOpen () then () else
+                // Palette open — Escape closes it globally; other keys are
+                // handled by the palette input when focused.
+                if getPaletteOpen () then
+                    if ke.key = "Escape" then
+                        e.preventDefault ()
+                        BlockList.closePalette ()
+                else
 
                 let target : obj = e?target
                 if isEditable target then () else
@@ -192,5 +197,34 @@ let register
                     if selectedIsSketchBlock doc then
                         e.preventDefault ()
                         dispatch ToggleSketchEdit
+                | "ArrowDown" | "ArrowUp" ->
+                    // Move selection across blocks in source order. Mirrors
+                    // the main-branch action-row navigation (Up/Down through
+                    // a flat list); now operates on `doc.Blocks` instead.
+                    // No-selection → falls into the first/last block.
+                    if not doc.Blocks.IsEmpty then
+                        let step = if ke.key = "ArrowDown" then 1 else -1
+                        let len = List.length doc.Blocks
+                        let currentIdx =
+                            doc.SelectedBlockId
+                            |> Option.bind (fun id -> doc.Blocks |> List.tryFindIndex (fun b -> b.Id = id))
+                        let nextIdx =
+                            match currentIdx with
+                            | Some i -> ((i + step) % len + len) % len
+                            | None -> if step = 1 then 0 else len - 1
+                        e.preventDefault ()
+                        dispatch (SelectBlock doc.Blocks.[nextIdx].Id)
+                | "ArrowRight" ->
+                    match selectedBlock doc with
+                    | Some b ->
+                        e.preventDefault ()
+                        dispatch (ExpandBlock b.Id)
+                    | None -> ()
+                | "ArrowLeft" ->
+                    match selectedBlock doc with
+                    | Some b ->
+                        e.preventDefault ()
+                        dispatch (CollapseBlock b.Id)
+                    | None -> ()
                 | _ -> ()
     )

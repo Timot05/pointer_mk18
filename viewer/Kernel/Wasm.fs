@@ -47,6 +47,7 @@ type Exports =
     abstract set_camera: unit -> int
     abstract gbuffer_ptr: unit -> int
     abstract mesh_build: halfExtent: float * maxDepth: int -> int
+    abstract mesh_build_auto: maxDepth: int -> int
     abstract mesh_vertices_ptr: unit -> int
     abstract mesh_vertices_len: unit -> int
     abstract mesh_triangles_ptr: unit -> int

@@ -236,6 +236,108 @@ pub export fn mesh_build(half_extent: f32, max_depth: u32) u32 {
     return 0;
 }
 
+// `mesh_build_auto`: figure out the bounding box from the IR via coarse
+// interval pruning, then mesh. The user-facing path (right-click "Download
+// mesh" in the BlockList) calls this so the AABB matches the surface,
+// instead of relying on a hardcoded cube.
+//
+// Algorithm: subdivide a large root box [-SEARCH_HALF_EXTENT, +…]³ with
+// `decodeRegEvalInterval` (same primitive the octree builder uses to prune
+// children). At each cell, `lo > 0` ⇒ no surface, `hi < 0` ⇒ fully interior
+// — both prune. Surface-crossing leaves at SEARCH_DEPTH are unioned into a
+// tight AABB which is then padded by half a leaf width to avoid clipping
+// the surface at the AABB boundary (DC artifacts).
+
+const SEARCH_HALF_EXTENT: f32 = 256.0;
+const SEARCH_DEPTH: u32 = 6;
+
+fn unionAabb(into: *?mesh_mod.Aabb, cell: mesh_mod.Aabb) void {
+    if (into.*) |existing| {
+        into.* = .{
+            .min = .{
+                .x = @min(existing.min.x, cell.min.x),
+                .y = @min(existing.min.y, cell.min.y),
+                .z = @min(existing.min.z, cell.min.z),
+            },
+            .max = .{
+                .x = @max(existing.max.x, cell.max.x),
+                .y = @max(existing.max.y, cell.max.y),
+                .z = @max(existing.max.z, cell.max.z),
+            },
+        };
+    } else {
+        into.* = cell;
+    }
+}
+
+fn searchBoundsRecurse(cell: mesh_mod.Aabb, depth: u32, tight: *?mesh_mod.Aabb) void {
+    const iv = meshInterval(null, cell);
+    if (iv.lo > 0.0 or iv.hi < 0.0) return;
+
+    if (depth == 0) {
+        unionAabb(tight, cell);
+        return;
+    }
+
+    var i: u32 = 0;
+    while (i < 8) : (i += 1) {
+        const corner: u3 = @intCast(i);
+        searchBoundsRecurse(cell.child(corner), depth - 1, tight);
+    }
+}
+
+pub export fn mesh_build_auto(max_depth: u32) u32 {
+    if (!scene_loaded) return 1;
+    if (max_depth == 0 or max_depth > 10) return 2;
+
+    const root: mesh_mod.Aabb = .{
+        .min = .{ .x = -SEARCH_HALF_EXTENT, .y = -SEARCH_HALF_EXTENT, .z = -SEARCH_HALF_EXTENT },
+        .max = .{ .x = SEARCH_HALF_EXTENT, .y = SEARCH_HALF_EXTENT, .z = SEARCH_HALF_EXTENT },
+    };
+    var tight: ?mesh_mod.Aabb = null;
+    searchBoundsRecurse(root, SEARCH_DEPTH, &tight);
+    if (tight == null) return 5;
+
+    const leaf_extent: f32 =
+        (2.0 * SEARCH_HALF_EXTENT) / @as(f32, @floatFromInt(@as(u32, 1) << @intCast(SEARCH_DEPTH)));
+    const pad: f32 = 0.5 * leaf_extent;
+
+    const bounds: mesh_mod.Aabb = .{
+        .min = .{
+            .x = tight.?.min.x - pad,
+            .y = tight.?.min.y - pad,
+            .z = tight.?.min.z - pad,
+        },
+        .max = .{
+            .x = tight.?.max.x + pad,
+            .y = tight.?.max.y + pad,
+            .z = tight.?.max.z + pad,
+        },
+    };
+
+    clearSceneMesh();
+
+    const sampler: mesh_mod.Sampler = .{
+        .ctx = null,
+        .sampleFn = meshSample,
+        .gradientFn = meshGradient,
+        .intervalFn = meshInterval,
+    };
+
+    var built = mesh_mod.buildMesh(
+        std.heap.wasm_allocator,
+        sampler,
+        bounds,
+        .{ .max_depth = @intCast(max_depth), .binary_search_steps = 8 },
+    ) catch return 3;
+    if (built.vertices.len == 0 or built.triangles.len == 0) {
+        built.deinit(std.heap.wasm_allocator);
+        return 4;
+    }
+    scene_mesh = built;
+    return 0;
+}
+
 pub export fn mesh_vertices_ptr() usize {
     if (scene_mesh) |mesh| return @intFromPtr(mesh.vertices.ptr);
     return 0;

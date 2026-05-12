@@ -29,9 +29,8 @@ let private store = AppStore.store
 
 let private dispatch msg = Store.dispatch store msg
 
-// Action palette dormant. Block palette state is owned by `BlockList`
-// directly (see `BlockList.togglePalette`).
-let private getPaletteOpen () = false
+// Block palette state is owned by `BlockList` directly.
+let private getPaletteOpen () = BlockList.isPaletteOpen ()
 
 // --------------------------------------------------------------------------
 // Viewer mount. The F# viewer is now the only viewer; the legacy TS viewer
@@ -62,6 +61,11 @@ let private onLoad () =
 
 let private onExportStl () =
     MeshExport.downloadCurrentStl ()
+
+// `BlockList` is compiled before `MeshExport` so it can't reference it
+// statically; bind the per-block mesh-export hook here, after both are in
+// scope. Runs once at startup.
+BlockList.downloadMeshFor <- MeshExport.downloadBlockStl
 
 // --------------------------------------------------------------------------
 // Render loop.

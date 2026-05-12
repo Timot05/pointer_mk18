@@ -18,21 +18,29 @@ let private axesOf (transform: RigidTransform) =
     let yAxis = transform.Rot.Rotate({ X = 0.0; Y = 1.0; Z = 0.0 })
     pos, xAxis, yAxis
 
+let private worldOriginFrame : FrameView =
+    { Id = "origin"
+      Transform = RigidTransform.Identity }
+
 /// Per-sketch frame uniform block — matches the `SketchFrame` WGSL
-/// struct in Line.wgsl (16 floats / 64 bytes).
-let private sketchFrameData (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) : float32[] =
+/// struct in Line.wgsl (16 floats / 64 bytes). The trailing tint vec4
+/// is an rgba multiplier applied at fragment stage; non-active sketches
+/// fade when another sketch is being edited.
+let private sketchFrameData
+        (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) (tint: float32) : float32[] =
     [| float32 pos.X;   float32 pos.Y;   float32 pos.Z;   0.0f
        float32 xAxis.X; float32 xAxis.Y; float32 xAxis.Z; 0.0f
        float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f
-       0.0f; 0.0f; 0.0f; 0.0f |]
+       1.0f; 1.0f; 1.0f; tint |]
 
 let private sketchLabelData
         (canvasWpx: float32) (canvasHpx: float32)
-        (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) : float32[] =
+        (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) (tint: float32) : float32[] =
     [| canvasWpx; canvasHpx; 0.0f; 0.0f
        float32 pos.X;   float32 pos.Y;   float32 pos.Z;   0.0f
        float32 xAxis.X; float32 xAxis.Y; float32 xAxis.Z; 0.0f
-       float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f |]
+       float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f
+       1.0f; 1.0f; 1.0f; tint |]
 
 /// Write every visible sketch's frame + label uniform blocks into the
 /// shared per-sketch buffers at distinct dynamic-offset slots, *before*
@@ -44,7 +52,8 @@ let private sketchLabelData
 /// buffer).
 let private writeSketchUniforms
         (scene: Scene.Scene)
-        (sketchTransforms: FrameView list) : Map<ActionId, int> =
+        (sketchTransforms: FrameView list)
+        (activeSketchId: ActionId option) : Map<ActionId, int> =
     let canvasWpx = float32 (scene.Canvas.clientWidth * scene.Dpr)
     let canvasHpx = float32 (scene.Canvas.clientHeight * scene.Dpr)
     let used = min sketchTransforms.Length Scene.FRAME_CAPACITY
@@ -53,10 +62,14 @@ let private writeSketchUniforms
     |> List.mapi (fun i f ->
         let pos, xAxis, yAxis = axesOf f.Transform
         let offset = i * Scene.FRAME_STRIDE
+        let tint =
+            match activeSketchId with
+            | Some sid when sid = f.Id -> 1.0f
+            | _ -> 0.35f
         WebGPU.writeFloat32 scene.Device.queue scene.FrameBuffer offset
-            (sketchFrameData pos xAxis yAxis)
+            (sketchFrameData pos xAxis yAxis tint)
         WebGPU.writeFloat32 scene.Device.queue scene.LabelUniformBuffer offset
-            (sketchLabelData canvasWpx canvasHpx pos xAxis yAxis)
+            (sketchLabelData canvasWpx canvasHpx pos xAxis yAxis tint)
         f.Id, offset)
     |> Map.ofList
 
@@ -143,7 +156,9 @@ let renderFrame
     // Reserve a unique dynamic-offset slot per sketch + upload its frame
     // uniforms once, before any draws are recorded. Every per-sketch
     // draw below looks the offset up by id.
-    let sketchOffsets = writeSketchUniforms scene viewState.SketchTransforms
+    let activeSketchId = Editor.activeSketchEditId state
+    let sketchOffsets =
+        writeSketchUniforms scene viewState.SketchTransforms activeSketchId
 
     // Action visibility is gone with the action graph; everything renders.
     let isVisible (_actionId: string) = true
@@ -338,7 +353,7 @@ let renderFrame
 
     // ── Color pass: frame gizmos + origin dots (world-space, no frame uniform) ──
     let visibleFrames =
-        ([] : FrameView list)
+        [ worldOriginFrame ]
 
     let frameGizmoData =
         SketchOverlayRender.buildFramesGizmoBuffer

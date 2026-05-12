@@ -174,6 +174,11 @@ type Message =
     | CollapseBlock of Server.Lang.Notebook.BlockId
     | RenameBlock of Server.Lang.Notebook.BlockId * string
     | DeleteBlock of Server.Lang.Notebook.BlockId
+    /// Reorder a block in `Doc.Blocks`. `InsertBefore` names the target
+    /// block; the moved block lands immediately before it. `None` moves
+    /// the block to the end of the list. Used by the sidebar's
+    /// drag-and-drop reordering (BlockList row dragstart → row drop).
+    | MoveBlock of source: Server.Lang.Notebook.BlockId * insertBefore: Server.Lang.Notebook.BlockId option
     /// Cycle the block's `Visibility` through Hidden → Visible → FieldLines
     /// → Isosurface → Hidden. The badge in the block list is the visible
     /// trigger; the keyboard shortcut hooks the same message.
@@ -743,11 +748,18 @@ module Editor =
                             ((state.Doc, [ 0 .. count - 1 ])
                              ||> List.fold (fun current index ->
                                  Document.patchParamValue drag.SketchId fields.[index] (VFloat(float solvedLocal.[index])) current))
+                        // `recompileNotebook` rebuilds `LastNotebookBytes`
+                        // (the IR shipped to the kernel). Without it, the
+                        // patched sketch coords are visible in the overlay
+                        // but constant-baked downstream IR — e.g.
+                        // wing-remap-preview's endpoint constants — keeps
+                        // the pre-drag values.
                         { state with
                             Doc = nextDoc
                             ActiveSketchDrag = None
                             PendingSketchDragCommit = false
                             SolvedSketchParams = Map.empty }
+                        |> recompileNotebook
                         |> recompileState,
                         noEffects
                     | None ->
@@ -1055,6 +1067,34 @@ module Editor =
                     { state with
                         Doc = { state.Doc with SelectedBlockId = Some id }
                         SketchEditMode = sketchEdit }
+                | MoveBlock(sourceId, insertBefore) ->
+                    // Pluck `sourceId` out of the list and reinsert it at the
+                    // position indicated by `insertBefore`. No-op if the
+                    // source doesn't exist, if it's already in the right
+                    // place, or if `insertBefore = Some sourceId` (would
+                    // collapse to identity). Recompile because reordering
+                    // can change the visible-field declaration order, which
+                    // matters for the kernel union root.
+                    match insertBefore with
+                    | Some t when t = sourceId -> state
+                    | _ ->
+                        let source = state.Doc.Blocks |> List.tryFind (fun b -> b.Id = sourceId)
+                        match source with
+                        | None -> state
+                        | Some src ->
+                            let without = state.Doc.Blocks |> List.filter (fun b -> b.Id <> sourceId)
+                            let next =
+                                match insertBefore with
+                                | None -> without @ [ src ]
+                                | Some t ->
+                                    let idx = without |> List.tryFindIndex (fun b -> b.Id = t)
+                                    match idx with
+                                    | Some i ->
+                                        let head, tail = List.splitAt i without
+                                        head @ [ src ] @ tail
+                                    | None -> without @ [ src ]
+                            { state with Doc = { state.Doc with Blocks = next } }
+                            |> recompileNotebook
                 | SetBlockArg(id, paramName, newArg) ->
                     let updated =
                         state.Doc.Blocks

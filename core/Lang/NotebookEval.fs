@@ -33,6 +33,7 @@ module NotebookEval =
             match specName, paramName with
             | ("union" | "intersect" | "subtract"), "target" -> Map.tryFind "a" args
             | ("union" | "intersect" | "subtract"), "tool" -> Map.tryFind "b" args
+            | ("union" | "intersect" | "subtract"), "radius" -> Some (ArgScalar 0.0)
             | _ -> None
 
     /// Build the eval env for a single native block — every input the spec

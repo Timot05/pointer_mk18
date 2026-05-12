@@ -111,10 +111,18 @@ let private runEffect (store: Store.Store<EditorState, Message>) (effect: Effect
         else
             startSketchSolve store drag true
     | FinalizeSketchDrag drag ->
+        // Pin the dragged point at the release target. A `usePins=false`
+        // final solve was racy: every live solve whose `drag.Target` no
+        // longer matched the active drag (i.e. mouse moved during solve)
+        // was dropped, so `SolvedSketchParams` would still be empty here.
+        // The unpinned solve then started from `SlotValues` (= pre-drag
+        // doc params) with no force → it returned the original params,
+        // patched the doc back to where it started, and downstream
+        // constant-baked IR (wing-remap-preview) never saw the drag.
         if Set.contains drag.SketchId solveInFlight then
-            pendingSolveBySketch <- pendingSolveBySketch |> Map.add drag.SketchId (drag, false)
+            pendingSolveBySketch <- pendingSolveBySketch |> Map.add drag.SketchId (drag, true)
         else
-            startSketchSolve store drag false
+            startSketchSolve store drag true
     | ResolveAllSketches ->
         resolveAllSketches store
 

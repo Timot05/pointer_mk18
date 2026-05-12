@@ -60,11 +60,12 @@ type Scene =
       // Camera
       Camera: Camera.CameraState }
 
-/// One sketch's worth of frame-uniform data (pos + xAxis + yAxis as
-/// vec4s = 16 floats = 64 bytes). Label uniforms are the same shape
-/// plus a canvas-size vec4 — also 64 bytes.
+/// One sketch's worth of frame-uniform data: pos + xAxis + yAxis + tint
+/// (4 vec4s = 64 bytes). The trailing tint vec4 fades inactive sketches
+/// when another sketch is being edited. Label uniforms add a viewport
+/// vec4 in front, so 5 vec4s = 80 bytes.
 let FRAME_SLOT_BYTES = 64
-let LABEL_SLOT_BYTES = 64
+let LABEL_SLOT_BYTES = 80
 /// WebGPU's `minUniformBufferOffsetAlignment` is typically 256 bytes on
 /// desktop adapters; padding each slot to this guarantees valid dynamic
 /// offsets regardless of device.

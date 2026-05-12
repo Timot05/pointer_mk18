@@ -69,6 +69,13 @@ let install
 
     let mutable dimensionClosing = false
     let mutable dimensionEditingKey : string = ""
+    // Track the current field's unit so commit/load convert consistently.
+    // Angle constraints are stored in radians but rendered/edited in degrees
+    // (matches `LabelBuilder.formatAngle`'s `radians * 180 / π` display).
+    let mutable dimensionIsAngle = false
+
+    let radToDeg (r: float) = r * 180.0 / System.Math.PI
+    let degToRad (d: float) = d * System.Math.PI / 180.0
 
     // Stop clicks inside the input from bubbling to the canvas pick/drag.
     addEvent dimensionInput "mousedown" (fun e -> e?stopPropagation() |> ignore)
@@ -84,7 +91,8 @@ let install
             let raw : string = dimensionInput?value
             let mutable parsed = 0.0
             if System.Double.TryParse(raw, &parsed) then
-                Store.dispatch AppStore.store (CommitEditingDimension parsed)
+                let stored = if dimensionIsAngle then degToRad parsed else parsed
+                Store.dispatch AppStore.store (CommitEditingDimension stored)
             else
                 Store.dispatch AppStore.store CancelEditingDimension
         | "Escape" ->
@@ -140,7 +148,11 @@ let install
                             if dimensionEditingKey <> key then
                                 dimensionEditingKey <- key
                                 dimensionClosing <- false
-                                dimensionInput?value <- string editing.Value
+                                dimensionIsAngle <- (editing.Key = "angle")
+                                let displayValue =
+                                    if dimensionIsAngle then radToDeg editing.Value
+                                    else editing.Value
+                                dimensionInput?value <- sprintf "%g" displayValue
                                 setTimeout
                                     (fun () ->
                                         dimensionInput?focus() |> ignore

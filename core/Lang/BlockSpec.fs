@@ -54,6 +54,7 @@ module BlockSpec =
     let private negE  (e: Expr) = mk (EUnary(UnaryOp.Neg,  e))
     let private minE  (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Min, a, b))
     let private maxE  (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Max, a, b))
+    let private cmpE  (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Compare, a, b))
 
     /// Build a curried lambda with explicit parameter type hints,
     /// outermost first.
@@ -170,26 +171,40 @@ module BlockSpec =
           Body = lambda [ "rootY", Type.Scalar; "child", Type.Field ] body
           ScalarDefaults = Map.ofList [ "rootY", 0.0 ] }
 
-    /// `union target tool` — `min(target, tool)`.
+    /// Iquilez polynomial smooth-min, with `radius <= eps` snapping to a
+    /// hard min. The enable factor keeps radius=0 exact without adding a
+    /// general AST `if` node:
+    ///   h = max(k - abs(a-b), 0) / k
+    ///   smin = min(a,b) - enabled * h^3 * k / 6
+    let private smoothMinE (a: Expr) (b: Expr) (radius: Expr) : Expr =
+        let eps = nE 1e-6
+        let zero = nE 0.0
+        let six = nE 6.0
+        let k = maxE radius eps
+        let h = maxE (k -. absE (a -. b)) zero /. k
+        let enabled = maxE (cmpE radius eps) zero
+        minE a b -. (enabled *. h *. h *. h *. k /. six)
+
+    /// `union target tool radius` — smooth union via `smoothMin(target, tool, radius)`.
     let private unionSpec : BlockSpec =
-        let body = minE (varE "target") (varE "tool")
+        let body = smoothMinE (varE "target") (varE "tool") (varE "radius")
         { Name = "union"
-          Body = lambda [ "target", Type.Field; "tool", Type.Field ] body
-          ScalarDefaults = Map.empty }
+          Body = lambda [ "target", Type.Field; "tool", Type.Field; "radius", Type.Scalar ] body
+          ScalarDefaults = Map.ofList [ "radius", 0.0 ] }
 
-    /// `intersect target tool` — `max(target, tool)`.
+    /// `intersect target tool radius` — `-smoothMin(-target, -tool, radius)`.
     let private intersectSpec : BlockSpec =
-        let body = maxE (varE "target") (varE "tool")
+        let body = negE (smoothMinE (negE (varE "target")) (negE (varE "tool")) (varE "radius"))
         { Name = "intersect"
-          Body = lambda [ "target", Type.Field; "tool", Type.Field ] body
-          ScalarDefaults = Map.empty }
+          Body = lambda [ "target", Type.Field; "tool", Type.Field; "radius", Type.Scalar ] body
+          ScalarDefaults = Map.ofList [ "radius", 0.0 ] }
 
-    /// `subtract target tool` — `max(target, -tool)` (remove `tool` from `target`).
+    /// `subtract target tool radius` — `-smoothMin(-target, tool, radius)`.
     let private subtractSpec : BlockSpec =
-        let body = maxE (varE "target") (negE (varE "tool"))
+        let body = negE (smoothMinE (negE (varE "target")) (varE "tool") (varE "radius"))
         { Name = "subtract"
-          Body = lambda [ "target", Type.Field; "tool", Type.Field ] body
-          ScalarDefaults = Map.empty }
+          Body = lambda [ "target", Type.Field; "tool", Type.Field; "radius", Type.Scalar ] body
+          ScalarDefaults = Map.ofList [ "radius", 0.0 ] }
 
     /// `thicken amount child` — shifts iso-surface outward by `amount`.
     let private thickenSpec : BlockSpec =

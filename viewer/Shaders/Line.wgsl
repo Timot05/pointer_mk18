@@ -9,6 +9,9 @@ struct SketchFrame {
     pos: vec4<f32>,
     x_axis: vec4<f32>,
     y_axis: vec4<f32>,
+    // rgba multiplier applied at fragment stage. .w fades inactive
+    // sketches when another sketch is being edited.
+    tint: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> cam: Camera;
@@ -22,6 +25,7 @@ struct VsIn {
 struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) color: vec4<f32>,
+    @location(1) tint: vec4<f32>,
 };
 
 fn project_world(pos: vec3<f32>) -> vec4<f32> {
@@ -58,10 +62,11 @@ fn vs(input: VsIn) -> VsOut {
     var out: VsOut;
     out.clip_pos = project_world(world);
     out.color = input.color;
+    out.tint = frame.tint;
     return out;
 }
 
 @fragment
 fn fs(input: VsOut) -> @location(0) vec4<f32> {
-    return input.color;
+    return input.color * input.tint;
 }

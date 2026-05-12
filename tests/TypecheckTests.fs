@@ -38,11 +38,11 @@ let ``infer: translate spec body has type Scalar -> Scalar -> Scalar -> Field ->
     Assert.Equal(expected, t.Type)
 
 [<Fact>]
-let ``infer: union spec body has type Field -> Field -> Field`` () =
+let ``infer: union spec body has type Field -> Field -> Scalar -> Field`` () =
     let spec = BlockSpec.find "union"
     let t = inferOk emptyEnv spec.Body
     Assert.Equal(
-        Type.Fun(Type.Field, Type.Fun(Type.Field, Type.Field)),
+        Type.Fun(Type.Field, Type.Fun(Type.Field, Type.Fun(Type.Scalar, Type.Field))),
         t.Type)
 
 // ─── Error cases ───────────────────────────────────────────────────────────

@@ -101,6 +101,7 @@ module NotebookCompose =
             match specName, paramName with
             | ("union" | "intersect" | "subtract"), "target" -> Map.tryFind "a" args
             | ("union" | "intersect" | "subtract"), "tool" -> Map.tryFind "b" args
+            | ("union" | "intersect" | "subtract"), "radius" -> Some (ArgScalar 0.0)
             | _ -> None
 
     // ── from-sketch lowering ───────────────────────────────────────────────
@@ -464,7 +465,7 @@ module NotebookCompose =
         | [] -> ()
         | [ single ] -> stmts.Add(SExpr (varE single))
         | head :: tail ->
-            let unionCall a b = applyChain (varE "union") [ a; b ]
+            let unionCall a b = applyChain (varE "union") [ a; b; numE 0.0 ]
             let folded = tail |> List.fold (fun acc n -> unionCall acc (varE n)) (varE head)
             stmts.Add(SExpr folded)
 

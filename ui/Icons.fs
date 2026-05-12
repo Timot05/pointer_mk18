@@ -2,18 +2,12 @@ module PointerMk18.Ui.Icons
 
 open Fable.Core
 open Fable.Core.JsInterop
-open Server
+open Server.Lang
 open Browser.Dom
 open Browser.Types
 
-// ---------------------------------------------------------------------------
-// Carbon icon rendering. Ported from user-interface/src/icons.ts.
-//
-// Each @carbon/icons entry exports a descriptor shaped as
-//   { elem: string, attrs: {...}, content?: Desc[] }
-// We consume them as untyped `obj` via Fable's `importDefault` and walk the
-// tree to build real SVG DOM nodes.
-// ---------------------------------------------------------------------------
+// Carbon icon rendering. Each @carbon/icons entry exports a descriptor:
+// { elem: string, attrs: {...}, content?: Desc[] }.
 
 let private svgNs = "http://www.w3.org/2000/svg"
 
@@ -31,11 +25,8 @@ let private joinInner       : obj = importDefault "@carbon/icons/es/join--inner/
 let private joinLeft        : obj = importDefault "@carbon/icons/es/join--left/16"
 let private containerImage  : obj = importDefault "@carbon/icons/es/container-image--pull/16"
 let private circleDash      : obj = importDefault "@carbon/icons/es/circle-dash/16"
-let private triangleOutline : obj = importDefault "@carbon/icons/es/triangle--outline/16"
 let private layers          : obj = importDefault "@carbon/icons/es/layers/16"
 let private view            : obj = importDefault "@carbon/icons/es/view/16"
-
-// --- Descriptor walkers --------------------------------------------------
 
 [<Emit("Object.entries($0)")>]
 let private entries (o: obj) : (string * obj)[] = jsNative
@@ -60,85 +51,32 @@ let private buildSvg (desc: obj) : Element =
         svg.appendChild (buildSvgNode child :> Node) |> ignore
     svg
 
-// --- Public API: map F# domain values to icons ---------------------------
+let private descriptorForSpecName (name: string) : obj =
+    match name with
+    | "sphere" -> circleOutline
+    | "cylinder" -> db2Database
+    | "box" -> cube
+    | "translate" -> moveIcon
+    | "mirror-symmetric" -> rotateIcon
+    | "union" -> joinFull
+    | "intersect" -> joinInner
+    | "subtract" -> joinLeft
+    | "thicken" -> containerImage
+    | "shell" -> circleDash
+    | "from-sketch" -> shapeUnite
+    | "wing-remap-preview" -> zAxis
+    | _ -> layers
 
-let private descriptorFor (kind: ActionKind) : obj =
-    match kind with
-    | Origin -> zAxis
-    | Cylinder _ -> db2Database
-    | Sphere _ -> circleOutline
-    | Box _ -> cube
-    | HalfPlane _ -> squareOutline
-    | Translate _ -> moveIcon
-    | Rotate _ -> rotateIcon
-    | Move _ -> moveIcon
-    | Union _ -> joinFull
-    | Intersect _ -> joinInner
-    | Subtract _ -> joinLeft
-    | Sketch _ -> pen
-    | FromSketch _ -> shapeUnite
-    | Thicken _ -> containerImage
-    | Shell _ -> circleDash
-    | Mesh _ -> triangleOutline
+let forSpecName (name: string) : Element =
+    buildSvg (descriptorForSpecName name)
 
-let private descriptorForTemplate (t: ActionTemplate) : obj =
-    match t with
-    | SphereTemplate -> circleOutline
-    | CylinderTemplate -> db2Database
-    | BoxTemplate -> cube
-    | HalfPlaneTemplate -> squareOutline
-    | TranslateTemplate -> moveIcon
-    | RotateTemplate -> rotateIcon
-    | MoveTemplate -> moveIcon
-    | UnionTemplate -> joinFull
-    | SubtractTemplate -> joinLeft
-    | IntersectTemplate -> joinInner
-    | SketchTemplate -> pen
-    | FromSketchTemplate -> shapeUnite
-    | ThickenTemplate -> containerImage
-    | ShellTemplate -> circleDash
-    | MeshTemplate -> triangleOutline
+let forBody (body: Notebook.BlockBody) : Element =
+    match body with
+    | Notebook.SketchBody _ -> buildSvg pen
+    | Notebook.NativeBody(name, _) -> forSpecName name
 
-//Render a Carbon SVG icon for an ActionKind. The returned node can be
-//appended directly to an HTMLElement.
-let forKind (kind: ActionKind) : Element =
-    buildSvg (descriptorFor kind)
-
-//Render a Carbon SVG icon for an ActionTemplate (used in the "+ Add" menu
-//before a concrete action has been created).
-let forTemplate (t: ActionTemplate) : Element =
-    buildSvg (descriptorForTemplate t)
-
-//Fallback icon when no specific kind/template is known.
 let fallback () : Element =
     buildSvg layers
 
-//Eye icon used for the eye badge in the action list and the "new eye"
-//drag source in the panel header.
 let eye () : Element =
     buildSvg view
-
-// Map a string kind name (as seen in PaletteItem.Kind) to an icon.
-// The command palette carries string case names for historical reasons.
-let private descriptorForKindName (name: string) : obj =
-    match name with
-    | "Origin" -> zAxis
-    | "Cylinder" -> db2Database
-    | "Sphere" -> circleOutline
-    | "Box" -> cube
-    | "HalfPlane" -> squareOutline
-    | "Translate" -> moveIcon
-    | "Rotate" -> rotateIcon
-    | "Move" -> moveIcon
-    | "Union" -> joinFull
-    | "Intersect" -> joinInner
-    | "Subtract" -> joinLeft
-    | "Sketch" -> pen
-    | "FromSketch" -> shapeUnite
-    | "Thicken" -> containerImage
-    | "Shell" -> circleDash
-    | "Mesh" -> triangleOutline
-    | _ -> layers
-
-let forKindName (name: string) : Element =
-    buildSvg (descriptorForKindName name)

@@ -231,11 +231,25 @@ let private renderDimensionSection
 
 // ── Top-level overlay ──────────────────────────────────────────────────
 
+let private trySelectedSketchFromView (doc: DocumentView) : ActionSketch option =
+    // SketchBlock selection takes priority over a selected Sketch action.
+    let blockSketch =
+        match doc.SelectedBlockId with
+        | None -> None
+        | Some bid ->
+            doc.Blocks
+            |> List.tryFind (fun b -> b.Id = bid)
+            |> Option.bind (fun b ->
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data -> Some data.Sketch
+                | _ -> None)
+    blockSketch
+
 let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement option =
     if not doc.SketchUi.EditMode then None
     else
-        match doc.SelectedId |> Option.bind (fun id -> doc.Actions |> List.tryFind (fun a -> a.Id = id)) with
-        | Some { Kind = Sketch(_, _, sketch) } ->
+        match trySelectedSketchFromView doc with
+        | Some sketch ->
             let overlay = Dom.el "div" "sketch-authoring-overlay"
             overlay.appendChild (renderToolbar dispatch doc.SketchUi.Tool :> Node) |> ignore
 
@@ -244,7 +258,7 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement option 
             panel.appendChild (renderDimensionSection dispatch doc :> Node) |> ignore
             overlay.appendChild (panel :> Node) |> ignore
             Some overlay
-        | _ -> None
+        | None -> None
 
 let syncOverlay (root: HTMLElement) (dispatch: Message -> unit) (doc: DocumentView) : unit =
     match root.querySelector ".panel-center" with

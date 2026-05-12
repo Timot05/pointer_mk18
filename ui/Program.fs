@@ -18,6 +18,9 @@ let private urlCreateObjectUrl (blob: obj) : string = jsNative
 [<Emit("URL.revokeObjectURL($0)")>]
 let private urlRevokeObjectUrl (url: string) : unit = jsNative
 
+[<Emit("new FileReader()")>]
+let private newFileReader () : obj = jsNative
+
 // --------------------------------------------------------------------------
 // Entry point. Owns:
 //   - the singleton F# editor store (via AppStore)
@@ -29,10 +32,8 @@ let private store = AppStore.store
 
 let private dispatch msg = Store.dispatch store msg
 
-let private getPaletteState () = DocumentPipeline.paletteView store.State
-let private getDocActionCount () =
-    (DocumentPipeline.documentView store.State).Actions.Length
-let private getPaletteOpen () = (getPaletteState ()).IsOpen
+// Block palette state is owned by `BlockList` directly.
+let private getPaletteOpen () = BlockList.isPaletteOpen ()
 
 // --------------------------------------------------------------------------
 // Viewer mount. The F# viewer is now the only viewer; the legacy TS viewer
@@ -54,10 +55,10 @@ let private viewerHost =
 // --------------------------------------------------------------------------
 
 let private onSave () =
-    let model = Editor.serializedModel store.State
-    let json = Fable.Core.JS.JSON.stringify(model, space = 2)
+    let doc = store.State.Doc
+    let json = Fable.Core.JS.JSON.stringify(doc, space = 2)
     let baseName =
-        let trimmed = model.Name.Trim().ToLower()
+        let trimmed = doc.Name.Trim().ToLower()
         if trimmed = "" || trimmed = "untitled" then "pointer-model" else trimmed
     let blob = newBlob [| json :> obj |] {| ``type`` = "application/json" |}
     let url = urlCreateObjectUrl blob
@@ -68,7 +69,7 @@ let private onSave () =
     urlRevokeObjectUrl url
 
 let private onLoad () =
-    let input = document.createElement "input" :?> Browser.Types.HTMLInputElement
+    let input = document.createElement "input" :?> HTMLInputElement
     input.``type`` <- "file"
     input.accept <- "application/json,.json"
     input.addEventListener (
@@ -77,18 +78,23 @@ let private onLoad () =
             let files = input.files
             if files.length > 0 then
                 let file = files.[0]
-                let reader = FileReader.Create()
-                reader.onload <- (fun _ ->
-                    let text : string = unbox reader.result
+                let reader : obj = newFileReader ()
+                reader?onload <- (fun _ ->
+                    let text : string = unbox reader?result
                     try
                         let parsed = Fable.Core.JS.JSON.parse(text)
-                        let model : SerializedModel = unbox parsed
-                        dispatch (LoadModel model)
+                        let doc : Server.Document = unbox parsed
+                        dispatch (ReplaceDocument doc)
                     with ex ->
                         console.error ("Failed to load: " + ex.Message))
-                reader.readAsText(file)
+                reader?readAsText(file) |> ignore
     )
     input.click ()
+
+// `BlockList` is compiled before `MeshExport` so it can't reference it
+// statically; bind the per-block mesh-export hook here, after both are in
+// scope. Runs once at startup.
+BlockList.downloadMeshFor <- MeshExport.downloadBlockStl
 
 // --------------------------------------------------------------------------
 // Render loop.
@@ -101,29 +107,33 @@ let private renderInto (root: Browser.Types.HTMLElement) =
     root.appendChild shell |> ignore
 
 let private actionListSignature (doc: DocumentView) =
-    let actionErrors =
-        doc.Errors
-        |> List.map (fun e -> e.ActionId)
-        |> Set.ofList
-    // Expansion set + the inline action-picker flag both reshape the
-    // action list, so fold them into the signature. EditFocusIdx only
-    // changes row classes but still requires a re-render to apply.
-    let expandedSig = doc.ExpandedActionIds
-    let pickerSig = doc.ActionPickerOpen
-    let focusSig = doc.EditFocusIdx
-    let editingSig = doc.EditingInputField
-    let refPickSig = doc.RefPickIdx
-    doc.Actions
-    |> List.map (fun a ->
-        a.Id,
-        a.Name,
-        a.Visibility,
-        Set.contains a.Id actionErrors)
-    |> fun rows -> sprintf "%A|%b|%d|%A|%d|%A" expandedSig pickerSig focusSig editingSig refPickSig rows
+    // Block-list signature: id, name, body shape, plus selection.
+    // Bodies are summarised so changing a scalar arg or rewiring a ref
+    // triggers the BlockList to re-render the inline input rows.
+    let bodyTag (b: Server.Lang.Notebook.BlockBody) =
+        match b with
+        | Server.Lang.Notebook.NativeBody(name, args) ->
+            let argDigest =
+                args
+                |> Map.toList
+                |> List.map (fun (k, v) ->
+                    match v with
+                    | Server.Lang.Notebook.ArgScalar n -> sprintf "%s=%g" k n
+                    | Server.Lang.Notebook.ArgRef None -> sprintf "%s=-" k
+                    | Server.Lang.Notebook.ArgRef (Some r) -> sprintf "%s=#%d" k r)
+                |> String.concat ","
+            sprintf "%s(%s)" name argDigest
+        | Server.Lang.Notebook.SketchBody _ -> "sketch"
+    let rows = doc.Blocks |> List.map (fun b -> b.Id, b.Name, bodyTag b.Body, b.Visibility, b.ColorIndex)
+    sprintf "%A|%A|%A|%A"
+        doc.SelectedBlockId
+        doc.ExpandedBlockIds
+        doc.EditingBlockRef
+        rows
 
 let private uiSignature (state: EditorState) =
     sprintf
-        "%A|%A|%A|%A|%A|%A|%A|%A|%A|%A"
+        "%A|%A|%A|%A|%A|%A|%A|%A"
         state.SketchEditMode
         state.SketchTool
         state.SelectedTargets
@@ -132,24 +142,19 @@ let private uiSignature (state: EditorState) =
         state.ConstraintPlacementMode
         state.ConstraintPlacementDraft
         state.ConstraintPlacementCursor
-        // Expansion changes reshape the action list but not the
-        // shell; we still include them in the UI signature so Shell
-        // and the panel stay in sync.
-        state.ExpandedActionIds
-        state.ViewerMode
 
 let mutable private lastCompiled = store.State.Compiled
 let mutable private lastSlotValues = store.State.SlotValues
 let mutable private lastUiSignature = uiSignature store.State
 let initialDocView = DocumentPipeline.documentView store.State
 let mutable private lastActionListSignature = actionListSignature initialDocView
-let mutable private lastSelectedId = store.State.Doc.SelectedId
+let mutable private lastSelectedBlockId = store.State.Doc.SelectedBlockId
 
 let private onStateChange (root: Browser.Types.HTMLElement) () =
     let state = store.State
     let compiledChanged = not (obj.ReferenceEquals(lastCompiled, state.Compiled))
     let slotValuesChanged = not (obj.ReferenceEquals(lastSlotValues, state.SlotValues))
-    let selectionChanged = state.Doc.SelectedId <> lastSelectedId
+    let selectionChanged = state.Doc.SelectedBlockId <> lastSelectedBlockId
     let nextUiSignature = uiSignature state
     let uiChanged = nextUiSignature <> lastUiSignature
     let doc = DocumentPipeline.documentView state
@@ -160,17 +165,15 @@ let private onStateChange (root: Browser.Types.HTMLElement) () =
         renderInto root
     else
         if actionListChanged || selectionChanged then
-            ActionList.syncPanel root dispatch doc
+            BlockList.syncPanel root dispatch doc
         if selectionChanged then
             SketchAuthoringPanel.syncOverlay root dispatch doc
-        if slotValuesChanged then
-            ActionList.syncSubtitles root doc
 
     lastCompiled <- state.Compiled
     lastSlotValues <- state.SlotValues
     lastUiSignature <- nextUiSignature
     lastActionListSignature <- nextActionListSignature
-    lastSelectedId <- state.Doc.SelectedId
+    lastSelectedBlockId <- state.Doc.SelectedBlockId
 
 // --------------------------------------------------------------------------
 // Bootstrap.

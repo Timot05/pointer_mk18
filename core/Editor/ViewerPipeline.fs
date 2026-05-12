@@ -2,7 +2,9 @@ namespace Server
 
 // ---------------------------------------------------------------------------
 // ViewerPipeline — projects EditorState into the model the 3D viewer
-// renders. Pure consumer of Editor; never mutates state.
+// renders. Notebook-mode only. Sketch authoring on SketchBlocks is the
+// only live path; the action-graph FieldSurface / Frame chain / field
+// slice render were retired with the action graph.
 // ---------------------------------------------------------------------------
 
 type FrameView =
@@ -14,13 +16,6 @@ type ConstraintLabelPositionView =
       ConstraintIndex: int
       Position: LabelPos }
 
-type FieldSliceView =
-    { SurfaceIndex: int
-      PlaneOrigin: Vec3
-      PlaneX: Vec3
-      PlaneY: Vec3
-      Extent: float }
-
 type ViewerSketchView =
     { Id: string
       Origin: string option
@@ -31,13 +26,10 @@ type SketchLoopsStateView =
     { SketchId: string
       Loops: SketchLoopView list }
 
-// The topology of the model, takes longer to compute
+/// Topology-side viewer projection (slow). Only sketch authoring is
+/// live now; field-surface rendering is retired.
 type ViewerModel =
-    { Surfaces: FieldSurface list
-      FieldWgsl: string option
-      FieldSliceWgsl: string option
-      FieldSurfaceActionIds: string list
-      Sketches: ViewerSketchView list
+    { Sketches: ViewerSketchView list
       NumSlots: int
       SlotIndex:
           {| ActionId: string
@@ -45,10 +37,10 @@ type ViewerModel =
              Slot: int |} list
       Pickables: Pickable list }
 
-// The variable state of the model, fast to compute
+/// Per-frame viewer projection (fast). Sketch entity coords resolved
+/// against the slot table + solver overlay.
 type ViewerState =
     { Params: float array
-      SelectedId: string option
       HoveredTarget: SelectionTarget option
       HighlightedTarget: SelectionTarget option
       DragTarget: SelectionTarget option
@@ -56,17 +48,9 @@ type ViewerState =
       HighlightedTargets: SelectionTarget list
       VisibleDimensionSketchIds: string list
       SketchUi: SketchUiState
-      Frames: FrameView list
-      SketchEditFrames: FrameView list
       SketchTransforms: FrameView list
       SketchLoops: SketchLoopsStateView list
-      FieldSlices: FieldSliceView list
-      Visible: Map<string, bool>
-      ConstraintLabelPositions: ConstraintLabelPositionView list
-      /// Actions whose visibility is VIsosurface — the field-surface
-      /// renderer limits draws to this set.
-      IsosurfaceActionIds: Set<ActionId>
-      Errors: ActionErrorView list }
+      ConstraintLabelPositions: ConstraintLabelPositionView list }
 
 module ViewerPipeline =
 
@@ -102,76 +86,6 @@ module ViewerPipeline =
             | other ->
                 other)
 
-    /// The three orthonormal axes for a cut-plane slice, given a plane key.
-    let private localSliceBasis plane =
-        match plane with
-        | "X" -> { X = 0.0; Y = 1.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }, { X = 1.0; Y = 0.0; Z = 0.0 }
-        | "Y" -> { X = 1.0; Y = 0.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }, { X = 0.0; Y = 1.0; Z = 0.0 }
-        | _ -> { X = 1.0; Y = 0.0; Z = 0.0 }, { X = 0.0; Y = 1.0; Z = 0.0 }, { X = 0.0; Y = 0.0; Z = 1.0 }
-
-    /// Thin shim — the real implementation lives in `Editor` so the
-    /// scene-interaction code can reuse it without creating a circular
-    /// dependency with `ViewerPipeline`.
-    let leadingFieldTransform = Editor.leadingFieldTransform
-
-    /// Slice placement for any action with `VFieldLines` visibility.
-    /// No per-action plane / offset / extent state yet — defaults per
-    /// kind. Will become configurable later.
-    let private DEFAULT_SLICE_PLANE = "Z"
-    let private DEFAULT_SLICE_OFFSET = 0.0
-    let private DEFAULT_SLICE_EXTENT = 20.0
-
-    /// Pick a slice-plane name such that iso-lines of the action's
-    /// distance field render usefully. Most primitives slice through
-    /// the XY plane. A half-plane's distance field is constant along
-    /// any plane perpendicular to its axis (degenerate), so we pick a
-    /// slice plane that *contains* that axis — iso-lines on it run
-    /// perpendicular to the axis, which is what the user sees.
-    let private slicePlaneFor (kind: ActionKind) : string =
-        match kind with
-        | HalfPlane("Z", _, _) -> "X"
-        | HalfPlane _ -> "Z"
-        | _ -> DEFAULT_SLICE_PLANE
-
-    let private activeFieldSlices (state: EditorState) : FieldSliceView list =
-        let surfaceIndexByAction =
-            state.Compiled.Surfaces
-            |> List.mapi (fun index surface -> surface.ActionId, (index, surface.Field))
-            |> Map.ofList
-
-        state.Doc.Actions
-        |> List.choose (fun action ->
-            match action.Visibility with
-            | VFieldLines ->
-                match Map.tryFind action.Id surfaceIndexByAction with
-                | None -> None
-                | Some(surfaceIndex, field) ->
-                    let frame = leadingFieldTransform state field RigidTransform.Identity
-                    let localX, localY, localN = localSliceBasis (slicePlaneFor action.Kind)
-                    let planeX = frame.Rot.Rotate(localX)
-                    let planeY = frame.Rot.Rotate(localY)
-                    let planeN = frame.Rot.Rotate(localN)
-                    let origin = frame.Trans + DEFAULT_SLICE_OFFSET * planeN
-
-                    Some
-                        { SurfaceIndex = surfaceIndex
-                          PlaneOrigin = origin
-                          PlaneX = planeX
-                          PlaneY = planeY
-                          Extent = DEFAULT_SLICE_EXTENT }
-            | _ -> None)
-
-    /// Frame actions that appear before the active sketch, with transforms
-    /// resolved for rendering. Editor exposes the ids only; this rebuilds
-    /// the full FrameView the viewer needs.
-    let private sketchEditFrames (state: EditorState) : FrameView list =
-        Editor.sketchEditFrameIds state
-        |> Set.toList
-        |> List.choose (fun id ->
-            Map.tryFind id state.Compiled.Frames
-            |> Option.map (Frames.foldChain state.Compiled.Slots state.SlotValues)
-            |> Option.map (fun t -> { Id = id; Transform = t }))
-
     let viewerModel (state: EditorState) : ViewerModel =
         let indexList =
             state.Compiled.Slots.Index
@@ -181,58 +95,56 @@ module ViewerPipeline =
                    Path = r.Path
                    Slot = s |})
 
-        let sketches =
-            state.Doc.Actions
-            |> List.choose (fun a ->
-                match a.Kind with
-                | Sketch(origin, plane, sk) ->
-                    let sketchOrigin = Editor.resolveSketchTransform state origin plane
+        let blockSketches =
+            state.Doc.Blocks
+            |> List.choose (fun b ->
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data ->
+                    let sketchOrigin = Editor.resolveSketchTransform state None data.Plane
 
                     let ctx: SketchCompileContext =
                         { SketchOrigin = sketchOrigin
-                          Frames = Editor.resolvedFrames state }
+                          Frames = Map.empty }
 
-                    let graph = SketchCompile.compile sk ctx
+                    let graph = SketchCompile.compile data.Sketch ctx
 
                     Some
-                        { Id = a.Id
-                          Origin = origin
-                          Sketch = sk
+                        { Id = SketchAuthoring.blockSketchId b.Id
+                          Origin = None
+                          Sketch = data.Sketch
                           Graph = graph }
                 | _ -> None)
 
-        { Surfaces = state.Compiled.Surfaces
-          // Raymarcher is retired. Fields kept on the record to avoid a
-          // breaking schema change; always None now.
-          FieldWgsl = None
-          FieldSliceWgsl = None
-          FieldSurfaceActionIds = state.Compiled.Surfaces |> List.map (fun s -> s.ActionId)
-          Sketches = sketches
+        { Sketches = blockSketches
           NumSlots = state.Compiled.Slots.Values.Length
           SlotIndex = indexList
           Pickables = state.Compiled.Pickables }
 
     let viewerState (state: EditorState) : ViewerState =
         let effectiveParams =
-            ((state.SlotValues, state.Doc.Actions)
-             ||> List.fold (fun current action ->
-                 match action.Kind, Map.tryFind action.Id state.SolvedSketchParams with
-                 | Sketch(_, _, sketch), Some solvedLocal ->
-                     SketchSolve.overlaySolvedSketch current state.Compiled.Slots action.Id sketch solvedLocal
-                 | _ ->
-                     current))
+            (state.SlotValues, state.Doc.Blocks)
+            ||> List.fold (fun current b ->
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data ->
+                    let sid = SketchAuthoring.blockSketchId b.Id
+                    match Map.tryFind sid state.SolvedSketchParams with
+                    | Some solvedLocal ->
+                        SketchSolve.overlaySolvedSketch current state.Compiled.Slots sid data.Sketch solvedLocal
+                    | None -> current
+                | _ -> current)
 
-        let sketchLoops =
-            state.Doc.Actions
-            |> List.choose (fun action ->
-                match action.Kind with
-                | Sketch(_, _, sketch) ->
-                    let liveEntities = resolveSketchEntities state.Compiled.Slots effectiveParams action.Id sketch
+        let blockSketchLoops =
+            state.Doc.Blocks
+            |> List.choose (fun b ->
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data ->
+                    let synthId = SketchAuthoring.blockSketchId b.Id
+                    let liveEntities = resolveSketchEntities state.Compiled.Slots effectiveParams synthId data.Sketch
                     let loops =
                         SketchLoops.detectLoops liveEntities
                         |> List.map (fun l -> { Id = l.Id; EntityIds = l.EntityIds })
                     Some
-                        { SketchId = action.Id
+                        { SketchId = synthId
                           Loops = loops }
                 | _ -> None)
 
@@ -252,63 +164,47 @@ module ViewerPipeline =
             | _ -> Editor.belongsToActiveSketch state target
 
         let visibleDimensionSketchIds =
-            match state.SketchEditMode, state.Doc.SelectedId with
-            | true, Some selectedId ->
-                match state.Doc.Actions |> List.tryFind (fun a -> a.Id = selectedId) with
-                | Some { Kind = Sketch _ } -> [ selectedId ]
-                | _ -> []
-            | _ -> []
+            if not state.SketchEditMode then []
+            else
+                match state.Doc.SelectedBlockId with
+                | Some bid ->
+                    state.Doc.Blocks
+                    |> List.tryFind (fun b -> b.Id = bid)
+                    |> Option.bind (fun b ->
+                        match b.Body with
+                        | Server.Lang.Notebook.SketchBody _ ->
+                            Some (SketchAuthoring.blockSketchId bid)
+                        | _ -> None)
+                    |> Option.toList
+                | None -> []
 
-        let frames =
-            state.Doc.Actions
-            |> List.choose (fun a ->
-                match Map.tryFind a.Id state.Compiled.TypeMap with
-                | Some FieldType.Frame ->
-                    Map.tryFind a.Id state.Compiled.Frames
-                    |> Option.map (Frames.foldChain state.Compiled.Slots state.SlotValues)
-                    |> Option.map (fun t -> { Id = a.Id; Transform = t })
-                | _ -> None)
-
-        let sketchTransforms =
-            state.Doc.Actions
-            |> List.choose (fun a ->
-                match a.Kind with
-                | Sketch(origin, plane, _) ->
+        let blockSketchTransforms =
+            state.Doc.Blocks
+            |> List.choose (fun b ->
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data ->
                     Some
-                        { Id = a.Id
-                          Transform = Editor.resolveSketchTransform state origin plane }
+                        { Id = SketchAuthoring.blockSketchId b.Id
+                          Transform = Editor.resolveSketchTransform state None data.Plane }
                 | _ -> None)
-
-        // An action is "visible" iff its Visibility is not VHidden.
-        // Exposed as a lookup table so consumers don't re-scan actions.
-        let visibleByAction =
-            state.Doc.Actions
-            |> List.map (fun a -> a.Id, a.Visibility <> VHidden)
-            |> Map.ofList
-
-        let isosurfaceActionIds =
-            state.Doc.Actions
-            |> List.choose (fun a ->
-                if a.Visibility = VIsosurface then Some a.Id else None)
-            |> Set.ofList
 
         let constraintLabelPositions =
-            state.Doc.Actions
-            |> List.collect (fun a ->
-                match a.Kind with
-                | Sketch(_, _, sk) ->
-                    sk.Constraints
+            state.Doc.Blocks
+            |> List.collect (fun b ->
+                match b.Body with
+                | Server.Lang.Notebook.SketchBody data ->
+                    let sid = SketchAuthoring.blockSketchId b.Id
+                    data.Sketch.Constraints
                     |> List.mapi (fun i c ->
                         SketchConstraint.labelPos c
                         |> Option.map (fun pos ->
-                            { SketchId = a.Id
+                            { SketchId = sid
                               ConstraintIndex = i
                               Position = pos }))
                     |> List.choose id
                 | _ -> [])
 
         { Params = effectiveParams
-          SelectedId = state.Doc.SelectedId
           HoveredTarget = state.HoveredTarget
           HighlightedTarget = state.HoveredTarget |> Option.filter highlightedTargetAllowed
           DragTarget = dragTarget
@@ -316,12 +212,6 @@ module ViewerPipeline =
           HighlightedTargets = state.SelectedTargets |> List.filter highlightedTargetAllowed
           VisibleDimensionSketchIds = visibleDimensionSketchIds
           SketchUi = Editor.sketchUiState state
-          Frames = frames
-          SketchEditFrames = sketchEditFrames state
-          SketchTransforms = sketchTransforms
-          SketchLoops = sketchLoops
-          FieldSlices = activeFieldSlices state
-          Visible = visibleByAction
-          ConstraintLabelPositions = constraintLabelPositions
-          IsosurfaceActionIds = isosurfaceActionIds
-          Errors = Editor.formatErrors state.Compiled.Errors }
+          SketchTransforms = blockSketchTransforms
+          SketchLoops = blockSketchLoops
+          ConstraintLabelPositions = constraintLabelPositions }

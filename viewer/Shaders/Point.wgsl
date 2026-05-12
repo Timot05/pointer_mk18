@@ -9,6 +9,7 @@ struct SketchFrame {
     pos: vec4<f32>,
     x_axis: vec4<f32>,
     y_axis: vec4<f32>,
+    tint: vec4<f32>,
 };
 
 struct Viewport {
@@ -34,6 +35,7 @@ struct VsOut {
     @builtin(position) clip_pos: vec4<f32>,
     @location(0) color: vec4<f32>,
     @location(1) local_pos: vec2<f32>,
+    @location(2) tint: vec4<f32>,
 };
 
 fn project_world(pos: vec3<f32>) -> vec4<f32> {
@@ -46,7 +48,7 @@ fn project_world(pos: vec3<f32>) -> vec4<f32> {
         vec4<f32>(r.z, u.z, -f.z, 0.0),
         vec4<f32>(-dot(r, cam.eye), -dot(u, cam.eye), dot(f, cam.eye), 1.0),
     );
-    let near = 0.001;
+    let near = -1000.0;
     let far = 1000.0;
     let h = cam.view_half_h;
     let w = cam.aspect * h;
@@ -77,11 +79,12 @@ fn vs(quad: QuadIn, instance: InstanceIn) -> VsOut {
         center_clip.w);
     out.color = instance.color;
     out.local_pos = quad.corner;
+    out.tint = frame.tint;
     return out;
 }
 
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     if (dot(in.local_pos, in.local_pos) > 1.0) { discard; }
-    return in.color;
+    return in.color * in.tint;
 }

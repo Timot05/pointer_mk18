@@ -265,6 +265,39 @@ fn gBinary(op: Binary, a: Grad, b: Grad) Grad {
     };
 }
 
+// Primitive (line_segment / circle / bezier_*) via central differences in
+// the LOCAL axis frame, chain-ruled through the outer-axis Grads. Six extra
+// `evalPoint` calls per primitive; cheap enough not to matter at the sizes
+// from-sketch produces, and the result is correctly shaded (without this,
+// the gradient is zero and `cpu_render` falls back to the (0, 1, 0) normal,
+// which renders any from-sketch surface as flat-lit brown).
+fn gPrimitive(ir: *const MathIR, node_id: i32, slots: []const f64, axis: [3]Grad) Grad {
+    const cx = axis[0][0];
+    const cy = axis[1][0];
+    const cz = axis[2][0];
+    const expr_: math_ir.Expr = .{ .id = node_id };
+    const ePoint = struct {
+        fn f(irp: *const MathIR, e: math_ir.Expr, sl: []const f64, px: f32, py: f32, pz: f32) f32 {
+            return @floatCast(eval.evalPoint(irp, e, sl, .{ .x = px, .y = py, .z = pz }));
+        }
+    }.f;
+
+    const v0 = ePoint(ir, expr_, slots, cx, cy, cz);
+
+    const h: f32 = 1.0e-3;
+    const inv_2h: f32 = 1.0 / (2.0 * h);
+    const dcx = (ePoint(ir, expr_, slots, cx + h, cy, cz) - ePoint(ir, expr_, slots, cx - h, cy, cz)) * inv_2h;
+    const dcy = (ePoint(ir, expr_, slots, cx, cy + h, cz) - ePoint(ir, expr_, slots, cx, cy - h, cz)) * inv_2h;
+    const dcz = (ePoint(ir, expr_, slots, cx, cy, cz + h) - ePoint(ir, expr_, slots, cx, cy, cz - h)) * inv_2h;
+
+    return Grad{
+        v0,
+        dcx * axis[0][1] + dcy * axis[1][1] + dcz * axis[2][1],
+        dcx * axis[0][2] + dcy * axis[1][2] + dcz * axis[2][2],
+        dcx * axis[0][3] + dcy * axis[1][3] + dcz * axis[2][3],
+    };
+}
+
 // Intrinsic via central differences in the LOCAL axis frame, then chain-rule
 // through the outer-axis Grads. Six extra intrinsic evals per call; intrinsics
 // are already heavy ops so the relative overhead is small.
@@ -347,6 +380,34 @@ pub fn decodeRegEvalF32(tape: *const RegTape, ir: *const MathIR, slots: []const 
                 const intrinsic = ir.intrinsics[@intCast(aux)];
                 values[dst] = intrinsicF32(ir, intrinsic, slots, axes[ap - 1][0], axes[ap - 1][1], axes[ap - 1][2]);
             },
+            .primitive => {
+                const pp = Vec3{
+                    .x = @floatCast(axes[ap - 1][0]),
+                    .y = @floatCast(axes[ap - 1][1]),
+                    .z = @floatCast(axes[ap - 1][2]),
+                };
+                values[dst] = @floatCast(eval.evalPoint(ir, .{ .id = @intCast(dst) }, slots, pp));
+            },
+            .fold => {
+                const start: usize = @intCast(aux);
+                const count: usize = @intCast(a);
+                if (count == 0) {
+                    values[dst] = 0;
+                } else {
+                    const fop: math_ir.FoldOp = @enumFromInt(b);
+                    var acc = values[@intCast(ir.node_refs[start])];
+                    var i: usize = 1;
+                    while (i < count) : (i += 1) {
+                        const v = values[@intCast(ir.node_refs[start + i])];
+                        acc = switch (fop) {
+                            .min => if (acc < v) acc else v,
+                            .max => if (acc > v) acc else v,
+                            .sum => acc + v,
+                        };
+                    }
+                    values[dst] = acc;
+                }
+            },
             .copy_slot => values[dst] = values[a],
             .return_ => return values[a],
         }
@@ -414,6 +475,29 @@ pub fn decodeRegEvalGrad(tape: *const RegTape, ir: *const MathIR, slots: []const
             .intrinsic => {
                 const intrinsic = ir.intrinsics[@intCast(aux)];
                 values[dst] = gIntrinsic(ir, intrinsic, slots, axes[ap - 1]);
+            },
+            .primitive => {
+                values[dst] = gPrimitive(ir, @intCast(dst), slots, axes[ap - 1]);
+            },
+            .fold => {
+                const start: usize = @intCast(aux);
+                const count: usize = @intCast(a);
+                if (count == 0) {
+                    values[dst] = gConst(0);
+                } else {
+                    const fop: math_ir.FoldOp = @enumFromInt(b);
+                    var acc = values[@intCast(ir.node_refs[start])];
+                    var i: usize = 1;
+                    while (i < count) : (i += 1) {
+                        const v = values[@intCast(ir.node_refs[start + i])];
+                        acc = switch (fop) {
+                            .min => gMin(acc, v),
+                            .max => gMax(acc, v),
+                            .sum => gAdd(acc, v),
+                        };
+                    }
+                    values[dst] = acc;
+                }
             },
             .copy_slot => values[dst] = values[a],
             .return_ => return values[a],
@@ -645,6 +729,37 @@ fn g4Binary(op: Binary, a: Grad4, b: Grad4) Grad4 {
     };
 }
 
+fn g4Primitive(ir: *const MathIR, node_id: i32, slots: []const f64, axis: [3]Grad4) Grad4 {
+    // Per-lane fallback to scalar `gPrimitive`. Same chain-rule via outer
+    // axes as `g4Intrinsic`; the central-diff overhead is per-lane but
+    // amortised over 4 hits per tape walk.
+    var out: Grad4 = undefined;
+    const xv: [4]f32 = axis[0].v;
+    const yv: [4]f32 = axis[1].v;
+    const zv: [4]f32 = axis[2].v;
+    var v_arr: [4]f32 = undefined;
+    var dx_arr: [4]f32 = undefined;
+    var dy_arr: [4]f32 = undefined;
+    var dz_arr: [4]f32 = undefined;
+    inline for (0..4) |i| {
+        const ax_lane: [3]Grad = .{
+            .{ xv[i], axis[0].dx[i], axis[0].dy[i], axis[0].dz[i] },
+            .{ yv[i], axis[1].dx[i], axis[1].dy[i], axis[1].dz[i] },
+            .{ zv[i], axis[2].dx[i], axis[2].dy[i], axis[2].dz[i] },
+        };
+        const r = gPrimitive(ir, node_id, slots, ax_lane);
+        v_arr[i] = r[0];
+        dx_arr[i] = r[1];
+        dy_arr[i] = r[2];
+        dz_arr[i] = r[3];
+    }
+    out.v = v_arr;
+    out.dx = dx_arr;
+    out.dy = dy_arr;
+    out.dz = dz_arr;
+    return out;
+}
+
 fn g4Intrinsic(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, axis: [3]Grad4) Grad4 {
     // 4 lanes of (x, y, z) → 4 lanes of grad, each computed via per-lane
     // central differences (same as scalar grad).
@@ -744,6 +859,29 @@ pub fn decodeRegEvalGrad4(
             .intrinsic => {
                 const intrinsic = ir.intrinsics[@intCast(aux)];
                 values[dst] = g4Intrinsic(ir, intrinsic, slots, axes[ap - 1]);
+            },
+            .primitive => {
+                values[dst] = g4Primitive(ir, @intCast(dst), slots, axes[ap - 1]);
+            },
+            .fold => {
+                const start: usize = @intCast(aux);
+                const count: usize = @intCast(a);
+                if (count == 0) {
+                    values[dst] = .{ .v = g4Zero(), .dx = g4Zero(), .dy = g4Zero(), .dz = g4Zero() };
+                } else {
+                    const fop: math_ir.FoldOp = @enumFromInt(b);
+                    var acc = values[@intCast(ir.node_refs[start])];
+                    var i: usize = 1;
+                    while (i < count) : (i += 1) {
+                        const v = values[@intCast(ir.node_refs[start + i])];
+                        acc = switch (fop) {
+                            .min => g4Min(acc, v),
+                            .max => g4Max(acc, v),
+                            .sum => g4Add(acc, v),
+                        };
+                    }
+                    values[dst] = acc;
+                }
             },
             .copy_slot => values[dst] = values[a],
             .return_ => return values[a],

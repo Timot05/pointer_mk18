@@ -46,7 +46,9 @@ type Exports =
     abstract camera_buffer_ptr: unit -> int
     abstract set_camera: unit -> int
     abstract gbuffer_ptr: unit -> int
+    abstract palette_buffer_ptr: unit -> int
     abstract mesh_build: halfExtent: float * maxDepth: int -> int
+    abstract mesh_build_auto: maxDepth: int -> int
     abstract mesh_vertices_ptr: unit -> int
     abstract mesh_vertices_len: unit -> int
     abstract mesh_triangles_ptr: unit -> int
@@ -111,6 +113,12 @@ let setCamera (x: Exports) (values: float32[]) : int =
 /// pass directly to `device.queue.writeTexture`.
 let gbufferView (x: Exports) (w: int) (h: int) : obj =
     f32View x.memory?buffer (x.gbuffer_ptr ()) (w * h * 4)
+
+/// View into the kernel's per-pixel palette idx buffer (one u32 per
+/// tile pixel). Uploaded as an `r32uint` texture; `Background.wgsl`
+/// uses it to pick the surface base color.
+let paletteView (x: Exports) (w: int) (h: int) : obj =
+    u32View x.memory?buffer (x.palette_buffer_ptr ()) (w * h)
 
 /// Copy mesh vertex storage out of WASM as a flat float array:
 /// `[x0; y0; z0; x1; y1; z1; ...]`.

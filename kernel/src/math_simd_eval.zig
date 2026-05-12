@@ -51,6 +51,66 @@ fn binaryPerLane(op: Binary, a: F4, b: F4) F4 {
     return out;
 }
 
+/// SIMD-4 line-segment unsigned distance. Reads endpoint child values
+/// directly out of the tape's `values` array — they were SIMD-evaluated
+/// earlier in the tape walk, so the four lanes already carry the right
+/// per-lane coords for free. ~12 SIMD ops vs four scalar `evalPoint` tree
+/// walks (the previous per-lane fallback).
+inline fn primLineSegmentF4(ir: *const MathIR, ref_start: usize, values: []const F4, qx: F4, qy: F4) F4 {
+    const p0x = values[@intCast(ir.node_refs[ref_start + 0])];
+    const p0y = values[@intCast(ir.node_refs[ref_start + 1])];
+    const p1x = values[@intCast(ir.node_refs[ref_start + 2])];
+    const p1y = values[@intCast(ir.node_refs[ref_start + 3])];
+    const ex = p1x - p0x;
+    const ey = p1y - p0y;
+    const wx = qx - p0x;
+    const wy = qy - p0y;
+    const dot_we = wx * ex + wy * ey;
+    const dot_ee = ex * ex + ey * ey + splat(1.0e-20);
+    const one: F4 = @splat(1.0);
+    const zero: F4 = @splat(0.0);
+    const t = @max(zero, @min(one, dot_we / dot_ee));
+    const dx = wx - t * ex;
+    const dy = wy - t * ey;
+    return fSqrt(dx * dx + dy * dy);
+}
+
+/// SIMD-4 circle (curve) unsigned distance: `||p - c| - r|`.
+inline fn primCircleF4(ir: *const MathIR, ref_start: usize, values: []const F4, qx: F4, qy: F4) F4 {
+    const cx = values[@intCast(ir.node_refs[ref_start + 0])];
+    const cy = values[@intCast(ir.node_refs[ref_start + 1])];
+    const r = values[@intCast(ir.node_refs[ref_start + 2])];
+    const dx = qx - cx;
+    const dy = qy - cy;
+    const d = fSqrt(dx * dx + dy * dy);
+    return fAbs(d - r);
+}
+
+inline fn planeAxesF4(ax: [3]F4, plane: i32) [2]F4 {
+    return switch (plane) {
+        0 => .{ ax[0], ax[1] }, // XY
+        1 => .{ ax[0], ax[2] }, // XZ
+        2 => .{ ax[1], ax[2] }, // YZ
+        else => .{ ax[0], ax[1] },
+    };
+}
+
+fn primitivePerLane(ir: *const MathIR, node_id: i32, slots: []const f64, ax: [3]F4) F4 {
+    const xs: [4]f32 = ax[0];
+    const ys: [4]f32 = ax[1];
+    const zs: [4]f32 = ax[2];
+    var vs: [4]f32 = undefined;
+    inline for (0..4) |k| {
+        const pp = Vec3{
+            .x = @floatCast(xs[k]),
+            .y = @floatCast(ys[k]),
+            .z = @floatCast(zs[k]),
+        };
+        vs[k] = @floatCast(eval.evalPoint(ir, .{ .id = node_id }, slots, pp));
+    }
+    return @as(@Vector(4, f32), vs);
+}
+
 fn intrinsicPerLane(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, x: F4, y: F4, z: F4) F4 {
     var out: [4]f32 = undefined;
     const xv: [4]f32 = x;
@@ -200,6 +260,44 @@ pub fn decodeRegEvalF4(
             .intrinsic => {
                 const intrinsic = ir.intrinsics[@intCast(aux)];
                 values[dst] = intrinsicPerLane(ir, intrinsic, slots, axes[ap - 1][0], axes[ap - 1][1], axes[ap - 1][2]);
+            },
+            .primitive => {
+                // Fast SIMD path for the two common kinds (line_segment,
+                // circle). Bezier/arc fall back to per-lane scalar — their
+                // evaluators do iterative work (Newton, etc.) that doesn't
+                // vectorise cleanly. The fast path is the per-pixel hot
+                // loop for from-sketch fields; with the scalar fallback in
+                // place for every primitive, each F4 eval did four scalar
+                // tree walks per primitive, swamping the leaf scan.
+                const node = ir.nodes[@intCast(dst)];
+                const plane = @divTrunc(node.op, 2);
+                const q = planeAxesF4(axes[ap - 1], plane);
+                const ref_start = @as(usize, @intCast(node.a));
+                values[dst] = switch (node.kind) {
+                    .line_segment => primLineSegmentF4(ir, ref_start, values, q[0], q[1]),
+                    .circle => primCircleF4(ir, ref_start, values, q[0], q[1]),
+                    else => primitivePerLane(ir, @intCast(dst), slots, axes[ap - 1]),
+                };
+            },
+            .fold => {
+                const start: usize = @intCast(aux);
+                const count: usize = @intCast(a);
+                if (count == 0) {
+                    values[dst] = @splat(0);
+                } else {
+                    const fop: math_ir.FoldOp = @enumFromInt(b);
+                    var acc = values[@intCast(ir.node_refs[start])];
+                    var i: usize = 1;
+                    while (i < count) : (i += 1) {
+                        const v = values[@intCast(ir.node_refs[start + i])];
+                        acc = switch (fop) {
+                            .min => @min(acc, v),
+                            .max => @max(acc, v),
+                            .sum => acc + v,
+                        };
+                    }
+                    values[dst] = acc;
+                }
             },
             .copy_slot => values[dst] = values[a],
             .return_ => return values[a],

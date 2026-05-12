@@ -47,15 +47,20 @@ pub fn main(args: std.process.Init) !void {
 
     var pixels: [W * H]u32 = undefined;
     var gbuffer: [W * H * 4]f32 = undefined;
+    var palette: [W * H]u32 = undefined;
 
     cpu_render.render(
         pixels[0..],
         gbuffer[0..],
+        palette[0..],
         W, H,
         0, 0, W, H,
         &tape,
         &scene.ir,
         scene.slots[0..],
+        &.{},
+        &.{},
+        &.{},
         1.5,
         0.85,
         0.5,

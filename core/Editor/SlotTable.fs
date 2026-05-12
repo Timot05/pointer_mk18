@@ -14,6 +14,9 @@ type Slot = int
 
 type SlotRef = { ActionId: ActionId; Path: string }
 
+/// 2D slot point — used by sketch primitives in Pickable / BlockCompile.
+type SlotPt2 = { XSlot: Slot; YSlot: Slot }
+
 type SlotTable =
     { Values: float array
       Index: Map<SlotRef, Slot> }

@@ -14,6 +14,9 @@ let angleDoc () =
           Constraints = [] }
     { Name = "angle"
       SelectedId = Some "sketchA"
+      Blocks = []
+      NextBlockId = 0
+      SelectedBlockId = None
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
           { Id = "sketchA"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }
@@ -28,6 +31,9 @@ let arcDoc () =
           Constraints = [] }
     { Name = "arc"
       SelectedId = Some "sketchArc"
+      Blocks = []
+      NextBlockId = 0
+      SelectedBlockId = None
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
           { Id = "sketchArc"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }
@@ -45,6 +51,9 @@ let tangentArcDoc () =
           Constraints = [] }
     { Name = "tangent-arc"
       SelectedId = Some "sketchT"
+      Blocks = []
+      NextBlockId = 0
+      SelectedBlockId = None
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
           { Id = "sketchT"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }
@@ -61,6 +70,9 @@ let curveTangentDoc () =
           Constraints = [] }
     { Name = "curve-tangent"
       SelectedId = Some "sketchCT"
+      Blocks = []
+      NextBlockId = 0
+      SelectedBlockId = None
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
           { Id = "sketchCT"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }
@@ -74,6 +86,9 @@ let frameConstraintDoc () =
           Constraints = [] }
     { Name = "frame-constraints"
       SelectedId = Some "sketchF"
+      Blocks = []
+      NextBlockId = 0
+      SelectedBlockId = None
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
           { Id = "f1"; Name = None; Kind = Translate(Some "origin", 5.0, 0.0, 0.0); Visibility = VVisible }
@@ -87,6 +102,9 @@ let pendingPlacementDoc () =
           Constraints = [] }
     { Name = "pending-placement"
       SelectedId = Some "sketchP"
+      Blocks = []
+      NextBlockId = 0
+      SelectedBlockId = None
       Actions =
         [ { Id = "origin"; Name = None; Kind = Origin; Visibility = VVisible }
           { Id = "sketchP"; Name = None; Kind = Sketch(Some "origin", XY, sketch); Visibility = VVisible } ] }

@@ -27,6 +27,18 @@ pub const Op = enum(u8) {
     enter_remap_affine,
     exit_remap,
     intrinsic,
+    /// Variadic fold. `aux` = node-refs start index, `src_a` (cast u16→i16)
+    /// holds the child count, `src_b` holds the FoldOp discriminator.
+    /// Reads each child's value from `values[ir.node_refs[start + i]]`
+    /// and folds them; writes result to `values[dst]`.
+    fold,
+    /// Sketch-primitive node (LineSegment/Circle/Bezier*/ArcCenter).
+    /// `dst` is the primitive's node id; the handler delegates to
+    /// `math_eval.evalPoint` / `evalInterval` for that node, which reads
+    /// the node's `op` (plane + flags) and `node_refs` window directly.
+    /// We don't carry the children on the tape because the primitive
+    /// evaluator already knows how to walk them through `ir`.
+    primitive,
     copy_slot,
     return_,
 };
@@ -148,6 +160,34 @@ fn encodeNode(tape: *RegTape, ir: *const MathIR, node_id: u16, visited: *[max_no
         },
         .intrinsic => {
             try tape.emit(.intrinsic, node_id, 0, 0, 0, node.a);
+        },
+        .fold => {
+            // Encode every child first so their values land in `values[]`.
+            const start: usize = @intCast(node.a);
+            const count: usize = @intCast(node.b);
+            var i: usize = 0;
+            while (i < count) : (i += 1) {
+                const child_id = ir.node_refs[start + i];
+                try encodeNode(tape, ir, @intCast(child_id), visited);
+            }
+            // src_a carries the child count, src_b the FoldOp; aux carries
+            // the node-refs start index. Decoders read children via
+            // `values[ir.node_refs[start + i]]`.
+            try tape.emit(.fold, node_id, @intCast(count), @intCast(node.op), 0, node.a);
+        },
+        .line_segment, .circle, .bezier_quadratic, .bezier_cubic, .arc_center => {
+            // Children get encoded for liveness/shared-subexpression
+            // hygiene, but the tape op itself delegates to `evalPoint`
+            // for the primitive's node so distance code lives in one
+            // place.
+            const start: usize = @intCast(node.a);
+            const count: usize = @intCast(node.b);
+            var i: usize = 0;
+            while (i < count) : (i += 1) {
+                const child_id = ir.node_refs[start + i];
+                try encodeNode(tape, ir, @intCast(child_id), visited);
+            }
+            try tape.emit(.primitive, node_id, 0, 0, 0, 0);
         },
     }
 }
@@ -283,8 +323,20 @@ pub fn simplifyTape(orig: *const RegTape, ir: *const MathIR, trace: []const Choi
                     live[f.b] = true;
                 }
             },
-            .load_x, .load_y, .load_z, .load_slot, .load_const, .intrinsic => {
+            .load_x, .load_y, .load_z, .load_slot, .load_const, .intrinsic, .primitive => {
                 if (live[f.dst]) keep[j] = true;
+            },
+            .fold => {
+                if (live[f.dst]) {
+                    keep[j] = true;
+                    const start: usize = @intCast(f.aux);
+                    const count: usize = @intCast(f.a);
+                    var k: usize = 0;
+                    while (k < count) : (k += 1) {
+                        const child_id = ir.node_refs[start + k];
+                        live[@intCast(child_id)] = true;
+                    }
+                }
             },
             .return_ => {},
         }
@@ -393,11 +445,49 @@ pub fn decodeRegEvalInterval(tape: *const RegTape, ir: *const MathIR, slots: []c
                     values[dst] = eval.interval(value - radius, value + radius);
                 }
             },
+            .fold => values[dst] = foldInterval(ir, values[0..], a, b, aux),
+            .primitive => values[dst] = eval.evalInterval(ir, .{ .id = @intCast(dst) }, slots, axes[ap - 1]),
             .copy_slot => values[dst] = values[a],
             .return_ => return values[a],
         }
     }
     return eval.unknown();
+}
+
+fn foldPointTape(ir: *const MathIR, values: []const f64, count_u16: u16, op_u16: u16, aux: i32) f64 {
+    const start: usize = @intCast(aux);
+    const count: usize = @intCast(count_u16);
+    if (count == 0) return 0.0;
+    const fop: math_ir.FoldOp = @enumFromInt(op_u16);
+    var acc = values[@intCast(ir.node_refs[start])];
+    var i: usize = 1;
+    while (i < count) : (i += 1) {
+        const v = values[@intCast(ir.node_refs[start + i])];
+        acc = switch (fop) {
+            .min => if (acc < v) acc else v,
+            .max => if (acc > v) acc else v,
+            .sum => acc + v,
+        };
+    }
+    return acc;
+}
+
+fn foldInterval(ir: *const MathIR, values: []const Interval, count_u16: u16, op_u16: u16, aux: i32) Interval {
+    const start: usize = @intCast(aux);
+    const count: usize = @intCast(count_u16);
+    if (count == 0) return eval.singleton(0.0);
+    const fop: math_ir.FoldOp = @enumFromInt(op_u16);
+    var acc = values[@intCast(ir.node_refs[start])];
+    var i: usize = 1;
+    while (i < count) : (i += 1) {
+        const v = values[@intCast(ir.node_refs[start + i])];
+        acc = switch (fop) {
+            .min => intervalMin(acc, v),
+            .max => intervalMax(acc, v),
+            .sum => eval.iadd(acc, v),
+        };
+    }
+    return acc;
 }
 
 pub fn decodeRegEvalIntervalWithTrace(tape: *const RegTape, ir: *const MathIR, slots: []const f64, box: Box3, trace: []Choice) Interval {
@@ -509,6 +599,8 @@ pub fn decodeRegEvalIntervalWithTrace(tape: *const RegTape, ir: *const MathIR, s
                     values[dst] = eval.interval(value - radius, value + radius);
                 }
             },
+            .fold => values[dst] = foldInterval(ir, values[0..], a, b, aux),
+            .primitive => values[dst] = eval.evalInterval(ir, .{ .id = @intCast(dst) }, slots, axes[ap - 1]),
             .copy_slot => values[dst] = values[a],
             .return_ => return values[a],
         }
@@ -578,6 +670,8 @@ pub fn decodeRegEvalWith(tape: *const RegTape, ir: *const MathIR, slots: []const
                 const intrinsic = ir.intrinsics[@intCast(aux)];
                 values[dst] = eval.evalIntrinsicPoint(ir, intrinsic, slots, axes[ap - 1]);
             },
+            .fold => values[dst] = foldPointTape(ir, values[0..], a, b, aux),
+            .primitive => values[dst] = eval.evalPoint(ir, .{ .id = @intCast(dst) }, slots, axes[ap - 1]),
             .copy_slot => values[dst] = values[a],
             .return_ => return values[a],
         }
@@ -642,6 +736,8 @@ pub fn decodeRegEval(tape: *const RegTape, ir: *const MathIR, slots: []const f64
                 const intrinsic = ir.intrinsics[@intCast(aux)];
                 values[dst] = eval.evalIntrinsicPoint(ir, intrinsic, slots, axes[ap - 1]);
             },
+            .fold => values[dst] = foldPointTape(ir, values[0..], a, b, aux),
+            .primitive => values[dst] = eval.evalPoint(ir, .{ .id = @intCast(dst) }, slots, axes[ap - 1]),
             .copy_slot => values[dst] = values[a],
             .return_ => return values[a],
         }

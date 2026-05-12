@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const m = @import("math_domain.zig");
+const decode = @import("math_ir_decode.zig");
 
 const RegTape = m.RegTape;
 const MathIR = m.MathIR;
@@ -63,12 +64,19 @@ const NEG_LIGHT_DIR: [3]f32 = .{ -0.35, -0.55, 0.75 }; // pre-normalized
 /// stride). Pass `tile_x = 0, tile_y = 0, tile_w = full_w, tile_h = full_h`
 /// to render the entire image.
 ///
+/// `view_tapes` / `view_palettes` / `view_kinds` (paired by index)
+/// carry per-block surfaces. At each hit pixel the renderer evaluates
+/// every view's SDF at the hit point and picks the smallest as the
+/// winning block; its palette index + kind drive `shade()`. Empty
+/// slices fall back to the default colour (palette index 0, kind 0).
+///
 /// Camera math (view_half_w/h, ray directions) uses `full_w × full_h` so
 /// pixels render the same regardless of which tile they belong to —
 /// adjacent tiles produce a seamless image when composited.
 pub fn render(
     out_pixels: []u32,
     out_gbuffer: []f32,
+    out_palette: []u32,
     full_w: u32,
     full_h: u32,
     tile_x: u32,
@@ -78,6 +86,9 @@ pub fn render(
     tape: *const RegTape,
     ir: *const MathIR,
     slots: []const f64,
+    view_tapes: []const RegTape,
+    view_palettes: []const u32,
+    view_kinds: []const u32,
     view_half_w: f32,
     view_half_h: f32,
     near: f32,
@@ -87,10 +98,13 @@ pub fn render(
     const tile_total: usize = @as(usize, tile_w) * @as(usize, tile_h);
     std.debug.assert(out_pixels.len >= tile_total);
     std.debug.assert(out_gbuffer.len >= tile_total * 4);
+    std.debug.assert(out_palette.len >= tile_total);
     std.debug.assert(tile_x + tile_w <= full_w);
     std.debug.assert(tile_y + tile_h <= full_h);
+    std.debug.assert(view_tapes.len == view_palettes.len);
+    std.debug.assert(view_tapes.len == view_kinds.len);
 
-    initBuffers(out_pixels, out_gbuffer, tile_total);
+    initBuffers(out_pixels, out_gbuffer, out_palette, tile_total);
 
     const pixel_world = @min(
         2.0 * view_half_w / @as(f32, @floatFromInt(full_w)),
@@ -102,6 +116,7 @@ pub fn render(
     var ctx = RenderCtx{
         .out_pixels = out_pixels,
         .out_gbuffer = out_gbuffer,
+        .out_palette = out_palette,
         .full_w = full_w,
         .full_h = full_h,
         .tile_x = tile_x,
@@ -110,6 +125,9 @@ pub fn render(
         .tile_h = tile_h,
         .ir = ir,
         .slots = slots,
+        .view_tapes = view_tapes,
+        .view_palettes = view_palettes,
+        .view_kinds = view_kinds,
         .view_half_w = view_half_w,
         .view_half_h = view_half_h,
         .near = near,
@@ -144,6 +162,10 @@ pub fn render(
 const RenderCtx = struct {
     out_pixels: []u32,
     out_gbuffer: []f32,
+    // Per-pixel palette index, sampled by `Background.wgsl` to pick the
+    // base color. Each entry is the palette idx of the winning view at
+    // that pixel (or `INVALID_PALETTE` for miss/background pixels).
+    out_palette: []u32,
     full_w: u32,
     full_h: u32,
     tile_x: u32,
@@ -152,6 +174,9 @@ const RenderCtx = struct {
     tile_h: u32,
     ir: *const MathIR,
     slots: []const f64,
+    view_tapes: []const RegTape,
+    view_palettes: []const u32,
+    view_kinds: []const u32,
     view_half_w: f32,
     view_half_h: f32,
     near: f32,
@@ -166,7 +191,12 @@ inline fn outputIdx(ctx: *const RenderCtx, px: u32, py: u32) usize {
     return @as(usize, py - ctx.tile_y) * @as(usize, ctx.tile_w) + @as(usize, px - ctx.tile_x);
 }
 
-fn initBuffers(pixels: []u32, gbuffer: []f32, total: usize) void {
+/// Reserved palette idx for miss / background pixels (no view won). The
+/// fragment shader treats this as "use the fallback color" rather than
+/// indexing into the palette table.
+pub const INVALID_PALETTE: u32 = 0xFFFFFFFF;
+
+fn initBuffers(pixels: []u32, gbuffer: []f32, palette: []u32, total: usize) void {
     const inf = std.math.inf(f32);
     var i: usize = 0;
     while (i < total) : (i += 1) {
@@ -175,6 +205,7 @@ fn initBuffers(pixels: []u32, gbuffer: []f32, total: usize) void {
         gbuffer[i * 4 + 2] = 0;
         gbuffer[i * 4 + 3] = inf;
         pixels[i] = packRGBA(20, 22, 28, 255);
+        palette[i] = INVALID_PALETTE;
     }
 }
 
@@ -260,6 +291,46 @@ fn renderTileRecurse(
     if (bounds.lo > 0.0) return;
     if (bounds.hi < 0.0) return;
 
+    // Sphere-tracing fallback. The interval check above is the cheap
+    // bound, but for SDFs like the closed-sketch signed distance
+    // (`unsigned * (-compare(|winding|, π))`) it's always loose:
+    // `[+pos_lo, +pos_hi] * [-1, +1]` collapses to `[-pos_hi, +pos_hi]`
+    // for every tile, no matter how far from the surface. Without this
+    // additional check the recursion descends to per-pixel level over
+    // the entire viewport — correct but monstrously slow.
+    //
+    // For a Lipschitz-1 SDF, `|sdf(center)| > tile_radius` is a sound
+    // "surface not in tile" predicate. But some pipelines aren't
+    // Lipschitz-1 — `wing-remap-preview`'s `twoBody` remap divides by
+    // `trailingX - leadingX`, amplifying gradients near the wing tip
+    // by ~1/clearance. Pruning by `tile_radius` alone there would
+    // falsely skip tiles that actually contain surface.
+    //
+    // We compute the gradient analytically at the tile center via
+    // `decodeRegEvalGrad` (one tape walk that yields value + ∂x∂y∂z
+    // in one go) and use `|∇sdf|` as the local Lipschitz estimate.
+    // For Lipschitz-1 SDFs this lands at ≈ 1 and reproduces the simple
+    // `|sdf| > radius` check; for warped SDFs it scales up
+    // automatically. Still a local estimate — the gradient elsewhere
+    // in the tile may be larger — but it's strictly more accurate than
+    // forward-difference probes at the same cost, and is the analytical
+    // counterpart of the same idea.
+    const u_c = 0.5 * (u_lo + u_hi);
+    const v_c = 0.5 * (v_lo + v_hi);
+    const t_c = 0.5 * (t_lo + t_hi);
+    const half_u = 0.5 * (u_hi - u_lo);
+    const half_v = 0.5 * (v_hi - v_lo);
+    const half_t = 0.5 * (t_hi - t_lo);
+    const tile_radius = @sqrt(half_u * half_u + half_v * half_v + half_t * half_t);
+    const center_grad = m.decodeRegEvalGrad(tape, ctx.ir, ctx.slots, .{ .x = u_c, .y = v_c, .z = t_c });
+    const center_val = center_grad[0];
+    const gx = center_grad[1];
+    const gy = center_grad[2];
+    const gz = center_grad[3];
+    const grad_mag = @sqrt(gx * gx + gy * gy + gz * gz);
+    const lipschitz = @max(@as(f32, 1.0), grad_mag);
+    if (@abs(center_val) > tile_radius * lipschitz) return;
+
     if (level == FINEST_TILE_LEVEL) {
         if (ctx.max_level > FINEST_TILE_LEVEL) {
             // PER_PIXEL_LEVEL: scan per-pixel only. Each ray gets its own
@@ -343,7 +414,14 @@ fn stampTileBlock(
     const t_c = 0.5 * (t_lo + t_hi);
 
     // One Grad eval at the tile center → value + analytical normal.
+    //
+    // No sphere-tracing-style guard here. `renderTileRecurse` already
+    // ran a Lipschitz-scaled `|sdf| > radius * lipschitz` check before
+    // descending to this tile; duplicating a stricter Lipschitz-1 check
+    // here would over-prune warped SDFs (visible as missing patches on
+    // the wing surface).
     const g = m.decodeRegEvalGrad(tape, ctx.ir, ctx.slots, .{ .x = u_c, .y = v_c, .z = t_c });
+
     const gx = g[1];
     const gy = g[2];
     const gz = g[3];
@@ -356,7 +434,8 @@ fn stampTileBlock(
         ny = gy / gmag;
         nz = gz / gmag;
     }
-    const color = shade(nx, ny, nz);
+    const palette = pickViewPalette(ctx, u_c, v_c, t_c);
+    const color = shade(palette, nx, ny, nz);
 
     var py: u32 = py_lo;
     while (py < py_hi) : (py += 1) {
@@ -372,6 +451,7 @@ fn stampTileBlock(
                 ctx.out_gbuffer[idx * 4 + 2] = nz;
                 ctx.out_gbuffer[idx * 4 + 3] = t_c;
                 ctx.out_pixels[idx] = color;
+                ctx.out_palette[idx] = palette;
             }
         }
     }
@@ -446,6 +526,10 @@ fn emitLeafSamples(
                 u_vec, v_vec, hit_t,
                 grad4_slots[0..],
             );
+            // F4 tag eval — one batched eval per view tape, then take
+            // the per-lane min. Lanes that didn't hit produce garbage
+            // tags but the per-lane write below skips them.
+            const palette4 = pickViewPaletteF4(ctx, u_vec, v_vec, hit_t);
             const dx_arr: [4]f32 = grad4.dx;
             const dy_arr: [4]f32 = grad4.dy;
             const dz_arr: [4]f32 = grad4.dz;
@@ -471,17 +555,77 @@ fn emitLeafSamples(
                 ctx.out_gbuffer[idx * 4 + 1] = ny;
                 ctx.out_gbuffer[idx * 4 + 2] = nz_n;
                 ctx.out_gbuffer[idx * 4 + 3] = t_hit;
-                ctx.out_pixels[idx] = shade(nx, ny, nz_n);
+                ctx.out_pixels[idx] = shade(palette4[l], nx, ny, nz_n);
+                ctx.out_palette[idx] = palette4[l];
             }
         }
     }
 }
 
-inline fn shade(nx: f32, ny: f32, nz: f32) u32 {
+/// Roadrunner field-colour palette indexed by `View.palette_idx`.
+///
+/// Tuples are (base_r, base_g, base_b, lit_r, lit_g, lit_b) — base is
+/// the ambient floor; lit is the fully-illuminated tint. Diffuse lerps
+/// between the two.
+const PALETTE: [9][6]f32 = .{
+    .{ 0.286, 0.374, 0.431, 0.522, 0.682, 0.784 }, // 0: #85AEC8
+    .{ 0.113, 0.063, 0.269, 0.204, 0.114, 0.486 }, // 1: #341D7C
+    .{ 0.518, 0.400, 0.075, 0.945, 0.729, 0.137 }, // 2: #F1BA23
+    .{ 0.550, 0.550, 0.550, 1.000, 1.000, 1.000 }, // 3: #FFFFFF
+    .{ 0.371, 0.220, 0.043, 0.675, 0.400, 0.078 }, // 4: #AC6614
+    .{ 0.492, 0.462, 0.378, 0.894, 0.839, 0.686 }, // 5: #E4D6AF
+    .{ 0.271, 0.216, 0.000, 0.490, 0.392, 0.000 }, // 6: #7D6400
+    .{ 0.550, 0.550, 0.367, 1.000, 1.000, 0.667 }, // 7: #FFFFAA
+    .{ 0.451, 0.000, 0.011, 0.820, 0.000, 0.020 }, // 8: #D10005
+};
+
+inline fn shade(palette_idx: u32, nx: f32, ny: f32, nz: f32) u32 {
     const ldot = nx * NEG_LIGHT_DIR[0] + ny * NEG_LIGHT_DIR[1] + nz * NEG_LIGHT_DIR[2];
     const diffuse = std.math.clamp(ldot * 0.75 + 0.25, 0.0, 1.0);
-    const r = 0.35 + 0.35 * diffuse;
-    const g = 0.45 + 0.40 * diffuse;
-    const b = 0.55 + 0.35 * diffuse;
+    const c = PALETTE[palette_idx % PALETTE.len];
+    const r = c[0] + (c[3] - c[0]) * diffuse;
+    const g = c[1] + (c[4] - c[1]) * diffuse;
+    const b = c[2] + (c[5] - c[2]) * diffuse;
     return packRGBA(colorByte(r), colorByte(g), colorByte(b), 255);
+}
+
+/// Pick the winning view's palette index for a hit at `(u, v, t)` in
+/// camera-local space. Evaluates each view tape's SDF and returns the
+/// palette index with the smallest value. Returns 0 (default colour)
+/// when no views were supplied. `view_kinds` is unused here — the
+/// kernel renders every non-hidden block as a surface; per-kind
+/// overlays (field lines, etc.) are drawn additively by the F# viewer.
+inline fn pickViewPalette(ctx: *const RenderCtx, u: f32, v: f32, t: f32) u32 {
+    if (ctx.view_tapes.len == 0) return 0;
+    var best_val: f32 = std.math.inf(f32);
+    var best_palette: u32 = 0;
+    var i: usize = 0;
+    while (i < ctx.view_tapes.len) : (i += 1) {
+        const val = m.decodeRegEvalF32(&ctx.view_tapes[i], ctx.ir, ctx.slots, .{ .x = u, .y = v, .z = t });
+        if (val < best_val) {
+            best_val = val;
+            best_palette = ctx.view_palettes[i];
+        }
+    }
+    return best_palette;
+}
+
+/// 4-lane variant — runs each view tape with `decodeRegEvalF4` and
+/// returns the per-lane winning palette indices.
+inline fn pickViewPaletteF4(ctx: *const RenderCtx, u: F4, v: F4, t: F4) [4]u32 {
+    var out: [4]u32 = .{ 0, 0, 0, 0 };
+    if (ctx.view_tapes.len == 0) return out;
+    var best_val: F4 = @splat(std.math.inf(f32));
+    var i: usize = 0;
+    while (i < ctx.view_tapes.len) : (i += 1) {
+        const val = m.decodeRegEvalF4(&ctx.view_tapes[i], ctx.ir, ctx.slots, u, v, t, simd_slots[0..]);
+        const closer: @Vector(4, bool) = val < best_val;
+        best_val = @select(f32, closer, val, best_val);
+        const palette = ctx.view_palettes[i];
+        const closer_arr: [4]bool = closer;
+        inline for (0..4) |l| {
+            if (closer_arr[l]) out[l] = palette;
+        }
+    }
+    return out;
 }

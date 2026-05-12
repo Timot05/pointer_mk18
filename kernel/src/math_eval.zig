@@ -9,12 +9,12 @@ const Binary = math_ir.Binary;
 const Expr = math_ir.Expr;
 const Vec2 = math_ir.Vec2;
 const Vec3 = math_ir.Vec3;
-const SlotPoint2 = math_ir.SlotPoint2;
 const Interval = math_ir.Interval;
 const Box3 = math_ir.Box3;
 const MathIR = math_ir.MathIR;
-const SketchPrimitive = math_ir.SketchPrimitive;
 const Intrinsic = math_ir.Intrinsic;
+const FoldOp = math_ir.FoldOp;
+const Node = math_ir.Node;
 
 pub fn interval(lo: f64, hi: f64) Interval {
     return if (lo <= hi) .{ .lo = lo, .hi = hi } else .{ .lo = hi, .hi = lo };
@@ -74,16 +74,15 @@ fn v2Scale(a: Vec2, s: f64) Vec2 {
 fn v2Dot(a: Vec2, b: Vec2) f64 {
     return a.x * b.x + a.y * b.y;
 }
+fn v2Cross(a: Vec2, b: Vec2) f64 {
+    return a.x * b.y - a.y * b.x;
+}
 fn v2Len(a: Vec2) f64 {
     return @sqrt(v2Dot(a, a));
 }
 
 pub fn slotValue(slots: []const f64, id: i32) f64 {
     return slots[@intCast(id)];
-}
-
-fn slotPoint2(slots: []const f64, p: SlotPoint2) Vec2 {
-    return v2(slotValue(slots, p.x), slotValue(slots, p.y));
 }
 
 fn planePoint(p: Vec3, plane: Plane) Vec2 {
@@ -181,7 +180,33 @@ pub fn evalPoint(ir: *const MathIR, root: Expr, slots: []const f64, p: Vec3) f64
             });
         },
         .intrinsic => evalIntrinsicPoint(ir, ir.intrinsics[@intCast(node.a)], slots, p),
+        .fold => foldPoint(ir, node, slots, p),
+        .line_segment => evalLineSegmentPoint(ir, node, slots, p),
+        .circle => evalCirclePoint(ir, node, slots, p),
+        .bezier_quadratic => evalBezierQuadraticPoint(ir, node, slots, p),
+        // BezierCubic / ArcCenter: unimplemented in the legacy primitive
+        // evaluator (returns NaN there). Keep the same behaviour for now;
+        // a real implementation can drop in alongside the others.
+        .bezier_cubic, .arc_center => math.nan(f64),
     };
+}
+
+fn foldPoint(ir: *const MathIR, node: Node, slots: []const f64, p: Vec3) f64 {
+    const start: usize = @intCast(node.a);
+    const count: usize = @intCast(node.b);
+    if (count == 0) return 0.0;
+    const op: FoldOp = @enumFromInt(node.op);
+    var acc = evalPoint(ir, .{ .id = ir.node_refs[start] }, slots, p);
+    var i: usize = 1;
+    while (i < count) : (i += 1) {
+        const v = evalPoint(ir, .{ .id = ir.node_refs[start + i] }, slots, p);
+        acc = switch (op) {
+            .min => min(acc, v),
+            .max => max(acc, v),
+            .sum => acc + v,
+        };
+    }
+    return acc;
 }
 
 fn segDist(p: Vec2, a: Vec2, b: Vec2) f64 {
@@ -238,72 +263,230 @@ fn quadraticCurveDist(p: Vec2, p0: Vec2, p1: Vec2, p2: Vec2) f64 {
     return best;
 }
 
-pub fn evalSketchDistance(primitive: SketchPrimitive, slots: []const f64, p: Vec3, plane: Plane) f64 {
-    const q = planePoint(p, plane);
-    return switch (primitive.kind) {
-        .line_segment => segDist(q, slotPoint2(slots, primitive.p0), slotPoint2(slots, primitive.p1)),
-        .bezier_quadratic => quadraticCurveDist(q, slotPoint2(slots, primitive.p0), slotPoint2(slots, primitive.p1), slotPoint2(slots, primitive.p2)),
-        .circle => circleCurveDist(q, slotPoint2(slots, primitive.p0), slotValue(slots, primitive.radius)),
+// ── Primitive-as-node evaluators ─────────────────────────────────────────
+//
+// `LineSegment`/`Circle`/etc. NodeKinds carry their geometry as child node
+// refs in `ir.node_refs[a..a+b]`; the plane is `op / 2`; primitive-specific
+// flags (e.g. clockwise) live in `op & 1`. These helpers extract the coords
+// by `evalPoint`-ing each child and call the 2D distance math.
+
+inline fn primitivePlane(node: Node) Plane {
+    return @enumFromInt(@divTrunc(node.op, 2));
+}
+
+inline fn primitiveChild(ir: *const MathIR, node: Node, k: usize, slots: []const f64, p: Vec3) f64 {
+    return evalPoint(ir, .{ .id = ir.node_refs[@intCast(node.a + @as(i32, @intCast(k)))] }, slots, p);
+}
+
+pub fn evalLineSegmentPoint(ir: *const MathIR, node: Node, slots: []const f64, p: Vec3) f64 {
+    const q = planePoint(p, primitivePlane(node));
+    const p0 = v2(primitiveChild(ir, node, 0, slots, p), primitiveChild(ir, node, 1, slots, p));
+    const p1 = v2(primitiveChild(ir, node, 2, slots, p), primitiveChild(ir, node, 3, slots, p));
+    return segDist(q, p0, p1);
+}
+
+pub fn evalCirclePoint(ir: *const MathIR, node: Node, slots: []const f64, p: Vec3) f64 {
+    const q = planePoint(p, primitivePlane(node));
+    const c = v2(primitiveChild(ir, node, 0, slots, p), primitiveChild(ir, node, 1, slots, p));
+    const r = primitiveChild(ir, node, 2, slots, p);
+    return circleCurveDist(q, c, r);
+}
+
+pub fn evalBezierQuadraticPoint(ir: *const MathIR, node: Node, slots: []const f64, p: Vec3) f64 {
+    const q = planePoint(p, primitivePlane(node));
+    const p0 = v2(primitiveChild(ir, node, 0, slots, p), primitiveChild(ir, node, 1, slots, p));
+    const p1 = v2(primitiveChild(ir, node, 2, slots, p), primitiveChild(ir, node, 3, slots, p));
+    const p2 = v2(primitiveChild(ir, node, 4, slots, p), primitiveChild(ir, node, 5, slots, p));
+    return quadraticCurveDist(q, p0, p1, p2);
+}
+
+const AxisHit = struct {
+    found: bool = false,
+    s: f64 = 0.0,
+    score: f64 = 0.0,
+};
+
+fn offerAxisHit(best: *AxisHit, s: f64, score: f64) void {
+    if (!math.isFinite(s) or !math.isFinite(score)) return;
+    if (!best.found or score < best.score) {
+        best.* = .{ .found = true, .s = s, .score = score };
+    }
+}
+
+fn offerCurvePointFallback(best: *AxisHit, q: Vec2, dir: Vec2, point: Vec2) void {
+    const delta = v2Sub(point, q);
+    const s = v2Dot(delta, dir);
+    const perpendicular = absFloat(v2Cross(delta, dir));
+    offerAxisHit(best, s, perpendicular);
+}
+
+fn endpoint_axis_fallback(q: Vec2, dir: Vec2, a: Vec2, b: Vec2) f64 {
+    var best = AxisHit{};
+    offerCurvePointFallback(&best, q, dir, a);
+    offerCurvePointFallback(&best, q, dir, b);
+    return if (best.found) best.s else math.nan(f64);
+}
+
+fn solveQuadratic(a: f64, b: f64, c: f64, roots: *[2]f64) usize {
+    const eps = 1.0e-12;
+    if (absFloat(a) < eps) {
+        if (absFloat(b) < eps) return 0;
+        roots[0] = -c / b;
+        return 1;
+    }
+    const disc = b * b - 4.0 * a * c;
+    if (disc < -eps) return 0;
+    if (absFloat(disc) <= eps) {
+        roots[0] = -b / (2.0 * a);
+        return 1;
+    }
+    const sqrt_disc = @sqrt(disc);
+    roots[0] = (-b - sqrt_disc) / (2.0 * a);
+    roots[1] = (-b + sqrt_disc) / (2.0 * a);
+    return 2;
+}
+
+fn curveDistanceAlongLineSegment(q: Vec2, dir: Vec2, a: Vec2, b: Vec2) f64 {
+    const e = v2Sub(b, a);
+    const den = v2Cross(dir, e);
+    if (absFloat(den) >= 1.0e-12) {
+        const aq = v2Sub(a, q);
+        return v2Cross(aq, e) / den;
+    }
+    return endpoint_axis_fallback(q, dir, a, b);
+}
+
+fn curveDistanceAlongCircle(q: Vec2, dir: Vec2, center: Vec2, radius: f64) f64 {
+    var best = AxisHit{};
+    const m = v2Sub(q, center);
+    const b = 2.0 * v2Dot(m, dir);
+    const c = v2Dot(m, m) - radius * radius;
+    var roots: [2]f64 = undefined;
+    const count = solveQuadratic(1.0, b, c, &roots);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        offerAxisHit(&best, roots[i], absFloat(roots[i]));
+    }
+    if (!best.found) {
+        // No axis-line intersection. Return the signed axis offset to the
+        // closest approach to the circle's center instead of poisoning the
+        // field with NaN.
+        const s_center = v2Dot(v2Sub(center, q), dir);
+        offerAxisHit(&best, s_center, absFloat(v2Cross(v2Sub(center, q), dir)) - radius);
+    }
+    return if (best.found) best.s else math.nan(f64);
+}
+
+fn curveDistanceAlongQuadratic(q: Vec2, dir: Vec2, p0: Vec2, p1: Vec2, p2: Vec2) f64 {
+    var best = AxisHit{};
+    var tangentBest = AxisHit{};
+
+    // C(t) = a*t^2 + b*t + c in power basis.
+    const qa = v2Add(v2Sub(p2, v2Scale(p1, 2.0)), p0);
+    const qb = v2Scale(v2Sub(p1, p0), 2.0);
+    const qc = v2Sub(p0, q);
+
+    var roots: [2]f64 = undefined;
+    const count = solveQuadratic(v2Cross(qa, dir), v2Cross(qb, dir), v2Cross(qc, dir), &roots);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const t = roots[i];
+        if (t >= -1.0e-9 and t <= 1.0 + 1.0e-9) {
+            const cpt = bezierQuadraticPoint(clamp(0.0, 1.0, t), p0, p1, p2);
+            const s = v2Dot(v2Sub(cpt, q), dir);
+            offerAxisHit(&best, s, absFloat(s));
+        } else {
+            const tangentS =
+                if (t < 0.0)
+                    curveDistanceAlongLineSegment(q, dir, p0, v2Add(p0, v2Sub(p1, p0)))
+                else
+                    curveDistanceAlongLineSegment(q, dir, p2, v2Add(p2, v2Sub(p2, p1)));
+            offerAxisHit(&tangentBest, tangentS, absFloat(t));
+        }
+    }
+    if (!best.found) {
+        if (tangentBest.found) {
+            best = tangentBest;
+        } else {
+            offerCurvePointFallback(&best, q, dir, p0);
+            offerCurvePointFallback(&best, q, dir, p2);
+        }
+    }
+    return if (best.found) best.s else math.nan(f64);
+}
+
+fn planeAxis(axis: Vec3, plane: Plane) Vec2 {
+    return switch (plane) {
+        .xy => v2(axis.x, axis.y),
+        .xz => v2(axis.x, axis.z),
+        .yz => v2(axis.y, axis.z),
+    };
+}
+
+/// Compute the signed axis offset for a single primitive subtree node.
+/// Reads the primitive's coord children via `evalPoint` and dispatches on
+/// the primitive's NodeKind. Returns NaN for primitive kinds without an
+/// axis-distance implementation (bezier_cubic, arc_center today).
+fn curveDistanceAlongPrimitive(
+    ir: *const MathIR,
+    primitive_node_id: i32,
+    q: Vec2,
+    dir: Vec2,
+    slots: []const f64,
+    p: Vec3,
+) f64 {
+    const node = ir.nodes[@intCast(primitive_node_id)];
+    return switch (node.kind) {
+        .line_segment => blk: {
+            const p0 = v2(primitiveChild(ir, node, 0, slots, p), primitiveChild(ir, node, 1, slots, p));
+            const p1 = v2(primitiveChild(ir, node, 2, slots, p), primitiveChild(ir, node, 3, slots, p));
+            break :blk curveDistanceAlongLineSegment(q, dir, p0, p1);
+        },
+        .circle => blk: {
+            const c = v2(primitiveChild(ir, node, 0, slots, p), primitiveChild(ir, node, 1, slots, p));
+            const r = primitiveChild(ir, node, 2, slots, p);
+            break :blk curveDistanceAlongCircle(q, dir, c, r);
+        },
+        .bezier_quadratic => blk: {
+            const p0 = v2(primitiveChild(ir, node, 0, slots, p), primitiveChild(ir, node, 1, slots, p));
+            const p1 = v2(primitiveChild(ir, node, 2, slots, p), primitiveChild(ir, node, 3, slots, p));
+            const p2 = v2(primitiveChild(ir, node, 4, slots, p), primitiveChild(ir, node, 5, slots, p));
+            break :blk curveDistanceAlongQuadratic(q, dir, p0, p1, p2);
+        },
         else => math.nan(f64),
     };
 }
 
-fn segmentWindingAngle(p: Vec2, a: Vec2, b: Vec2) f64 {
-    const v0x = a.x - p.x;
-    const v0y = a.y - p.y;
-    const v1x = b.x - p.x;
-    const v1y = b.y - p.y;
-    return math.atan2(v0x * v1y - v0y * v1x, v0x * v1x + v0y * v1y);
-}
+fn curveDistanceAlong(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, p: Vec3) f64 {
+    if (intrinsic.primitive_start < 0 or intrinsic.primitive_count <= 0) return math.nan(f64);
+    if (intrinsic.ax < 0 or intrinsic.ay < 0 or intrinsic.az < 0) return math.nan(f64);
 
-fn primitiveWindingAngle(primitive: SketchPrimitive, slots: []const f64, q: Vec2) f64 {
-    return switch (primitive.kind) {
-        .line_segment => segmentWindingAngle(q, slotPoint2(slots, primitive.p0), slotPoint2(slots, primitive.p1)),
-        .bezier_quadratic => blk: {
-            const p0 = slotPoint2(slots, primitive.p0);
-            const p1 = slotPoint2(slots, primitive.p1);
-            const p2 = slotPoint2(slots, primitive.p2);
-            var total: f64 = 0.0;
-            var prev = bezierQuadraticPoint(0.0, p0, p1, p2);
-            var i: usize = 1;
-            while (i <= 16) : (i += 1) {
-                const curr = bezierQuadraticPoint(@as(f64, @floatFromInt(i)) / 16.0, p0, p1, p2);
-                total += segmentWindingAngle(q, prev, curr);
-                prev = curr;
-            }
-            break :blk total;
-        },
-        else => 0.0,
+    const axis3 = Vec3{
+        .x = evalPoint(ir, .{ .id = intrinsic.ax }, slots, p),
+        .y = evalPoint(ir, .{ .id = intrinsic.ay }, slots, p),
+        .z = evalPoint(ir, .{ .id = intrinsic.az }, slots, p),
     };
-}
-
-fn sketchPathDist(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, p: Vec3) f64 {
+    const axis2 = planeAxis(axis3, intrinsic.plane);
+    const axis_len = v2Len(axis2);
+    if (axis_len < 1.0e-12) return math.nan(f64);
+    const dir = v2Scale(axis2, 1.0 / axis_len);
     const q = planePoint(p, intrinsic.plane);
-    var unsigned: f64 = 1.0e30;
-    var winding: f64 = 0.0;
+
+    var best = AxisHit{};
     var i: usize = 0;
     while (i < @as(usize, @intCast(intrinsic.primitive_count))) : (i += 1) {
-        const primitive = ir.primitives[@as(usize, @intCast(intrinsic.primitive_start)) + i];
-        unsigned = min(unsigned, evalSketchDistance(primitive, slots, p, intrinsic.plane));
-        winding += primitiveWindingAngle(primitive, slots, q);
+        const child_id = ir.node_refs[@as(usize, @intCast(intrinsic.primitive_start)) + i];
+        const s = curveDistanceAlongPrimitive(ir, child_id, q, dir, slots, p);
+        offerAxisHit(&best, s, absFloat(s));
     }
-    var signed = unsigned;
-    if (intrinsic.closed) {
-        if (intrinsic.primitive_count == 1 and ir.primitives[@intCast(intrinsic.primitive_start)].kind == .circle) {
-            const c = ir.primitives[@intCast(intrinsic.primitive_start)];
-            signed = v2Len(v2Sub(q, slotPoint2(slots, c.p0))) - slotValue(slots, c.radius);
-        } else if (absFloat(winding) > math.pi) {
-            signed = -unsigned;
-        }
-    }
-    return if (intrinsic.flip) -signed else signed;
+
+    if (!best.found) return math.nan(f64);
+    return if (intrinsic.flip) -best.s else best.s;
 }
 
 pub fn evalIntrinsicPoint(ir: *const MathIR, intrinsic: Intrinsic, slots: []const f64, p: Vec3) f64 {
     return switch (intrinsic.kind) {
-        .sketch_distance => evalSketchDistance(ir.primitives[@intCast(intrinsic.primitive_start)], slots, p, intrinsic.plane),
-        .sketch_path => sketchPathDist(ir, intrinsic, slots, p),
-        .curve_distance_along => math.nan(f64),
+        .curve_distance_along => curveDistanceAlong(ir, intrinsic, slots, p),
     };
 }
 
@@ -365,6 +548,12 @@ pub fn evalInterval(ir: *const MathIR, root: Expr, slots: []const f64, box: Box3
                 .div => idiv(a, b),
                 .min => interval(min(a.lo, b.lo), min(a.hi, b.hi)),
                 .max => interval(max(a.lo, b.lo), max(a.hi, b.hi)),
+                // atan2 ∈ [-π, π] and compare ∈ {-1, 0, +1} regardless of
+                // input intervals. Tight bounds here keep `unsigned * sign`
+                // chains used by closed-sketch SDFs from blowing up to
+                // `unknown` (which was making the renderer never prune).
+                .atan2 => interval(-math.pi, math.pi),
+                .compare => interval(-1.0, 1.0),
                 else => unknown(),
             };
         },
@@ -401,6 +590,32 @@ pub fn evalInterval(ir: *const MathIR, root: Expr, slots: []const f64, box: Box3
             const center = boxCenter(box);
             const value = evalIntrinsicPoint(ir, intrinsic, slots, center);
             const radius = planeBoxRadius(box, intrinsic.plane);
+            break :blk interval(value - radius, value + radius);
+        },
+        .fold => blk: {
+            const start: usize = @intCast(node.a);
+            const count: usize = @intCast(node.b);
+            if (count == 0) break :blk singleton(0.0);
+            const op: FoldOp = @enumFromInt(node.op);
+            var acc = evalInterval(ir, .{ .id = ir.node_refs[start] }, slots, box);
+            var i: usize = 1;
+            while (i < count) : (i += 1) {
+                const v = evalInterval(ir, .{ .id = ir.node_refs[start + i] }, slots, box);
+                acc = switch (op) {
+                    .min => interval(min(acc.lo, v.lo), min(acc.hi, v.hi)),
+                    .max => interval(max(acc.lo, v.lo), max(acc.hi, v.hi)),
+                    .sum => iadd(acc, v),
+                };
+            }
+            break :blk acc;
+        },
+        // Primitives use the same "value at center ± in-plane radius"
+        // bound the legacy intrinsic path uses; no tighter interval is
+        // available without per-primitive analysis.
+        .line_segment, .circle, .bezier_quadratic, .bezier_cubic, .arc_center => blk: {
+            const plane = primitivePlane(node);
+            const value = evalPoint(ir, root, slots, boxCenter(box));
+            const radius = planeBoxRadius(box, plane);
             break :blk interval(value - radius, value + radius);
         },
     };

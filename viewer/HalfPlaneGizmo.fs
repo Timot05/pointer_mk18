@@ -41,18 +41,7 @@ let localAxis axisIndex : Vec3 =
     | 1 -> { X = 0.0; Y = 1.0; Z = 0.0 }
     | _ -> { X = 0.0; Y = 0.0; Z = 1.0 }
 
-let contextOf (state: EditorState) : Context option =
-    match state.Doc.SelectedId with
-    | None -> None
-    | Some selId ->
-        match state.Doc.Actions |> List.tryFind (fun a -> a.Id = selId) with
-        | Some { Kind = HalfPlane _ } ->
-            Some
-                { ActionId = selId
-                  AxisIndex = Editor.halfPlaneAxisIndex state selId
-                  AxisDir = Editor.halfPlaneAxisDir state selId
-                  Offset = Editor.halfPlaneOffsetValue state selId }
-        | _ -> None
+let contextOf (_state: EditorState) : Context option = None
 
 let ephemeralPickables (actionId: ActionId) (baseId: int) : Pickable list =
     [ PickGizmoHandle(baseId + 0, actionId, GHalfPlaneAxis 0)
@@ -60,11 +49,7 @@ let ephemeralPickables (actionId: ActionId) (baseId: int) : Pickable list =
       PickGizmoHandle(baseId + 2, actionId, GHalfPlaneAxis 2)
       PickGizmoHandle(baseId + 3, actionId, GHalfPlaneOffset) ]
 
-let ephemeralPickablesForState (state: EditorState) : Pickable list =
-    match state.Doc.SelectedId with
-    | Some id when state.Doc.Actions |> List.exists (fun a -> a.Id = id && (match a.Kind with HalfPlane _ -> true | _ -> false)) ->
-        ephemeralPickables id state.Compiled.Pickables.Length
-    | _ -> []
+let ephemeralPickablesForState (_state: EditorState) : Pickable list = []
 
 let private emitThick
         (out: ResizeArray<float32>)

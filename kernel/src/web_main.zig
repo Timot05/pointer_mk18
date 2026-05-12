@@ -1,27 +1,28 @@
-// Browser entry point — exports match mk18's host contract
-// (`pointer_mk18/viewer/Kernel/Wasm.fs`) so mk21's renderer can drop in as
-// the kernel WASM without F# host changes.
+// Browser entry point.
 //
 // Flow:
-//   1. Host writes serialized Field IR bytes into `ir_upload_buffer` (via
+//   1. Host writes serialized MathIR bytes into `ir_upload_buffer` (via
 //      `ir_upload_buffer_ptr`), then calls `ir_upload(byte_len)`. We
-//      decode, lower (`field_lower`), wrap with an identity camera frame,
-//      compile to a reg-tape, and bind a `MutableCamera`.
+//      decode straight into our `MathIR` instance, wrap with an identity
+//      camera frame, compile to a reg-tape, and bind a `MutableCamera`.
+//      No Field-IR lowering step — the F# host (`Server.Lang.MathIrCodec`)
+//      ships MathIR-shaped bytes directly.
 //   2. Host writes 12 f32s into `camera_buffer` (eye, basis_x, basis_y,
-//      basis_z), then calls `set_camera`. We invert basis_z's sign — mk18
-//      and mk21 disagree on its meaning (mk18: −forward, mk21: +forward).
+//      basis_z), then calls `set_camera`. We invert basis_z's sign — the
+//      F# host's convention is "larger wcz = closer to camera"; the
+//      renderer's is "smaller t = closer" — so we flip basis_z here.
 //   3. Host calls `render_voxels(tile_w, tile_h, full_w, full_h, tile_x,
-//      tile_y, ...)`: a sub-rect of a full image. We render the full
-//      frame into `full_gbuffer`, then copy the tile sub-rect into the
-//      host-visible `gbuffer` (packed tile_w × tile_h, depth lane
-//      negated so mk18's WGSL sees ascending-wcz = closer).
+//      tile_y, ...)`: a sub-rect of a full image. We render only that
+//      tile into the host-visible `gbuffer` (packed tile_w × tile_h,
+//      depth lane negated so the WGSL viewer sees ascending-wcz = closer).
 //
-// Mesh exports are stubs (mk21 has no meshing in this round).
+// Mesh exports are stubs (no meshing in this round).
 
 const std = @import("std");
 const m = @import("math_domain.zig");
-const scene_decode = @import("scene_decode.zig");
+const math_ir_decode = @import("math_ir_decode.zig");
 const cpu_render = @import("cpu_render.zig");
+const mesh_mod = @import("mesh.zig");
 
 /// Largest tile (width or height). Mirrors the host's MAX_TILE = 1024 in
 /// `viewer/Kernel/Background.fs`. The host splits any canvas larger than
@@ -34,36 +35,76 @@ pub const MAX_TILE_DIM: u32 = 1024;
 // pixels — not the entire canvas. Host reads `gbuffer` via `gbuffer_ptr`.
 var pixels: [MAX_TILE_DIM * MAX_TILE_DIM]u32 = undefined;
 var gbuffer: [MAX_TILE_DIM * MAX_TILE_DIM * 4]f32 = undefined;
+/// Per-pixel palette idx. The host uploads this as an `r32uint` texture
+/// alongside the gbuffer; `Background.wgsl` looks up the palette color
+/// to use as the surface base. See `cpu_render.RenderCtx.out_palette`.
+var palette_buf: [MAX_TILE_DIM * MAX_TILE_DIM]u32 = undefined;
 
 var camera_buffer: [12]f32 align(4) = undefined;
 
 var math_ir: m.MathIR = .{};
 var scene_tape: m.RegTape = undefined;
+var mesh_tape: m.RegTape = undefined;
 var mutable_camera: m.MutableCamera = undefined;
 var scene_loaded: bool = false;
+var scene_mesh: ?mesh_mod.MeshBuffers = null;
+
+/// Per-block view tapes — one per visible Field block. Used at hit
+/// time by `cpu_render` to determine which block "owns" each pixel
+/// for colour assignment. Empty when the F# host shipped no views,
+/// in which case `cpu_render` falls back to a single shared colour.
+var view_tapes: [math_ir_decode.max_views]m.RegTape = undefined;
+var view_cameras: [math_ir_decode.max_views]m.MutableCamera = undefined;
+var view_palettes: [math_ir_decode.max_views]u32 = undefined;
+var view_kinds: [math_ir_decode.max_views]u32 = undefined;
+var view_count: usize = 0;
 
 // ── IR upload ────────────────────────────────────────────────────────────
 
 pub export fn ir_upload_buffer_ptr() [*]u8 {
-    return scene_decode.uploadBufferPtr();
+    return math_ir_decode.uploadBufferPtr();
 }
 
-/// 0 = ok, 1 = bad version, 2 = too many nodes, 3 = too many prims,
-/// 4 = truncated, 5 = bad kind, 6 = lowering failed.
+/// 0 = ok, 1 = bad magic, 2 = bad version, 3 = too many nodes, 4 = too many
+/// affines, 5 = too many intrinsics, 7 = truncated, 8 = bad kind,
+/// 9 = camera/tape build failed, 10 = too many views, 11 = too many node refs.
 pub export fn ir_upload(byte_len: usize) u32 {
-    const parsed = scene_decode.decode(byte_len) catch |e| return switch (e) {
-        scene_decode.Error.BadVersion => 1,
-        scene_decode.Error.TooManyNodes => 2,
-        scene_decode.Error.TooManyPrims => 3,
-        scene_decode.Error.Truncated => 4,
-        scene_decode.Error.BadKind => 5,
+    clearSceneMesh();
+    math_ir = .{};
+    const decoded = math_ir_decode.decodeInto(byte_len, &math_ir) catch |e| return switch (e) {
+        math_ir_decode.Error.BadMagic => 1,
+        math_ir_decode.Error.BadVersion => 2,
+        math_ir_decode.Error.TooManyNodes => 3,
+        math_ir_decode.Error.TooManyAffines => 4,
+        math_ir_decode.Error.TooManyIntrinsics => 5,
+        math_ir_decode.Error.Truncated => 7,
+        math_ir_decode.Error.BadKind => 8,
+        math_ir_decode.Error.TooManyViews => 10,
+        math_ir_decode.Error.TooManyNodeRefs => 11,
     };
 
-    math_ir = .{};
-    const root = m.lowerField(&parsed, &math_ir) catch return 6;
-    const wrapped = m.wrapWithCameraFrame(&math_ir, root, m.CameraFrame.identity) catch return 6;
-    scene_tape = m.compileToRegTape(&math_ir, wrapped.wrapped_root) catch return 6;
-    mutable_camera = m.MutableCamera.bind(wrapped.nodes, &scene_tape) catch return 6;
+    mesh_tape = m.compileToRegTape(&math_ir, decoded.root) catch return 9;
+
+    // One CameraAxes shared by the main render tape + every view tape.
+    // Each tape gets its own immediates after compile, but they all
+    // bind to the same `CameraFrameNodes` ids and so receive identical
+    // updates from `set_camera`'s loop below.
+    const axes = m.buildCameraAxes(&math_ir, m.CameraFrame.identity) catch return 9;
+
+    const main_root = m.wrapWithAxes(&math_ir, decoded.root, axes) catch return 9;
+    scene_tape = m.compileToRegTape(&math_ir, main_root) catch return 9;
+    mutable_camera = m.MutableCamera.bind(axes.nodes, &scene_tape) catch return 9;
+
+    view_count = decoded.view_count;
+    var i: usize = 0;
+    while (i < view_count) : (i += 1) {
+        const view_root = m.wrapWithAxes(&math_ir, .{ .id = decoded.views[i].expr_id }, axes) catch return 9;
+        view_tapes[i] = m.compileToRegTape(&math_ir, view_root) catch return 9;
+        view_cameras[i] = m.MutableCamera.bind(axes.nodes, &view_tapes[i]) catch return 9;
+        view_palettes[i] = decoded.views[i].palette_idx;
+        view_kinds[i] = decoded.views[i].kind;
+    }
+
     scene_loaded = true;
     return 0;
 }
@@ -82,12 +123,17 @@ pub export fn camera_buffer_ptr() [*]f32 {
 /// pipeline reads basis_z in its native sense.
 pub export fn set_camera() u32 {
     if (!scene_loaded) return 1;
-    mutable_camera.setFrame(&scene_tape, .{
+    const frame: m.CameraFrame = .{
         .eye = .{ camera_buffer[0], camera_buffer[1], camera_buffer[2] },
         .basis_x = .{ camera_buffer[3], camera_buffer[4], camera_buffer[5] },
         .basis_y = .{ camera_buffer[6], camera_buffer[7], camera_buffer[8] },
         .basis_z = .{ -camera_buffer[9], -camera_buffer[10], -camera_buffer[11] },
-    });
+    };
+    mutable_camera.setFrame(&scene_tape, frame);
+    var i: usize = 0;
+    while (i < view_count) : (i += 1) {
+        view_cameras[i].setFrame(&view_tapes[i], frame);
+    }
     return 0;
 }
 
@@ -95,6 +141,10 @@ pub export fn set_camera() u32 {
 
 pub export fn gbuffer_ptr() [*]f32 {
     return @ptrCast(&gbuffer);
+}
+
+pub export fn palette_buffer_ptr() [*]u32 {
+    return @ptrCast(&palette_buf);
 }
 
 /// Render the requested tile sub-rect of a `full_w × full_h` image into
@@ -125,11 +175,15 @@ pub export fn render_voxels(
     cpu_render.render(
         pixels[0..tile_total],
         gbuffer[0 .. tile_total * 4],
+        palette_buf[0..tile_total],
         full_w, full_h,
         tile_x, tile_y, tile_w, tile_h,
         &scene_tape,
         &math_ir,
         &.{},
+        view_tapes[0..view_count],
+        view_palettes[0..view_count],
+        view_kinds[0..view_count],
         view_half_w, view_half_h,
         -half, half,
         level,
@@ -160,23 +214,233 @@ pub export fn max_render_level() u32 {
 // ── Mesh exports (stubbed; mk21 has no DC meshing this round) ────────────
 
 pub export fn mesh_build(half_extent: f32, max_depth: u32) u32 {
-    _ = half_extent;
-    _ = max_depth;
-    return 1;
+    if (!scene_loaded) return 1;
+    if (!(half_extent > 0.0) or max_depth == 0 or max_depth > 10) return 2;
+
+    clearSceneMesh();
+
+    const h = half_extent;
+    const bounds: mesh_mod.Aabb = .{
+        .min = .{ .x = -h, .y = -h, .z = -h },
+        .max = .{ .x = h, .y = h, .z = h },
+    };
+    const sampler: mesh_mod.Sampler = .{
+        .ctx = null,
+        .sampleFn = meshSample,
+        .gradientFn = meshGradient,
+        .intervalFn = meshInterval,
+    };
+
+    var built = mesh_mod.buildMesh(
+        std.heap.wasm_allocator,
+        sampler,
+        bounds,
+        .{ .max_depth = @intCast(max_depth), .binary_search_steps = 8 },
+    ) catch return 3;
+    if (built.vertices.len == 0 or built.triangles.len == 0) {
+        built.deinit(std.heap.wasm_allocator);
+        return 4;
+    }
+    scene_mesh = built;
+    return 0;
+}
+
+// `mesh_build_auto`: figure out the bounding box from the IR by recursively
+// subdividing a large root box and pruning cells that can't contain the
+// surface. The user-facing path (right-click "Download mesh" in the
+// BlockList) calls this so the AABB matches the surface, instead of
+// relying on a hardcoded cube.
+//
+// Two prunes are applied per cell:
+//
+//   1. Interval prune. `decodeRegEvalInterval` over the cell → `[lo, hi]`.
+//      `lo > 0` ⇒ no surface; `hi < 0` ⇒ fully interior. Cheap and tight
+//      for most ops, but `curve_distance_along` returns `unknown()` so any
+//      field that uses it (notably `wing-remap-preview`) gets `±1e30` here
+//      and the interval prune does nothing.
+//
+//   2. Lipschitz-aware sphere-tracing prune. Sample value + gradient at
+//      the cell centre. If `|f(c)| > half_diag * max(1, |∇f|)`, no point
+//      in the cell is closer than that, so the surface can't reach in.
+//      Works regardless of which ops compose the field — same technique
+//      `cpu_render` uses for raymarch pruning. The `max(1, |∇f|)` factor
+//      handles fields that aren't unit-Lipschitz (remapped / scaled SDFs).
+//
+// Surface-crossing leaves at SEARCH_DEPTH are unioned into a tight AABB,
+// padded by half a leaf width to avoid clipping the surface at the AABB
+// boundary (which produces DC artifacts).
+
+const SEARCH_HALF_EXTENT: f32 = 256.0;
+const SEARCH_DEPTH: u32 = 7;
+
+fn unionAabb(into: *?mesh_mod.Aabb, cell: mesh_mod.Aabb) void {
+    if (into.*) |existing| {
+        into.* = .{
+            .min = .{
+                .x = @min(existing.min.x, cell.min.x),
+                .y = @min(existing.min.y, cell.min.y),
+                .z = @min(existing.min.z, cell.min.z),
+            },
+            .max = .{
+                .x = @max(existing.max.x, cell.max.x),
+                .y = @max(existing.max.y, cell.max.y),
+                .z = @max(existing.max.z, cell.max.z),
+            },
+        };
+    } else {
+        into.* = cell;
+    }
+}
+
+fn searchBoundsRecurse(cell: mesh_mod.Aabb, depth: u32, tight: *?mesh_mod.Aabb) void {
+    // 1. Interval prune (cheap; conservative; useless when the IR contains
+    //    `curve_distance_along` — see comment block above).
+    const iv = meshInterval(null, cell);
+    if (iv.lo > 0.0 or iv.hi < 0.0) return;
+
+    // 2. Lipschitz-aware sphere-tracing prune.
+    const cx = 0.5 * (cell.min.x + cell.max.x);
+    const cy = 0.5 * (cell.min.y + cell.max.y);
+    const cz = 0.5 * (cell.min.z + cell.max.z);
+    const g = m.decodeRegEvalGrad(&mesh_tape, &math_ir, &.{}, .{ .x = cx, .y = cy, .z = cz });
+    const f_center = g[0];
+    const grad_mag = @sqrt(g[1] * g[1] + g[2] * g[2] + g[3] * g[3]);
+    const lipschitz = @max(@as(f32, 1.0), grad_mag);
+    const dx = cell.max.x - cell.min.x;
+    const dy = cell.max.y - cell.min.y;
+    const dz = cell.max.z - cell.min.z;
+    const half_diag = 0.5 * @sqrt(dx * dx + dy * dy + dz * dz);
+    if (@abs(f_center) > half_diag * lipschitz) return;
+
+    if (depth == 0) {
+        unionAabb(tight, cell);
+        return;
+    }
+
+    var i: u32 = 0;
+    while (i < 8) : (i += 1) {
+        const corner: u3 = @intCast(i);
+        searchBoundsRecurse(cell.child(corner), depth - 1, tight);
+    }
+}
+
+pub export fn mesh_build_auto(max_depth: u32) u32 {
+    if (!scene_loaded) return 1;
+    if (max_depth == 0 or max_depth > 10) return 2;
+
+    const root: mesh_mod.Aabb = .{
+        .min = .{ .x = -SEARCH_HALF_EXTENT, .y = -SEARCH_HALF_EXTENT, .z = -SEARCH_HALF_EXTENT },
+        .max = .{ .x = SEARCH_HALF_EXTENT, .y = SEARCH_HALF_EXTENT, .z = SEARCH_HALF_EXTENT },
+    };
+    var tight: ?mesh_mod.Aabb = null;
+    searchBoundsRecurse(root, SEARCH_DEPTH, &tight);
+    if (tight == null) return 5;
+
+    const leaf_extent: f32 =
+        (2.0 * SEARCH_HALF_EXTENT) / @as(f32, @floatFromInt(@as(u32, 1) << @intCast(SEARCH_DEPTH)));
+    const pad: f32 = 0.5 * leaf_extent;
+
+    const bounds: mesh_mod.Aabb = .{
+        .min = .{
+            .x = tight.?.min.x - pad,
+            .y = tight.?.min.y - pad,
+            .z = tight.?.min.z - pad,
+        },
+        .max = .{
+            .x = tight.?.max.x + pad,
+            .y = tight.?.max.y + pad,
+            .z = tight.?.max.z + pad,
+        },
+    };
+
+    clearSceneMesh();
+
+    const sampler: mesh_mod.Sampler = .{
+        .ctx = null,
+        .sampleFn = meshSample,
+        .gradientFn = meshGradient,
+        .intervalFn = meshInterval,
+    };
+
+    var built = mesh_mod.buildMesh(
+        std.heap.wasm_allocator,
+        sampler,
+        bounds,
+        .{ .max_depth = @intCast(max_depth), .binary_search_steps = 8 },
+    ) catch return 3;
+    if (built.vertices.len == 0 or built.triangles.len == 0) {
+        built.deinit(std.heap.wasm_allocator);
+        return 4;
+    }
+    scene_mesh = built;
+    return 0;
 }
 
 pub export fn mesh_vertices_ptr() usize {
+    if (scene_mesh) |mesh| return @intFromPtr(mesh.vertices.ptr);
     return 0;
 }
 
 pub export fn mesh_vertices_len() u32 {
+    if (scene_mesh) |mesh| return @intCast(mesh.vertices.len * 3);
     return 0;
 }
 
 pub export fn mesh_triangles_ptr() usize {
+    if (scene_mesh) |mesh| return @intFromPtr(mesh.triangles.ptr);
     return 0;
 }
 
 pub export fn mesh_triangles_len() u32 {
+    if (scene_mesh) |mesh| return @intCast(mesh.triangles.len * 3);
     return 0;
+}
+
+fn clearSceneMesh() void {
+    if (scene_mesh) |*mesh| {
+        mesh.deinit(std.heap.wasm_allocator);
+        scene_mesh = null;
+    }
+}
+
+fn toMathVec(p: mesh_mod.Vec3) m.Vec3 {
+    return .{ .x = p.x, .y = p.y, .z = p.z };
+}
+
+fn meshSample(_: ?*const anyopaque, p: mesh_mod.Vec3) f32 {
+    return m.decodeRegEvalF32(&mesh_tape, &math_ir, &.{}, toMathVec(p));
+}
+
+fn meshGradient(_: ?*const anyopaque, p: mesh_mod.Vec3) mesh_mod.Vec3 {
+    const g = m.decodeRegEvalGrad(&mesh_tape, &math_ir, &.{}, toMathVec(p));
+    var n: mesh_mod.Vec3 = .{ .x = g[1], .y = g[2], .z = g[3] };
+    if (mesh_mod.Vec3.length(n) > 1.0e-6) return mesh_mod.Vec3.normalize(n);
+
+    const eps: f32 = 1.0e-3;
+    const px = meshSample(null, .{ .x = p.x + eps, .y = p.y, .z = p.z });
+    const mx = meshSample(null, .{ .x = p.x - eps, .y = p.y, .z = p.z });
+    const py = meshSample(null, .{ .x = p.x, .y = p.y + eps, .z = p.z });
+    const my = meshSample(null, .{ .x = p.x, .y = p.y - eps, .z = p.z });
+    const pz = meshSample(null, .{ .x = p.x, .y = p.y, .z = p.z + eps });
+    const mz = meshSample(null, .{ .x = p.x, .y = p.y, .z = p.z - eps });
+    n = .{
+        .x = (px - mx) / (2.0 * eps),
+        .y = (py - my) / (2.0 * eps),
+        .z = (pz - mz) / (2.0 * eps),
+    };
+    return mesh_mod.Vec3.normalize(n);
+}
+
+fn meshInterval(_: ?*const anyopaque, bounds: mesh_mod.Aabb) mesh_mod.Interval {
+    const iv = m.decodeRegEvalInterval(
+        &mesh_tape,
+        &math_ir,
+        &.{},
+        m.box3(
+            m.interval(bounds.min.x, bounds.max.x),
+            m.interval(bounds.min.y, bounds.max.y),
+            m.interval(bounds.min.z, bounds.max.z),
+        ),
+    );
+    return .{ .lo = @floatCast(iv.lo), .hi = @floatCast(iv.hi) };
 }

@@ -66,6 +66,9 @@ let private terminate (w: obj) : unit = jsNative
 [<Emit("new Float32Array($0)")>]
 let private f32OfBuffer (buf: obj) : obj = jsNative
 
+[<Emit("new Uint32Array($0)")>]
+let private u32OfBuffer (buf: obj) : obj = jsNative
+
 [<Emit("$0.queue.writeTexture($1, $2, $3, $4)")>]
 let private writeTexture
         (device: IGPUDevice)
@@ -105,6 +108,13 @@ type Background =
           mutable PendingTexture: IGPUTexture
           mutable PendingView: IGPUTextureView
           mutable PendingBindGroup: IGPUBindGroup
+          // Parallel palette-idx textures (r32uint), rotated together
+          // with the gbuffer textures so the displayed bind group always
+          // points at consistent gbuffer + palette pairs.
+          mutable DisplayPaletteTexture: IGPUTexture
+          mutable DisplayPaletteView: IGPUTextureView
+          mutable PendingPaletteTexture: IGPUTexture
+          mutable PendingPaletteView: IGPUTextureView
           // False until the first level completes — no draw is issued
           // before that so we don't sample uninitialized texels.
           mutable HasDisplay: bool
@@ -133,7 +143,14 @@ type Background =
           mutable LastCameraKey: float
           // Timestamp (performance.now) of the last camera change. Used
           // to decide when to stop re-rendering level 3 and advance.
-          mutable LastCameraChangeMs: float }
+          mutable LastCameraChangeMs: float
+          // Set whenever something visibly changed (level advanced, new
+          // tiles dispatched, display swapped). The viewer's RAF loop
+          // reads + clears this via `consumeDisplayDirty` to know it
+          // should redraw. Without this, the loop only redraws on its
+          // own dirty signals (camera, store, etc.) and misses async
+          // background updates that happen during a quiet window.
+          mutable DisplayDirty: bool }
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -159,18 +176,28 @@ let private createTexture (device: IGPUDevice) (w: int) (h: int) : IGPUTexture =
             GPUTextureUsage.TextureBinding
             ||| GPUTextureUsage.CopyDst }
 
+let private createPaletteTexture (device: IGPUDevice) (w: int) (h: int) : IGPUTexture =
+    device.createTexture
+        { size = { width = w; height = h; depthOrArrayLayers = 1 }
+          format = "r32uint"
+          usage =
+            GPUTextureUsage.TextureBinding
+            ||| GPUTextureUsage.CopyDst }
+
 let private buildBindGroup
         (device: IGPUDevice)
         (layout: IGPUBindGroupLayout)
         (view: IGPUTextureView)
         (sampler: IGPUSampler)
-        (fieldBuffer: IGPUBuffer) : IGPUBindGroup =
+        (fieldBuffer: IGPUBuffer)
+        (paletteView: IGPUTextureView) : IGPUBindGroup =
     device.createBindGroup
         { layout = layout
           entries =
             [| { binding = 0; resource = box view }
                { binding = 1; resource = box sampler }
-               { binding = 2; resource = box { buffer = fieldBuffer } } |] }
+               { binding = 2; resource = box { buffer = fieldBuffer } }
+               { binding = 3; resource = box paletteView } |] }
 
 let private cameraKey (camera: Camera.CameraState) : float =
     camera.Azimuth * 1e6
@@ -245,6 +272,7 @@ let private uploadRenderedTile (bg: Background) (data: obj) : bool =
     let tileW : int = data?tileW
     let tileH : int = data?tileH
     let buffer : obj = data?buffer
+    let paletteBuffer : obj = data?paletteBuffer
     if isNull buffer then false else
     let view = f32OfBuffer buffer
     let destination =
@@ -259,6 +287,20 @@ let private uploadRenderedTile (bg: Background) (data: obj) : bool =
            height = tileH
            depthOrArrayLayers = 1 |}
     writeTexture bg.Scene.Device (box destination) view (box dataLayout) (box size)
+
+    // Palette idx companion (one u32 per pixel = 4 bytes/row stride * width).
+    if not (isNull paletteBuffer) then
+        let paletteView = u32OfBuffer paletteBuffer
+        let paletteDestination =
+            {| texture = bg.PendingPaletteTexture
+               origin = {| x = tileX; y = tileY; z = 0 |} |}
+        let paletteLayout =
+            {| offset = 0
+               bytesPerRow = tileW * 4
+               rowsPerImage = tileH |}
+        writeTexture
+            bg.Scene.Device (box paletteDestination) paletteView
+            (box paletteLayout) (box size)
     true
 
 /// Swap pending ↔ display. Pending's contents are now complete and
@@ -273,22 +315,33 @@ let private swapDisplay (bg: Background) =
     let t = bg.DisplayTexture
     let v = bg.DisplayView
     let g = bg.DisplayBindGroup
+    let pt = bg.DisplayPaletteTexture
+    let pv = bg.DisplayPaletteView
     bg.DisplayTexture <- bg.PendingTexture
     bg.DisplayView <- bg.PendingView
     bg.DisplayBindGroup <- bg.PendingBindGroup
+    bg.DisplayPaletteTexture <- bg.PendingPaletteTexture
+    bg.DisplayPaletteView <- bg.PendingPaletteView
     if bg.PendingNeedsResize then
         t.destroy ()
+        pt.destroy ()
         bg.PendingTexture <- createTexture bg.Scene.Device bg.Width bg.Height
         bg.PendingView <- bg.PendingTexture.createView ()
+        bg.PendingPaletteTexture <- createPaletteTexture bg.Scene.Device bg.Width bg.Height
+        bg.PendingPaletteView <- bg.PendingPaletteTexture.createView ()
         bg.PendingBindGroup <-
             buildBindGroup bg.Scene.Device bg.Scene.BackgroundBindGroupLayout
                 bg.PendingView bg.Scene.BackgroundSampler bg.FieldCameraBuffer
+                bg.PendingPaletteView
         bg.PendingNeedsResize <- false
     else
         bg.PendingTexture <- t
         bg.PendingView <- v
         bg.PendingBindGroup <- g
+        bg.PendingPaletteTexture <- pt
+        bg.PendingPaletteView <- pv
     bg.HasDisplay <- true
+    bg.DisplayDirty <- true
 
 let private handleResponse (bg: Background) (slot: WorkerSlot) (data: obj) =
     let kind : string = data?kind
@@ -307,6 +360,13 @@ let private handleResponse (bg: Background) (slot: WorkerSlot) (data: obj) =
             post slot.Handle
                 {| kind = "camera"; values = cameraValues bg.Scene.Camera |}
     | "ir-done" ->
+        // The kernel returns a status code from `ir_upload` (0 = ok, 1
+        // = bad magic, 7 = truncated, etc.). On failure the scene
+        // never renders — surface to the console so a blank canvas
+        // doesn't pass silently.
+        let code : int = data?code
+        if code <> 0 then
+            console.warn (sprintf "kernel ir_upload failed: code=%d" code)
         // Worker is now fully initialized. Kick off the first tile.
         dispatch bg slot
     | "rendered" ->
@@ -373,16 +433,20 @@ let create (scene: Scene.Scene) : JS.Promise<Background> =
         let displayView = displayTexture.createView ()
         let pendingTexture = createTexture scene.Device w h
         let pendingView = pendingTexture.createView ()
+        let displayPaletteTexture = createPaletteTexture scene.Device w h
+        let displayPaletteView = displayPaletteTexture.createView ()
+        let pendingPaletteTexture = createPaletteTexture scene.Device w h
+        let pendingPaletteView = pendingPaletteTexture.createView ()
         let fieldBuffer =
             scene.Device.createBuffer
                 { size = 80
                   usage = GPUBufferUsage.Uniform ||| GPUBufferUsage.CopyDst }
         let displayBindGroup =
             buildBindGroup scene.Device scene.BackgroundBindGroupLayout
-                displayView scene.BackgroundSampler fieldBuffer
+                displayView scene.BackgroundSampler fieldBuffer displayPaletteView
         let pendingBindGroup =
             buildBindGroup scene.Device scene.BackgroundBindGroupLayout
-                pendingView scene.BackgroundSampler fieldBuffer
+                pendingView scene.BackgroundSampler fieldBuffer pendingPaletteView
 
         // Reasonable placeholder: the kernel's max_render_level is 7
         // (PER_PIXEL_LEVEL). Worker echoes it back once ready, but we
@@ -413,6 +477,10 @@ let create (scene: Scene.Scene) : JS.Promise<Background> =
               PendingTexture = pendingTexture
               PendingView = pendingView
               PendingBindGroup = pendingBindGroup
+              DisplayPaletteTexture = displayPaletteTexture
+              DisplayPaletteView = displayPaletteView
+              PendingPaletteTexture = pendingPaletteTexture
+              PendingPaletteView = pendingPaletteView
               HasDisplay = false
               PendingNeedsResize = false
               Width = w
@@ -425,7 +493,8 @@ let create (scene: Scene.Scene) : JS.Promise<Background> =
               TilesUploaded = 0
               Epoch = 0
               LastCameraKey = cameraKey scene.Camera
-              LastCameraChangeMs = performanceNow () }
+              LastCameraChangeMs = performanceNow ()
+              DisplayDirty = false }
 
         for slot in workers do initSlot bg slot
 
@@ -440,13 +509,17 @@ let resize (bg: Background) (w: int) (h: int) =
     // change. Only recreate Pending at the new size; on the next swap
     // we'll recreate the (now-Pending, old-size) texture too.
     bg.PendingTexture.destroy ()
+    bg.PendingPaletteTexture.destroy ()
     bg.Width <- w
     bg.Height <- h
     bg.PendingTexture <- createTexture bg.Scene.Device w h
     bg.PendingView <- bg.PendingTexture.createView ()
+    bg.PendingPaletteTexture <- createPaletteTexture bg.Scene.Device w h
+    bg.PendingPaletteView <- bg.PendingPaletteTexture.createView ()
     bg.PendingBindGroup <-
         buildBindGroup bg.Scene.Device bg.Scene.BackgroundBindGroupLayout
             bg.PendingView bg.Scene.BackgroundSampler bg.FieldCameraBuffer
+            bg.PendingPaletteView
     bg.PendingNeedsResize <- true
     bg.Tiles <- makeTiles w h
     bg.Level <- START_LEVEL
@@ -498,9 +571,25 @@ let update (bg: Background) =
         bg.Level <- bg.Level + 1
         bg.TilesEmitted <- 0
         bg.TilesRendered <- 0
+        // The promotion itself doesn't paint yet (workers haven't run),
+        // but it means new tiles are about to flow. Mark dirty so the
+        // viewer keeps RAF-ticking through the worker round-trip; the
+        // next swapDisplay will dirty again with the actual new pixels.
+        bg.DisplayDirty <- true
 
     // Keep the pool saturated — cheap when everyone's already busy.
     dispatchAll bg
+
+/// Read-and-clear the dirty flag. Returns true once for every visible
+/// state change (display swap or pending level promotion) since the last
+/// call. The viewer's RAF loop ORs this into its dirty calculation so
+/// async background work paints without depending on user input.
+let consumeDisplayDirty (bg: Background) : bool =
+    if bg.DisplayDirty then
+        bg.DisplayDirty <- false
+        true
+    else
+        false
 
 let draw (bg: Background) (pass: IGPURenderPassEncoder) =
     if not bg.HasDisplay then () else

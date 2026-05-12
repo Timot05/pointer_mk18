@@ -59,24 +59,9 @@ let private cPlaneXZ = cAxisY
 
 // ── Context ──────────────────────────────────────────────────────────
 
-/// Returns the gizmo context when the selected action is a Translate.
-/// Delegates transform resolution to `Editor.resolveActionTransform`
-/// so the same math is used by the core drag reducer.
-let contextOf (state: EditorState) : Context option =
-    match state.Doc.SelectedId with
-    | None -> None
-    | Some selId ->
-        match state.Doc.Actions |> List.tryFind (fun a -> a.Id = selId) with
-        | Some { Kind = Translate _ } ->
-            let xform = Editor.resolveActionTransform state selId
-            let rot = xform.Rot
-            Some
-                { ActionId = selId
-                  Origin = xform.Trans
-                  AxisX = rot.Rotate({ X = 1.0; Y = 0.0; Z = 0.0 })
-                  AxisY = rot.Rotate({ X = 0.0; Y = 1.0; Z = 0.0 })
-                  AxisZ = rot.Rotate({ X = 0.0; Y = 0.0; Z = 1.0 }) }
-        | _ -> None
+/// Action gizmos are dormant in notebook mode — `contextOf` always
+/// returns None so the gizmo never renders or hit-tests.
+let contextOf (_state: EditorState) : Context option = None
 
 // ── Ephemeral pickables for the GPU pick shader ──────────────────────
 //
@@ -99,13 +84,8 @@ let ephemeralPickables (actionId: ActionId) (baseId: int) : Pickable list =
     |> Array.mapi (fun i h -> PickGizmoHandle(baseId + i, actionId, h))
     |> Array.toList
 
-/// Convenience wrapper that pulls the selected Translate action + id
-/// base from the editor state. Empty when no Translate is selected.
-let ephemeralPickablesForState (state: EditorState) : Pickable list =
-    match state.Doc.SelectedId with
-    | Some id when state.Doc.Actions |> List.exists (fun a -> a.Id = id && (match a.Kind with Translate _ -> true | _ -> false)) ->
-        ephemeralPickables id state.Compiled.Pickables.Length
-    | _ -> []
+/// Action gizmos dormant — never any ephemeral pickables to merge.
+let ephemeralPickablesForState (_state: EditorState) : Pickable list = []
 
 // ── Vertex buffers ───────────────────────────────────────────────────
 //

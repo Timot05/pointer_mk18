@@ -4,13 +4,13 @@ namespace Server
 // Pickables — a flat list of what the GPU pick shader should hit-test.
 //
 // Each pickable carries (a) a sequential integer PickId that the GPU emits,
-// (b) a semantic reference so the server can map a pick back to an action,
-// and (c) slot refs for coords so the pick shader samples the same params
-// uniform buffer as the SDF shader.
+// (b) a semantic reference so the editor can map a pick back to a sketch
+// entity, and (c) slot refs for coords so the pick shader samples the
+// same params uniform buffer as the SDF shader.
 //
-// The list is produced once per compile in Pipeline.buildPickables and sent
-// to the viewer as part of /api/viewer/model. Ids are stable across
-// recompiles as long as topology doesn't change.
+// The list is produced once per compile in `BlockCompile.compile` and
+// rebuilt on every block edit. Ids are stable for the duration of one
+// compiled state but not across recompiles.
 // ---------------------------------------------------------------------------
 
 type PickId = int

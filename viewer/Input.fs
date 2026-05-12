@@ -76,9 +76,23 @@ let private activeEditSketchId (state: EditorState) : ActionId option =
     let vs = ViewerPipeline.viewerState state
     if not vs.SketchUi.EditMode then None
     else
-        state.Doc.SelectedId
-        |> Option.filter (fun id ->
-            vs.SketchTransforms |> List.exists (fun t -> t.Id = id))
+        // SketchBlock selection takes priority — when a SketchBlock is
+        // selected, its synthetic id (`@block_<n>`) is in SketchTransforms
+        // and the existing tool/cursor pipeline handles it identically.
+        let blockId =
+            match state.Doc.SelectedBlockId with
+            | Some bid ->
+                state.Doc.Blocks
+                |> List.tryFind (fun b -> b.Id = bid)
+                |> Option.bind (fun b ->
+                    match b.Body with
+                    | Server.Lang.Notebook.SketchBody _ ->
+                        let sid = SketchAuthoring.blockSketchId bid
+                        if vs.SketchTransforms |> List.exists (fun t -> t.Id = sid) then Some sid
+                        else None
+                    | _ -> None)
+            | None -> None
+        blockId
 
 /// Install mouse/dblclick/wheel handlers on the canvas. The `hooks` carry
 /// the async GPU pick (which the render module can't expose without
@@ -174,7 +188,33 @@ let install
                             Store.dispatch AppStore.store (ViewerToolClick(u, v))
                         | None -> ()
                     else
-                        dragPickable <- topPickable
+                        // Sketch entities (points / lines / dimension labels)
+                        // are only drag-targetable when sketch-edit mode is
+                        // on AND the pickable belongs to the actively-edited
+                        // sketch — matches selection-side gating
+                        // (`reduceSelectionCandidates` → `belongsToActiveSketch`).
+                        // We mirror it here so the mousemove drag path doesn't
+                        // fire `BeginSketchDrag` for clicks that won't even
+                        // select (e.g. on a non-active sketch's points while
+                        // editing a different sketch).
+                        let activeSketchId = Server.Editor.activeSketchEditId state
+                        let sketchPickableSid =
+                            function
+                            | PickPoint(_, sid, _, _, _)
+                            | PickLine(_, sid, _, _, _)
+                            | PickCircle(_, sid, _, _, _)
+                            | PickArc(_, sid, _, _, _, _, _)
+                            | PickLoop(_, sid, _, _)
+                            | PickDimension(_, sid, _, _) -> Some sid
+                            | _ -> None
+                        let dragCandidate =
+                            match topPickable with
+                            | Some p ->
+                                match sketchPickableSid p with
+                                | Some sid when activeSketchId <> Some sid -> None
+                                | _ -> Some p
+                            | None -> None
+                        dragPickable <- dragCandidate
                         Store.dispatch AppStore.store
                             (ViewerPick(selectionIntent e, candidates))))
 
@@ -189,11 +229,20 @@ let install
                 Pickable.reduceCandidates
                     (pickableById () |> Map.toList |> List.map snd)
                     candidates
+            // Map a synthetic `@block_<n>` sketch id back to a real
+            // BlockId and dispatch `SelectBlock`. Action-anchored sketch
+            // ids no longer route to a selection (no action graph).
+            let selectFromSketchId (sid: string) =
+                if sid.StartsWith "@block_" then
+                    let rest = sid.Substring 7
+                    match System.Int32.TryParse rest with
+                    | true, bid -> Store.dispatch AppStore.store (SelectBlock bid)
+                    | _ -> ()
             match topPickable with
             | Some (PickDimension(_, sid, idx, _)) ->
                 let vs = ViewerPipeline.viewerState AppStore.store.State
                 if not vs.SketchUi.EditMode then
-                    Store.dispatch AppStore.store (SelectAction sid)
+                    selectFromSketchId sid
                     Store.dispatch AppStore.store ToggleSketchEdit
                 Store.dispatch AppStore.store (StartEditingDimension idx)
             | Some p ->
@@ -208,7 +257,7 @@ let install
                 match sketchIdOpt with
                 | Some sid ->
                     let vs = ViewerPipeline.viewerState AppStore.store.State
-                    Store.dispatch AppStore.store (SelectAction sid)
+                    selectFromSketchId sid
                     if not vs.SketchUi.EditMode then
                         Store.dispatch AppStore.store ToggleSketchEdit
                 | None -> ()

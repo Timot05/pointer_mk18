@@ -20,9 +20,31 @@
     <Compile Include="core\Sketch\Sketch.fs" />
     <Compile Include="core\Sketch\SketchLoops.fs" />
 
-    <!-- core / Editor (domain + type check) -->
+    <!-- core / Lang (DSL: lexer, parser, evaluator, math IR target).
+         Self-contained — depends only on core/Math + core/Sketch (Sketch.fs).
+         Lives before Editor.Domain so Document can store Notebook.Block list. -->
+    <Compile Include="core\Lang\MathIr.fs" />
+    <Compile Include="core\Lang\Token.fs" />
+    <Compile Include="core\Lang\Type.fs" />
+    <Compile Include="core\Lang\Ast.fs" />
+    <Compile Include="core\Lang\Tast.fs" />
+    <Compile Include="core\Lang\AstQueries.fs" />
+    <Compile Include="core\Lang\Lexer.fs" />
+    <Compile Include="core\Lang\Parser.fs" />
+    <Compile Include="core\Lang\Value.fs" />
+    <Compile Include="core\Lang\Builtins.fs" />
+    <Compile Include="core\Lang\Eval.fs" />
+    <Compile Include="core\Lang\TypeExtract.fs" />
+    <Compile Include="core\Lang\BlockSpec.fs" />
+    <Compile Include="core\Lang\Typecheck.fs" />
+    <Compile Include="core\Lang\MathIrCodec.fs" />
+    <Compile Include="core\Lang\MathIrWgsl.fs" />
+    <Compile Include="core\Lang\Notebook.fs" />
+    <Compile Include="core\Lang\NotebookCompose.fs" />
+    <Compile Include="core\Lang\NotebookEval.fs" />
+
+    <!-- core / Editor (domain) -->
     <Compile Include="core\Editor\Domain.fs" />
-    <Compile Include="core\Editor\TypeCheck.fs" />
 
     <!-- core / Solve (graph IR and solvers) -->
     <Compile Include="core\Solve\GraphIR.fs" />
@@ -35,26 +57,15 @@
     <!-- core / Sketch (compile uses solvers) -->
     <Compile Include="core\Sketch\SketchCompile.fs" />
 
-    <!-- core / Editor (slot table / element / frames) -->
+    <!-- core / Editor (slot table — kept for sketch authoring) -->
     <Compile Include="core\Editor\SlotTable.fs" />
-    <Compile Include="core\Editor\Element.fs" />
-    <Compile Include="core\Editor\Frames.fs" />
 
-    <!-- core / Field -->
-    <Compile Include="core\Field\FieldIR.fs" />
-
-    <!-- core / Solve (GPU field pipelines, after field IR) -->
-    <Compile Include="core\Solve\GpuSdf.fs" />
-    <Compile Include="core\Solve\GpuIsosurface.fs" />
-    <Compile Include="core\Solve\GpuFieldSlice.fs" />
-
-    <!-- core / Editor (pick + sketch authoring + pipeline + editor) -->
+    <!-- core / Editor (pick + sketch authoring + editor) -->
     <Compile Include="core\Editor\Pickable.fs" />
     <Compile Include="core\Editor\SceneInteraction.fs" />
     <Compile Include="core\Sketch\SketchAuthoring.fs" />
     <Compile Include="core\Sketch\SketchSolve.fs" />
-    <Compile Include="core\Editor\Pipeline.fs" />
-    <Compile Include="core\Editor\Palette.fs" />
+    <Compile Include="core\Editor\BlockCompile.fs" />
     <Compile Include="core\Editor\Editor.fs" />
     <Compile Include="core\Editor\DocumentPipeline.fs" />
     <Compile Include="core\Editor\ViewerPipeline.fs" />
@@ -66,9 +77,8 @@
     <Compile Include="ui\Dom.fs" />
     <Compile Include="ui\Icons.fs" />
     <Compile Include="ui\TopBar.fs" />
-    <Compile Include="ui\ActionList.fs" />
+    <Compile Include="ui\BlockList.fs" />
     <Compile Include="ui\SketchAuthoringPanel.fs" />
-    <Compile Include="ui\CommandPalette.fs" />
     <Compile Include="ui\Shortcuts.fs" />
 
     <!-- viewer (WebGPU rendering) -->
@@ -85,13 +95,14 @@
     <!-- viewer / Kernel (Zig WASM field renderer, F# bindings).
          Must come after Scene (Background reads from it) and before
          Render (Render draws the background). -->
-    <Compile Include="viewer\Kernel\IrCodec.fs" />
-    <Compile Include="viewer\Kernel\FieldToIr.fs" />
     <Compile Include="viewer\Kernel\Wasm.fs" />
     <Compile Include="ui\MeshExport.fs" />
     <Compile Include="viewer\Kernel\Worker.fs" />
     <Compile Include="viewer\Kernel\Background.fs" />
-    <Compile Include="viewer\Raymarch.fs" />
+
+    <!-- Field-slice overlay: per-block iso-contour quad drawn between
+         the background surface and sketch overlays. Depends on Scene
+         and the MathIR→WGSL emitter. -->
     <Compile Include="viewer\FieldSlice.fs" />
 
     <Compile Include="viewer\TranslateGizmo.fs" />

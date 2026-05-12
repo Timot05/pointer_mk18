@@ -60,10 +60,9 @@ type SketchDrag =
 
 type EditorState =
     { Doc: Document
-      Compiled: PipelineResult
+      Compiled: BlockCompiled
       SlotValues: float array
       SolvedSketchParams: Map<string, float32[]>
-      PaletteSession: PaletteSession
       HoveredTarget: SelectionTarget option
       SelectedTargets: SelectionTarget list
       SketchEditMode: bool
@@ -83,41 +82,38 @@ type EditorState =
       ConstraintPlacementMode: ConstraintPlacementKind option
       ConstraintPlacementDraft: ConstraintPlacementDraft option
       ConstraintPlacementCursor: (string * LabelPos) option
-      /// Action IDs whose inline input rows are currently expanded in
-      /// the action list. Multiple actions can be open at once —
-      /// `Right` arrow expands the currently-focused action, `Left`
-      /// collapses it (see Shortcuts.fs). `normalizeState` trims any
-      /// ids whose action no longer exists.
-      ExpandedActionIds: Set<ActionId>
-      /// Row within the currently-selected action that has keyboard
-      /// focus. `0` = the action row itself; `1..N` = the N input rows
-      /// (only meaningful while the selected action is in
-      /// `ExpandedActionIds`; otherwise forced to 0).
-      EditFocusIdx: int
-      /// When Some, an input row is in sub-edit mode:
-      ///   * Scalar → ActionList renders an inline number input.
-      ///   * Ref    → arrow keys cycle upstream candidates via
-      ///              `RefPickIdx`; Enter commits the pick.
-      /// Check / Select toggles are applied immediately on Enter and
-      /// never enter this sub-mode.
-      EditingInputField: ActionParamField option
-      /// If Some, the scalar input renders pre-filled with this string
-      /// (instead of the current value) and places the cursor at the
-      /// end. Set when the user types a digit / '-' / '.' over a
-      /// focused scalar row, so the first keystroke is not lost.
-      EditingInputInitial: string option
-      /// Cursor within the ref-pick candidate list. Meaningful only
-      /// when `EditingInputField` identifies a ref field.
-      RefPickIdx: int
-      /// Toggled by Cmd+K. When true, an inline fuzzy-match picker
-      /// appears at the bottom of the action list for quickly adding
-      /// an action template with its defaults.
-      ActionPickerOpen: bool
-      ViewerMode: ViewerMode }
-
-type SerializedModel =
-    { Name: string
-      Actions: DocAction list }
+      /// Block IDs whose inline input rows are currently expanded under
+      /// the block list.
+      ExpandedBlockIds: Set<Server.Lang.Notebook.BlockId>
+      /// Last notebook eval error message, or None. Surfaced by the
+      /// BlockList panel.
+      LastNotebookError: string option
+      /// Cached MathIR bytes from the last successful `RunNotebook`.
+      /// Viewer.fs subscribes to this and uploads on ref-change.
+      /// `obj` boxes a JS Uint8Array (Fable interop).
+      LastNotebookBytes: obj option
+      /// Per-block typecheck errors from the last `recompileNotebook`.
+      /// Indexed by `BlockId`; entry-list never empty when present.
+      /// Surfaced as `.has-error` row styling + tooltip in BlockList.
+      NotebookBlockErrors: Map<Server.Lang.Notebook.BlockId, string list>
+      /// Per-block resolved output type from the last `recompileNotebook`.
+      /// Used for ref-drop type filtering — the BlockList drag-over
+      /// handler consults this to gate drops by `Type.T` compatibility.
+      NotebookBlockOutputs: Map<Server.Lang.Notebook.BlockId, Server.Lang.Type.T>
+      /// MathIR from the last successful compile. Held in F# memory so the
+      /// viewer's per-block GPU pipelines (e.g. field-slice overlay) can
+      /// emit WGSL evaluators without re-parsing `LastNotebookBytes`.
+      NotebookIr: Server.Lang.MathIr.MathIR option
+      /// MathIR root expression per Field block. Keyed by `BlockId`. Used
+      /// alongside `NotebookIr` by the field-slice renderer to compile
+      /// one shader function per visible-as-field-lines block.
+      NotebookFieldExprByBlock: Map<Server.Lang.Notebook.BlockId, Server.Lang.MathIr.Expr>
+      /// Click-to-pick state for block ref inputs. When `Some(blockId,
+      /// paramName)`, the BlockList renders that bubble as the active
+      /// pick target and treats subsequent clicks on type-compatible
+      /// upstream rows as a wire commit. Cleared by Escape, by clicking
+      /// the same bubble again, or once the pick commits.
+      EditingBlockRef: (Server.Lang.Notebook.BlockId * string) option }
 
 type ActionErrorView =
     { ActionId: string
@@ -134,43 +130,8 @@ type Effect =
     | ResolveAllSketches
 
 type Message =
-    | SelectAction of string
-    /// Expand the given action's input rows in the action list.
-    /// Idempotent — re-expanding a visible action is a no-op.
-    | ExpandAction of ActionId
-    /// Collapse the given action's input rows. No-op when the action
-    /// is already collapsed.
-    | CollapseAction of ActionId
-    /// Move the focus cursor within the edit expansion. `0` = action
-    /// row; `1..N` = input rows.
-    | SetEditFocus of int
-    /// Enter the input-field sub-edit mode for the given field. Also
-    /// seeds `RefPickIdx` (caller picks the initial candidate index
-    /// for ref fields; 0 for scalars) and optionally an initial
-    /// string value that overrides the input's current rendering (used
-    /// to forward the first keystroke when typing over a scalar row).
-    | StartEditingInputField of ActionParamField * int * string option
-    /// Leave the input-field sub-edit mode. Discards any pending pick.
-    | StopEditingInputField
-    /// Move the ref-pick cursor while sub-editing a ref field.
-    | SetRefPickIdx of int
-    /// Inline action-picker at the bottom of the action list.
-    | OpenActionPicker
-    | CloseActionPicker
-    /// Add a fresh action from a template with default params.
-    | QuickAddAction of ActionTemplate
     | SetHoveredTarget of SelectionTarget option
     | SetSelectedTargets of SelectionTarget list
-    | AddDefaultAction of ActionTemplate * string
-    | AddAction of DocAction
-    | UpdateAction of string * DocAction
-    | RemoveAction of string
-    | ReorderActions of string list
-    /// `v` shortcut: cycle the selected action's visibility through
-    /// the modes its kind supports (see Document.cycleVisibility).
-    | CycleActionVisibility of ActionId
-    | SetActionSlotValue of string * ActionParamField * ParamValue
-    | SetActionStructureValue of string * ActionParamField * ParamValue
     | DeleteIntent
     | ViewerHover of PickCandidateInput list
     | ViewerPick of string * PickCandidateInput list
@@ -178,29 +139,15 @@ type Message =
     | CancelEditingDimension
     | CommitEditingDimension of float
     | ViewerDimensionClickTarget
-    | ReplaceSketch of string * ActionSketch
     | BeginSketchDrag of SketchDrag
     | UpdateSketchDragTarget of LabelPos
     | ApplySketchSolveResult of SketchDrag * float32[]
     | ApplyResolvedSketchResult of string * float32[]
     | FinishSketchDrag
     | CancelSketchDrag
-    /// Unified pointer-down on the 3D scene. The viewer resolves the
-    /// top pickable under the cursor and hands us a `PointerRay`; the
-    /// reducer decides whether to start a drag session or fall
-    /// through to selection-style logic. Only gizmo handles start a
-    /// `SceneSession` today — other pickable kinds continue to use
-    /// their current messages (ViewerPick, BeginSketchDrag, …).
     | ScenePointerDown of target: Pickable * ray: PointerRay * mods: PointerMods
-    /// Every mousemove during an active session. Delegated to the
-    /// active session's update logic. No-op when `ActiveSession = None`.
     | ScenePointerMove of ray: PointerRay
-    /// Mouseup — finishes the active session (commits in place; the
-    /// slot values have already been patched incrementally by
-    /// `ScenePointerMove`).
     | ScenePointerUp of ray: PointerRay
-    /// Escape / external cancel — reverts the session's slot patches
-    /// to the captured drag-start values.
     | SceneCancel
     | ViewerToolClick of float * float
     | ViewerPlaceConstraint of float * float
@@ -210,18 +157,47 @@ type Message =
     | AddConstraintFromSelection of GeometricConstraintKind
     | DeleteSketchConstraint of int
     | SetConstraintPlacementCursor of (string * LabelPos) option
-    | PaletteOpen
-    | PaletteSetQuery of string
-    | PalettePick of string
-    | PaletteSetScalarField of string * float
-    | PaletteCommitScalars
-    | PaletteFinish of string
-    | PaletteBack
-    | PaletteClose
     | ReplaceDocument of Document
-    | LoadModel of SerializedModel
     | ClearModel
-    | SetViewerMode of ViewerMode
+    // ── Typed-block notebook ─────────────────────────────────────────────
+    /// Add a native block instantiating the named `BlockSpec` (e.g.
+    /// "sphere", "translate"). Defaults from the spec populate scalar
+    /// args; refs default to unwired.
+    | AddNativeBlock of specName: string
+    /// Add an empty Sketch block (XY plane, no entities).
+    | AddSketchBlock
+    | SelectBlock of Server.Lang.Notebook.BlockId
+    /// Replace a single named arg on a block (scalar drag-edit, or
+    /// rewiring a ref bubble).
+    | SetBlockArg of Server.Lang.Notebook.BlockId * paramName: string * Server.Lang.Notebook.BlockArg
+    | ExpandBlock of Server.Lang.Notebook.BlockId
+    | CollapseBlock of Server.Lang.Notebook.BlockId
+    | RenameBlock of Server.Lang.Notebook.BlockId * string
+    | DeleteBlock of Server.Lang.Notebook.BlockId
+    /// Reorder a block in `Doc.Blocks`. `InsertBefore` names the target
+    /// block; the moved block lands immediately before it. `None` moves
+    /// the block to the end of the list. Used by the sidebar's
+    /// drag-and-drop reordering (BlockList row dragstart → row drop).
+    | MoveBlock of source: Server.Lang.Notebook.BlockId * insertBefore: Server.Lang.Notebook.BlockId option
+    /// Cycle the block's `Visibility` through Hidden → Visible → FieldLines
+    /// → Isosurface → Hidden. The badge in the block list is the visible
+    /// trigger; the keyboard shortcut hooks the same message.
+    | CycleBlockVisibility of Server.Lang.Notebook.BlockId
+    /// Set the block's isosurface display colour palette index.
+    | SetBlockColor of Server.Lang.Notebook.BlockId * colorIndex: int
+    /// Replace a sketch block's `ActionSketch` payload (used by
+    /// SketchAuthoring tools, gizmo drag commits, dimension edits).
+    | UpdateSketchBlockSketch of Server.Lang.Notebook.BlockId * ActionSketch
+    /// Change the plane (XY / XZ / YZ) a sketch block draws on. Existing
+    /// 2D entity coords are reinterpreted in the new plane's local axes —
+    /// the sketch keeps its shape but moves to the new world orientation.
+    | SetSketchPlane of Server.Lang.Notebook.BlockId * SketchPlane
+    /// Click-to-pick: enter pick mode for a block ref input. The
+    /// BlockList highlights compatible upstream rows; the next click on
+    /// such a row commits via `SetBlockArg` and exits pick mode.
+    | BeginPickBlockRef of Server.Lang.Notebook.BlockId * paramName: string
+    /// Leave pick mode without committing (Escape, click same bubble).
+    | CancelPickBlockRef
 
 module Editor =
 
@@ -230,44 +206,6 @@ module Editor =
         |> List.tryPick (function
             | REPoint(id, x, y) when id = pointId -> Some { X = x; Y = y }
             | _ -> None)
-
-    /// The kind name (case-preserved) used by `freshActionId` to pick a
-    /// filename-safe prefix. Order matches the `ActionTemplate` DU.
-    let templateKindName =
-        function
-        | SphereTemplate -> "Sphere"
-        | CylinderTemplate -> "Cylinder"
-        | BoxTemplate -> "Box"
-        | HalfPlaneTemplate -> "HalfPlane"
-        | TranslateTemplate -> "Translate"
-        | RotateTemplate -> "Rotate"
-        | MoveTemplate -> "Move"
-        | UnionTemplate -> "Union"
-        | SubtractTemplate -> "Subtract"
-        | IntersectTemplate -> "Intersect"
-        | SketchTemplate -> "Sketch"
-        | FromSketchTemplate -> "FromSketch"
-        | ThickenTemplate -> "Thicken"
-        | ShellTemplate -> "Shell"
-        | MeshTemplate -> "Mesh"
-
-    let actionTemplateKind =
-        function
-        | SphereTemplate -> Sphere 8.0
-        | CylinderTemplate -> Cylinder(5.0, 20.0)
-        | BoxTemplate -> Box(10.0, 10.0, 10.0)
-        | HalfPlaneTemplate -> HalfPlane("Z", 0.0, false)
-        | TranslateTemplate -> Translate(None, 0.0, 0.0, 0.0)
-        | RotateTemplate -> Rotate(None, 0.0, 0.0, 1.0, 0.0)
-        | MoveTemplate -> Move(None, None)
-        | UnionTemplate -> Union(None, None, 0.0)
-        | SubtractTemplate -> Subtract(None, None, 0.0)
-        | IntersectTemplate -> Intersect(None, None, 0.0)
-        | SketchTemplate -> Sketch(Some "origin", XY, ActionSketch.empty)
-        | FromSketchTemplate -> FromSketch(None, false, FromSketchSelection.defaults)
-        | ThickenTemplate -> Thicken(None, 2.0)
-        | ShellTemplate -> Shell(None, 1.0)
-        | MeshTemplate -> Mesh(None, 0.2, 96)
 
     let sketchToolName =
         function
@@ -304,14 +242,23 @@ module Editor =
         | ConcentricConstraint -> "Concentric"
         | FixedConstraint -> "Fixed"
 
+    /// Compile the notebook end-to-end: typecheck, eval, serialise. The
+    /// returned `CompileResult` carries the kernel bytes (when the whole
+    /// pipeline succeeds), per-block error and output-type maps, and a
+    /// panel-level summary message. Used both for the initial seed and
+    /// for every block-mutating reducer step via `recompileNotebook`.
+    let private compileNotebook (blocks: Server.Lang.Notebook.Block list) (nextId: Server.Lang.Notebook.BlockId) : Server.Lang.NotebookCompose.CompileResult =
+        let nb : Server.Lang.Notebook.Notebook = { NextId = nextId; Blocks = blocks }
+        Server.Lang.NotebookCompose.compile nb
+
     let initState () =
         let doc = Document.emptyDocument ()
-        let compiled = Pipeline.compile doc.Actions
+        let compiled = BlockCompile.compile doc.Blocks
+        let nbResult = compileNotebook doc.Blocks doc.NextBlockId
         { Doc = doc
           Compiled = compiled
           SlotValues = Array.copy compiled.Slots.Values
           SolvedSketchParams = Map.empty
-          PaletteSession = Palette.empty
           HoveredTarget = None
           SelectedTargets = []
           SketchEditMode = false
@@ -326,65 +273,21 @@ module Editor =
           ConstraintPlacementMode = None
           ConstraintPlacementDraft = None
           ConstraintPlacementCursor = None
-          ExpandedActionIds = Set.empty
-          EditFocusIdx = 0
-          EditingInputField = None
-          EditingInputInitial = None
-          RefPickIdx = 0
-          ActionPickerOpen = false
-          ViewerMode = Raymarch }
+          ExpandedBlockIds = Set.empty
+          LastNotebookError = nbResult.Summary
+          LastNotebookBytes = nbResult.Bytes
+          NotebookBlockErrors = nbResult.BlockErrors
+          NotebookBlockOutputs = nbResult.BlockOutputs
+          NotebookIr = nbResult.Ir
+          NotebookFieldExprByBlock = nbResult.FieldExprByBlock
+          EditingBlockRef = None }
 
+    /// Sketch-local scalar fields are always slot-backed; that's the only
+    /// `ActionParamField` shape left after the action graph was retired.
     let isSlotBackedActionParamField =
         function
-        | CylinderRadius
-        | CylinderHeight
-        | SphereRadius
-        | BoxWidth
-        | BoxHeight
-        | BoxDepth
-        | TranslateX
-        | TranslateY
-        | TranslateZ
-        | RotateAxisX
-        | RotateAxisY
-        | RotateAxisZ
-        | RotateAngle
-        | HalfPlaneOffset
-        | UnionRadius
-        | SubtractRadius
-        | IntersectRadius
         | SketchEntityField _
-        | SketchConstraintField _
-        | ThickenAmount
-        | ShellThickness
-        | MeshSize
-        | MeshResolution -> true
-        | TranslateChild
-        | RotateChild
-        | HalfPlaneAxis
-        | HalfPlaneFlip
-        | MoveChild
-        | MoveFrame
-        | UnionA
-        | UnionB
-        | SubtractA
-        | SubtractB
-        | IntersectA
-        | IntersectB
-        | SketchOrigin
-        | SketchPlane
-        | FromSketchChild
-        | FromSketchFlip
-        | FromSketchSelection
-        | ThickenChild
-        | ShellChild
-        | MeshChild -> false
-
-    let setActionParamValue id field value =
-        if isSlotBackedActionParamField field then
-            SetActionSlotValue(id, field, value)
-        else
-            SetActionStructureValue(id, field, value)
+        | SketchConstraintField _ -> true
 
     let sketchPlaneTransform (originFrame: RigidTransform) (plane: SketchPlane) =
         let localRotation =
@@ -402,41 +305,36 @@ module Editor =
                     { X = 1.0; Y = 0.0; Z = 0.0 }
         originFrame * { Rot = localRotation; Trans = Vec3.Zero }
 
-    let resolveSketchTransform (state: EditorState) (origin: string option) (plane: SketchPlane) =
-        let originFrame =
-            origin
-            |> Option.bind (fun id -> Map.tryFind id state.Compiled.Frames)
-            |> Option.map (Frames.foldChain state.Compiled.Slots state.SlotValues)
-            |> Option.defaultValue RigidTransform.Identity
-        sketchPlaneTransform originFrame plane
+    let resolveSketchTransform (_state: EditorState) (_origin: string option) (plane: SketchPlane) =
+        // Block-sourced sketches sit at the world origin in their declared
+        // plane; the action-graph frame chains that produced per-action
+        // origins are gone. Frame origins per-block are a future feature.
+        sketchPlaneTransform RigidTransform.Identity plane
 
-    let resolvedFrames (state: EditorState) =
-        state.Compiled.Frames
-        |> Map.map (fun _ chain -> Frames.foldChain state.Compiled.Slots state.SlotValues chain)
+    let resolvedFrames (_state: EditorState) : Map<ActionId, RigidTransform> =
+        Map.empty
 
-    /// ID of the sketch currently being edited, if any.
+    /// ID of the sketch currently being edited, if any. Always a synthetic
+    /// `@block_<n>` id sourced from `Doc.SelectedBlockId` — the action
+    /// graph and its real action ids are gone.
     let activeSketchEditId (state: EditorState) =
-        match state.SketchEditMode, state.Doc.SelectedId with
-        | true, Some id ->
-            state.Doc.Actions
-            |> List.tryFind (fun a -> a.Id = id)
-            |> Option.bind (fun a -> match a.Kind with Sketch _ -> Some id | _ -> None)
-        | _ -> None
+        if not state.SketchEditMode then None
+        else
+            match state.Doc.SelectedBlockId with
+            | Some bid ->
+                state.Doc.Blocks
+                |> List.tryFind (fun b -> b.Id = bid)
+                |> Option.bind (fun b ->
+                    match b.Body with
+                    | Server.Lang.Notebook.SketchBody _ ->
+                        Some (SketchAuthoring.blockSketchId bid)
+                    | _ -> None)
+            | None -> None
 
-    /// Ids of frame actions that appear before the active sketch — the
-    /// frame origins the sketch is allowed to reference.
-    let sketchEditFrameIds (state: EditorState) : Set<string> =
-        match activeSketchEditId state with
-        | None -> Set.empty
-        | Some sketchId ->
-            let i = state.Doc.Actions |> List.findIndex (fun a -> a.Id = sketchId)
-            state.Doc.Actions
-            |> List.take i
-            |> List.choose (fun a ->
-                match Map.tryFind a.Id state.Compiled.TypeMap with
-                | Some FieldType.Frame -> Some a.Id
-                | _ -> None)
-            |> Set.ofList
+    /// Ids of frame actions that appear before the active sketch.
+    /// Always empty in notebook mode (no per-action frame chains).
+    let sketchEditFrameIds (_state: EditorState) : Set<string> =
+        Set.empty
 
     /// True when `target` belongs to the actively-edited sketch: either its
     /// own geometry (point/line/circle/arc/loop/dimension) or a frame origin
@@ -476,30 +374,33 @@ module Editor =
         | _ -> actionId
 
     /// Resolve a sketch id to its content + origin transform in the current
-    /// compiled state. Used as a lookup callback by SketchAuthoring.
+    /// compiled state. Used as a lookup callback by SketchAuthoring. The
+    /// only sketch source is `@block_<n>` SketchBlocks; they sit at the
+    /// world origin in their declared plane.
     let trySketchContext (state: EditorState) (sketchId: string) =
-        state.Doc.Actions
-        |> List.tryFind (fun action -> action.Id = sketchId)
-        |> Option.bind (fun action ->
-            match action.Kind with
-            | Sketch(origin, plane, sketch) ->
-                Some(sketch, resolveSketchTransform state origin plane)
-            | _ -> None)
+        if sketchId.StartsWith "@block_" then
+            let rest = sketchId.Substring 7
+            match System.Int32.TryParse rest with
+            | true, bid ->
+                state.Doc.Blocks
+                |> List.tryFind (fun b -> b.Id = bid)
+                |> Option.bind (fun b ->
+                    match b.Body with
+                    | Server.Lang.Notebook.SketchBody data ->
+                        Some(data.Sketch, resolveSketchTransform state None data.Plane)
+                    | _ -> None)
+            | _ -> None
+        else None
 
-    let formatErrors (errs: TypeError list) =
-        errs |> List.map (fun e ->
-            match e with
-            | MissingRef(id, key) -> { ActionId = id; Key = key; Error = "missing" }
-            | RefNotFound(id, key, target) -> { ActionId = id; Key = key; Error = $"not found: {target}" }
-            | ForwardRef(id, key, target) -> { ActionId = id; Key = key; Error = $"forward ref: {target}" }
-            | TypeMismatch(id, key, expected, got) ->
-                let exp = expected |> List.map string |> String.concat "|"
-                { ActionId = id; Key = key; Error = $"expected {exp}, got {got}" })
+    /// Action-graph type errors are gone. Notebook errors flow through
+    /// `EditorState.LastNotebookError` / `NotebookBlockErrors`.
+    let formatErrors (_errs: obj list) : ActionErrorView list = []
 
     let sketchUiState (state: EditorState) =
+        let activeSketchId = activeSketchEditId state
         let placementCursor =
-            match state.ConstraintPlacementCursor, state.Doc.SelectedId with
-            | Some(sketchId, position), Some selectedId when state.SketchEditMode && selectedId = sketchId -> Some(position.X, position.Y)
+            match state.ConstraintPlacementCursor, activeSketchId with
+            | Some(sketchId, position), Some activeId when state.SketchEditMode && activeId = sketchId -> Some(position.X, position.Y)
             | _ -> None
         let placementTargets =
             match state.ConstraintPlacementMode, state.HoveredTarget with
@@ -528,47 +429,28 @@ module Editor =
             state.EditingDimension
             |> Option.bind (fun current ->
                 match SketchAuthoring.trySelectedSketch state.Doc with
-                | Some selected when next.EditMode && selected.Action.Id = current.SketchId ->
+                | Some selected when next.EditMode && selected.Id = current.SketchId ->
                     SketchAuthoring.tryEditableDimension current.SketchId selected.Sketch current.ConstraintIndex
                 | _ -> None)
+        let activeSketchId = activeSketchEditId state
         let constraintPlacementCursor =
-            match next.ConstraintPlacementMode |> Option.bind tryConstraintPlacementKind, state.ConstraintPlacementCursor, state.Doc.SelectedId with
-            | Some _, Some(sketchId, pos), Some selectedId when next.EditMode && next.Tool = "none" && selectedId = sketchId -> Some(sketchId, pos)
+            match next.ConstraintPlacementMode |> Option.bind tryConstraintPlacementKind, state.ConstraintPlacementCursor, activeSketchId with
+            | Some _, Some(sketchId, pos), Some activeId when next.EditMode && next.Tool = "none" && activeId = sketchId -> Some(sketchId, pos)
             | _ -> None
         let constraintPlacementDraft =
-            match next.ConstraintPlacementMode |> Option.bind tryConstraintPlacementKind, state.ConstraintPlacementDraft, state.Doc.SelectedId with
-            | Some kind, Some draft, Some selectedId when next.EditMode && next.Tool = "none" && draft.SketchId = selectedId && draft.Kind = constraintPlacementName kind -> Some draft
+            match next.ConstraintPlacementMode |> Option.bind tryConstraintPlacementKind, state.ConstraintPlacementDraft, activeSketchId with
+            | Some kind, Some draft, Some activeId when next.EditMode && next.Tool = "none" && draft.SketchId = activeId && draft.Kind = constraintPlacementName kind -> Some draft
             | _ -> None
         let activeSketchDrag =
-            match state.ActiveSketchDrag, state.Doc.SelectedId with
-            | Some drag, Some selectedId when next.EditMode && selectedId = drag.SketchId -> Some drag
+            match state.ActiveSketchDrag, activeSketchId with
+            | Some drag, Some activeId when next.EditMode && activeId = drag.SketchId -> Some drag
             | _ -> None
         let activeSession =
             state.ActiveSession
-            |> Option.filter (fun session ->
-                let id = SceneSession.actionId session
-                state.Doc.Actions |> List.exists (fun a -> a.Id = id))
-        // Drop any expanded ids whose action has been deleted.
-        let actionIds = state.Doc.Actions |> List.map (fun a -> a.Id) |> Set.ofList
-        let expandedActionIds = Set.intersect state.ExpandedActionIds actionIds
-        // Focus index is meaningful only while the selected action is
-        // expanded — otherwise clamp to 0 (the action row).
-        let selectedExpanded =
-            match state.Doc.SelectedId with
-            | Some id -> Set.contains id expandedActionIds
-            | None -> false
-        let editFocusIdx =
-            if selectedExpanded then max 0 state.EditFocusIdx else 0
-        let editingInputField =
-            if selectedExpanded then state.EditingInputField else None
-        let editingInputInitial =
-            match editingInputField with
-            | Some _ -> state.EditingInputInitial
-            | None -> None
-        let refPickIdx =
-            match editingInputField with
-            | Some _ -> max 0 state.RefPickIdx
-            | None -> 0
+            |> Option.filter (fun _session ->
+                // Action gizmo sessions are dormant — never alive in
+                // notebook mode; drop them on every normalise pass.
+                false)
         { state with
             SketchEditMode = next.EditMode
             SketchTool = next.Tool
@@ -582,35 +464,27 @@ module Editor =
             ConstraintPlacementMode = next.ConstraintPlacementMode |> Option.bind tryConstraintPlacementKind
             ConstraintPlacementCursor = constraintPlacementCursor
             ConstraintPlacementDraft = constraintPlacementDraft
-            ExpandedActionIds = expandedActionIds
-            EditFocusIdx = editFocusIdx
-            EditingInputField = editingInputField
-            EditingInputInitial = editingInputInitial
-            RefPickIdx = refPickIdx }
+            ExpandedBlockIds = state.ExpandedBlockIds }
+
+    /// Re-run the notebook compose+typecheck+evaluate pipeline against
+    /// the current `Doc.Blocks` and refresh the cached error/output/bytes
+    /// fields. Called by every reducer arm that mutates blocks so the UI
+    /// (BlockList row styling, ref-drop type filter) and the kernel push
+    /// (Viewer subscribes to `LastNotebookBytes`) stay in sync.
+    let recompileNotebook (state: EditorState) : EditorState =
+        let nbResult = compileNotebook state.Doc.Blocks state.Doc.NextBlockId
+        { state with
+            LastNotebookError = nbResult.Summary
+            LastNotebookBytes = nbResult.Bytes
+            NotebookBlockErrors = nbResult.BlockErrors
+            NotebookBlockOutputs = nbResult.BlockOutputs
+            NotebookIr = nbResult.Ir
+            NotebookFieldExprByBlock = nbResult.FieldExprByBlock }
 
     let recompileState (state: EditorState) =
-        let compiled = Pipeline.compile state.Doc.Actions
-        // Visibility is bound to the output type (Field vs Frame etc).
-        // When a ref rewire flips the type — e.g. a Translate switches
-        // from wrapping a field to wrapping a frame — snap the
-        // visibility to a mode that still makes sense.
-        let normalizedActions =
-            state.Doc.Actions
-            |> List.map (fun a ->
-                let isField =
-                    Map.tryFind a.Id compiled.TypeMap = Some FieldType.Field
-                let normalized = Document.normalizeVisibility a.Kind isField a.Visibility
-                if normalized = a.Visibility then a
-                else { a with Visibility = normalized })
-        let anyChanged =
-            (state.Doc.Actions, normalizedActions)
-            ||> List.exists2 (fun a b -> a.Visibility <> b.Visibility)
-        let nextDoc =
-            if anyChanged then { state.Doc with Actions = normalizedActions }
-            else state.Doc
+        let compiled = BlockCompile.compile state.Doc.Blocks
         let next =
             { state with
-                Doc = nextDoc
                 Compiled = compiled
                 SlotValues = Array.copy compiled.Slots.Values
                 SolvedSketchParams = Map.empty
@@ -618,7 +492,7 @@ module Editor =
                 SelectedTargets = state.SelectedTargets |> List.filter (isValidSelectionTarget { state with Compiled = compiled }) }
         normalizeState next
 
-    let private patchSlotValues (slotValues: float array) (compiled: PipelineResult) (updates: (SlotRef * float) list) =
+    let private patchSlotValues (slotValues: float array) (compiled: BlockCompiled) (updates: (SlotRef * float) list) =
         let resolved =
             updates
             |> List.map (fun (slotRef, value) ->
@@ -628,10 +502,8 @@ module Editor =
 
         SlotTable.patchedValues slotValues resolved
 
-    let private floatValueForSlotField field value =
-        match field with
-        | MeshResolution -> ParamValue.asInt value |> Option.map float
-        | _ -> ParamValue.asFloat value
+    let private floatValueForSlotField _field value =
+        ParamValue.asFloat value
 
     let private patchActionSlotValues (state: EditorState) (actionId: string) (field: ActionParamField) (value: ParamValue) =
         if not (isSlotBackedActionParamField field) then
@@ -694,12 +566,10 @@ module Editor =
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None }
 
-    /// Wholesale document replacement with a full UI reset. Used by
-    /// LoadModel and ClearModel.
+    /// Wholesale document replacement with a full UI reset. Used by ClearModel.
     let loadDoc (doc: Document) (state: EditorState) =
         { state with
             Doc = doc
-            PaletteSession = Palette.empty
             HoveredTarget = None
             SelectedTargets = []
             SketchEditMode = false
@@ -715,12 +585,7 @@ module Editor =
             ConstraintPlacementMode = None
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None
-            ExpandedActionIds = Set.empty
-            EditFocusIdx = 0
-            EditingInputField = None
-            EditingInputInitial = None
-            RefPickIdx = 0
-            ActionPickerOpen = false }
+            ExpandedBlockIds = Set.empty }
         |> recompileState
 
     let applySelectionIntent intent target current =
@@ -745,56 +610,32 @@ module Editor =
         |> List.tryHead
 
     let applyDeleteIntent (state: EditorState) =
-        if state.SketchEditMode then
+        // Sketch edit mode with entities highlighted: delete the entities.
+        if state.SketchEditMode && not state.SelectedTargets.IsEmpty then
             match SketchAuthoring.trySelectedSketch state.Doc with
-            | Some ctx when not state.SelectedTargets.IsEmpty ->
+            | Some ctx ->
                 let nextDoc =
-                    SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.deleteTargets state.SelectedTargets ctx.Sketch)
+                    SketchAuthoring.withUpdatedSketch state.Doc ctx.Id (SketchAuthoring.deleteTargets state.SelectedTargets ctx.Sketch)
                 { state with Doc = nextDoc }
                 |> clearTransient
                 |> recompileState
-            | _ ->
-                state
+            | None -> state
         else
-            match state.Doc.SelectedId with
-            | Some id when id <> "origin" ->
-                { state with Doc = Document.removeAction id state.Doc }
+            // No entities highlighted — fall through to block / action delete.
+            match state.Doc.SelectedBlockId with
+            | Some bid ->
+                let blocks = state.Doc.Blocks |> List.filter (fun b -> b.Id <> bid)
+                { state with
+                    Doc =
+                        { state.Doc with
+                            Blocks = blocks
+                            SelectedBlockId = None }
+                    SketchEditMode = false
+                    EditingBlockRef = None }
                 |> clearTransient
+                |> recompileNotebook
                 |> recompileState
-            | _ ->
-                state
-
-    let paletteMaybeBuild (state: EditorState) =
-        let paletteState = Palette.toState state.PaletteSession state.Compiled.TypeMap state.Doc
-        if paletteState.Mode = "done" then
-            match state.PaletteSession.PickedKind with
-            | Some kind ->
-                let actionId = Document.freshActionId kind state.Doc
-                match Palette.buildAction state.PaletteSession actionId with
-                | Some action ->
-                    // Drop straight into sketch-edit mode on a fresh
-                    // Sketch action — same QoL as the sidebar's
-                    // AddDefaultAction path.
-                    let enterSketchEdit =
-                        match action.Kind with
-                        | Sketch _ -> true
-                        | _ -> false
-                    { state with
-                        Doc = Document.addAction action state.Doc
-                        PaletteSession = Palette.empty
-                        SketchEditMode =
-                            if enterSketchEdit then true else state.SketchEditMode }
-                    |> recompileState
-                | None ->
-                    { state with PaletteSession = Palette.empty }
-            | None ->
-                { state with PaletteSession = Palette.empty }
-        else
-            state
-
-    let serializedModel (state: EditorState) =
-        { Name = state.Doc.Name
-          Actions = state.Doc.Actions }
+            | None -> state
 
     let noEffects : Effect list = []
 
@@ -803,134 +644,34 @@ module Editor =
         | { Kind = DragConstraintLabel _ } -> true
         | _ -> false
 
-    /// Walks down a FieldNode accumulating its leading rigid transforms
-    /// so the viewer's field-slice renderer and the translate-gizmo
-    /// session can share one way of resolving "where does this field
-    /// live in the world". For frame-output Translates the transform
-    /// comes from `Compiled.Frames`; for field-output Translates the
-    /// compiled `FieldSurface.Field` tree encodes the accumulated
-    /// translate/rotate chain.
-    let rec leadingFieldTransform (state: EditorState) (field: FieldNode) (acc: RigidTransform) =
-        let slot (s: Slot) = state.SlotValues.[s]
-        match field with
-        | FTranslate(x, y, z, child) ->
-            let step = RigidTransform.translate { X = slot x; Y = slot y; Z = slot z }
-            leadingFieldTransform state child (acc * step)
-        | FRotate(ax, ay, az, angle, child) ->
-            let step =
-                RigidTransform.fromAxisAngle
-                    { X = slot ax; Y = slot ay; Z = slot az }
-                    (slot angle)
-            leadingFieldTransform state child (acc * step)
-        | FFieldOp(_, _, child) -> leadingFieldTransform state child acc
-        | _ -> acc
-
-    /// Resolve the world pose of an action whose output can be expressed as a
-    /// leading rigid transform (currently Translate/Rotate gizmos).
-    let resolveActionTransform (state: EditorState) (actionId: ActionId) : RigidTransform =
-        match Map.tryFind actionId state.Compiled.Frames with
-        | Some chain -> Frames.foldChain state.Compiled.Slots state.SlotValues chain
-        | None ->
-            state.Compiled.Surfaces
-            |> List.tryFind (fun s -> s.ActionId = actionId)
-            |> Option.map (fun s -> leadingFieldTransform state s.Field RigidTransform.Identity)
-            |> Option.defaultValue RigidTransform.Identity
+    /// Action-anchored gizmos (Translate/Rotate/HalfPlane) are dormant in
+    /// notebook mode. The viewer modules still call `resolveActionTransform`
+    /// (e.g. for context queries) but every call returns identity since
+    /// there are no actions to anchor on.
+    let resolveActionTransform (_state: EditorState) (_actionId: ActionId) : RigidTransform =
+        RigidTransform.Identity
 
     // ── Scene interaction dispatch ────────────────────────────────────
     //
-    // Unified entry points for the `Scene*` pointer messages. Each
-    // returns `(EditorState * Effect list)` — same contract as the
-    // reducer itself so the top-level `update` just delegates.
+    // Action gizmo drag sessions are gone alongside the action graph.
+    // The Scene* pointer messages still flow through the reducer for
+    // future block-anchored interactions, but currently every entry
+    // returns the state unchanged.
 
     let rotateAxisHandlePx = 76.0
     let rotateAngleHandlePx = 52.0
 
-    let private readTranslateSlot (state: EditorState) (actionId: ActionId) (path: string) : float =
-        match SlotTable.tryFindSlot state.Compiled.Slots { ActionId = actionId; Path = path } with
-        | Some s when s < state.SlotValues.Length -> state.SlotValues.[s]
-        | _ -> 0.0
+    let halfPlaneAxisDir (_state: EditorState) (_actionId: ActionId) : Vec3 =
+        { X = 0.0; Y = 0.0; Z = 1.0 }
 
-    let private readRotateSlot = readTranslateSlot
+    let halfPlaneAxisIndex (_state: EditorState) (_actionId: ActionId) : int = 2
 
-    let private patchRotateSlots
-            (state: EditorState)
-            (actionId: ActionId)
-            (ax: float) (ay: float) (az: float)
-            (angle: float) : Document * float array =
-        let nextDoc =
-            state.Doc
-            |> Document.patchParamValue actionId RotateAxisX (VFloat ax)
-            |> Document.patchParamValue actionId RotateAxisY (VFloat ay)
-            |> Document.patchParamValue actionId RotateAxisZ (VFloat az)
-            |> Document.patchParamValue actionId RotateAngle (VFloat angle)
-        let updates =
-            [ { ActionId = actionId; Path = "ax" }, ax
-              { ActionId = actionId; Path = "ay" }, ay
-              { ActionId = actionId; Path = "az" }, az
-              { ActionId = actionId; Path = "angle" }, angle ]
-        nextDoc, patchSlotValues state.SlotValues state.Compiled updates
+    let halfPlaneOffsetValue (_state: EditorState) (_actionId: ActionId) : float = 0.0
 
-    let halfPlaneAxisDir (state: EditorState) (actionId: ActionId) : Vec3 =
-        match state.Doc.Actions |> List.tryFind (fun a -> a.Id = actionId) with
-        | Some { Kind = HalfPlane(axis, _, _) } ->
-            match axis with
-            | "X" -> { X = 1.0; Y = 0.0; Z = 0.0 }
-            | "Y" -> { X = 0.0; Y = 1.0; Z = 0.0 }
-            | _ -> { X = 0.0; Y = 0.0; Z = 1.0 }
-        | _ -> { X = 0.0; Y = 0.0; Z = 1.0 }
+    let normalizedRotateAxisLocal (_state: EditorState) (_actionId: ActionId) : Vec3 =
+        { X = 0.0; Y = 0.0; Z = 1.0 }
 
-    let halfPlaneAxisIndex (state: EditorState) (actionId: ActionId) : int =
-        match state.Doc.Actions |> List.tryFind (fun a -> a.Id = actionId) with
-        | Some { Kind = HalfPlane(axis, _, _) } ->
-            match axis with
-            | "X" -> 0
-            | "Y" -> 1
-            | _ -> 2
-        | _ -> 2
-
-    let private halfPlaneAxisName axisIndex =
-        match axisIndex with
-        | 0 -> "X"
-        | 1 -> "Y"
-        | _ -> "Z"
-
-    let halfPlaneOffsetValue (state: EditorState) (actionId: ActionId) : float =
-        readTranslateSlot state actionId "offset"
-
-    let private patchHalfPlaneOffset
-            (state: EditorState)
-            (actionId: ActionId)
-            (offset: float) : Document * float array =
-        let nextDoc =
-            state.Doc
-            |> Document.patchParamValue actionId HalfPlaneOffset (VFloat offset)
-        let updates =
-            [ { ActionId = actionId; Path = "offset" }, offset ]
-        nextDoc, patchSlotValues state.SlotValues state.Compiled updates
-
-    let private setHalfPlaneAxis
-            (state: EditorState)
-            (actionId: ActionId)
-            (axisIndex: int) : EditorState * Effect list =
-        let axisName = halfPlaneAxisName axisIndex
-        let currentIndex = halfPlaneAxisIndex state actionId
-        if currentIndex = axisIndex then state, noEffects
-        else
-            let nextDoc =
-                state.Doc
-                |> Document.patchParamValue actionId HalfPlaneAxis (VString axisName)
-            { state with Doc = nextDoc } |> recompileState, noEffects
-
-    let normalizedRotateAxisLocal (state: EditorState) (actionId: ActionId) : Vec3 =
-        let axis =
-            { X = readRotateSlot state actionId "ax"
-              Y = readRotateSlot state actionId "ay"
-              Z = readRotateSlot state actionId "az" }
-        if axis.LengthSq < 1e-9 then { X = 0.0; Y = 0.0; Z = 1.0 }
-        else axis.Normalized
-
-    let rotateAngleValue (state: EditorState) (actionId: ActionId) : float =
-        readRotateSlot state actionId "angle"
+    let rotateAngleValue (_state: EditorState) (_actionId: ActionId) : float = 0.0
 
     let orthonormalBasisFromAxis (axis: Vec3) : Vec3 * Vec3 =
         let helper =
@@ -940,251 +681,17 @@ module Editor =
         let v = Vec3.Cross(axis, u).Normalized
         u, v
 
-    let private signedAngleAboutAxis (axis: Vec3) (basisU: Vec3) (basisV: Vec3) (dir: Vec3) : float =
-        let x = Vec3.Dot(dir, basisU)
-        let y = Vec3.Dot(dir, basisV)
-        System.Math.Atan2(y, x)
+    let sceneOnPointerDown (state: EditorState) (_target: Pickable) (_ray: PointerRay) : EditorState * Effect list =
+        state, noEffects
 
-    let private localAxis axisIndex : Vec3 =
-        match axisIndex with
-        | 0 -> { X = 1.0; Y = 0.0; Z = 0.0 }
-        | 1 -> { X = 0.0; Y = 1.0; Z = 0.0 }
-        | _ -> { X = 0.0; Y = 0.0; Z = 1.0 }
-
-    let private planeAxes planeIndex : Vec3 * Vec3 =
-        match planeIndex with
-        | 0 -> localAxis 0, localAxis 1  // XY
-        | 1 -> localAxis 1, localAxis 2  // YZ
-        | _ -> localAxis 0, localAxis 2  // XZ
-
-    let private patchTranslateSlots (state: EditorState) (actionId: ActionId) (x: float) (y: float) (z: float) : Document * float array =
-        let nextDoc =
-            state.Doc
-            |> Document.patchParamValue actionId TranslateX (VFloat x)
-            |> Document.patchParamValue actionId TranslateY (VFloat y)
-            |> Document.patchParamValue actionId TranslateZ (VFloat z)
-        let updates =
-            [ { ActionId = actionId; Path = "x" }, x
-              { ActionId = actionId; Path = "y" }, y
-              { ActionId = actionId; Path = "z" }, z ]
-        nextDoc, patchSlotValues state.SlotValues state.Compiled updates
-
-    let private beginGizmoAxisDrag
-            (state: EditorState) (actionId: ActionId) (axisIdx: int) (ray: PointerRay)
-            : EditorState * Effect list =
-        let xform = resolveActionTransform state actionId
-        let axisDirWorld = xform.Rot.Rotate(localAxis axisIdx)
-        match PointerRay.projectOntoAxis ray xform.Trans axisDirWorld with
-        | None -> state, noEffects
-        | Some t0 ->
-            let session =
-                { ActionId = actionId
-                  AxisIndex = axisIdx
-                  AxisDir = axisDirWorld
-                  Anchor = xform.Trans
-                  InitialX = readTranslateSlot state actionId "x"
-                  InitialY = readTranslateSlot state actionId "y"
-                  InitialZ = readTranslateSlot state actionId "z"
-                  InitialT = t0 }
-            { state with ActiveSession = Some(GizmoAxisDrag session) }, noEffects
-
-    let private beginGizmoPlaneDrag
-            (state: EditorState) (actionId: ActionId) (planeIdx: int) (ray: PointerRay)
-            : EditorState * Effect list =
-        let xform = resolveActionTransform state actionId
-        let localU, localV = planeAxes planeIdx
-        let axisU = xform.Rot.Rotate(localU)
-        let axisV = xform.Rot.Rotate(localV)
-        match PointerRay.intersectPlane ray xform.Trans axisU axisV with
-        | None -> state, noEffects
-        | Some(u0, v0) ->
-            let session =
-                { ActionId = actionId
-                  PlaneIndex = planeIdx
-                  AxisU = axisU
-                  AxisV = axisV
-                  Anchor = xform.Trans
-                  InitialX = readTranslateSlot state actionId "x"
-                  InitialY = readTranslateSlot state actionId "y"
-                  InitialZ = readTranslateSlot state actionId "z"
-                  InitialU = u0
-                  InitialV = v0 }
-            { state with ActiveSession = Some(GizmoPlaneDrag session) }, noEffects
-
-    let private beginRotateAxisDrag
-            (state: EditorState) (actionId: ActionId) : EditorState * Effect list =
-        let xform = resolveActionTransform state actionId
-        let axisLocal = normalizedRotateAxisLocal state actionId
-        let axisWorld = xform.Rot.Rotate(axisLocal).Normalized
-        let session =
-            { ActionId = actionId
-              Anchor = xform.Trans
-              WorldToLocal = xform.Rot.Inverse
-              FallbackWorldAxis = axisWorld
-              InitialAxisX = axisLocal.X
-              InitialAxisY = axisLocal.Y
-              InitialAxisZ = axisLocal.Z }
-        { state with ActiveSession = Some(RotateAxisDrag session) }, noEffects
-
-    let private beginRotateAngleDrag
-            (state: EditorState) (actionId: ActionId) (ray: PointerRay) : EditorState * Effect list =
-        let xform = resolveActionTransform state actionId
-        let axisLocal = normalizedRotateAxisLocal state actionId
-        let axisWorld = xform.Rot.Rotate(axisLocal).Normalized
-        let basisU, basisV = orthonormalBasisFromAxis axisWorld
-        // Angle drag lives in the plane orthogonal to the current axis and
-        // centered at the rotate origin. The viewer renders the guide using
-        // the same basis; only its screen-space radius is viewer-specific.
-        match PointerRay.intersectPlane ray xform.Trans basisU basisV with
-        | None -> state, noEffects
-        | Some _ ->
-            let session =
-                { ActionId = actionId
-                  Center = xform.Trans
-                  AxisWorld = axisWorld
-                  BasisU = basisU
-                  BasisV = basisV
-                  InitialAngle = rotateAngleValue state actionId }
-            { state with ActiveSession = Some(RotateAngleDrag session) }, noEffects
-
-    let private beginHalfPlaneOffsetDrag
-            (state: EditorState) (actionId: ActionId) (ray: PointerRay)
-            : EditorState * Effect list =
-        let axisDir = halfPlaneAxisDir state actionId
-        match PointerRay.projectOntoAxis ray Vec3.Zero axisDir with
-        | None -> state, noEffects
-        | Some t0 ->
-            let session =
-                { ActionId = actionId
-                  AxisDir = axisDir
-                  Anchor = Vec3.Zero
-                  InitialOffset = halfPlaneOffsetValue state actionId
-                  InitialT = t0 }
-            { state with ActiveSession = Some(HalfPlaneOffsetDrag session) }, noEffects
-
-    let private updateGizmoAxisDrag (state: EditorState) (s: GizmoAxisDragSession) (ray: PointerRay) : EditorState * Effect list =
-        match PointerRay.projectOntoAxis ray s.Anchor s.AxisDir with
-        | None -> state, noEffects
-        | Some t ->
-            let dt = t - s.InitialT
-            let nx, ny, nz =
-                match s.AxisIndex with
-                | 0 -> s.InitialX + dt, s.InitialY, s.InitialZ
-                | 1 -> s.InitialX, s.InitialY + dt, s.InitialZ
-                | _ -> s.InitialX, s.InitialY, s.InitialZ + dt
-            let nextDoc, nextSlots = patchTranslateSlots state s.ActionId nx ny nz
-            { state with Doc = nextDoc; SlotValues = nextSlots }, noEffects
-
-    let private updateGizmoPlaneDrag (state: EditorState) (s: GizmoPlaneDragSession) (ray: PointerRay) : EditorState * Effect list =
-        match PointerRay.intersectPlane ray s.Anchor s.AxisU s.AxisV with
-        | None -> state, noEffects
-        | Some(u, v) ->
-            let du = u - s.InitialU
-            let dv = v - s.InitialV
-            let nx, ny, nz =
-                match s.PlaneIndex with
-                | 0 -> s.InitialX + du, s.InitialY + dv, s.InitialZ
-                | 1 -> s.InitialX, s.InitialY + du, s.InitialZ + dv
-                | _ -> s.InitialX + du, s.InitialY, s.InitialZ + dv
-            let nextDoc, nextSlots = patchTranslateSlots state s.ActionId nx ny nz
-            { state with Doc = nextDoc; SlotValues = nextSlots }, noEffects
-
-    let private updateRotateAxisDrag (state: EditorState) (s: RotateAxisDragSession) (ray: PointerRay) : EditorState * Effect list =
-        let worldDir = PointerRay.projectToSphereDirection ray s.Anchor s.FallbackWorldAxis
-        let localDir = s.WorldToLocal.Rotate(worldDir).Normalized
-        let nextDoc, nextSlots =
-            patchRotateSlots state s.ActionId localDir.X localDir.Y localDir.Z (rotateAngleValue state s.ActionId)
-        { state with Doc = nextDoc; SlotValues = nextSlots }, noEffects
-
-    let private updateRotateAngleDrag (state: EditorState) (s: RotateAngleDragSession) (ray: PointerRay) : EditorState * Effect list =
-        match PointerRay.intersectPlane ray s.Center s.BasisU s.BasisV with
-        | None -> state, noEffects
-        | Some (u, v) ->
-            let dir = ({ X = u; Y = v; Z = 0.0 }.LengthSq)
-            if dir < 1e-9 then state, noEffects
-            else
-                let worldDir = (u * s.BasisU + v * s.BasisV).Normalized
-                let nextAngle = signedAngleAboutAxis s.AxisWorld s.BasisU s.BasisV worldDir
-                let axis = normalizedRotateAxisLocal state s.ActionId
-                let nextDoc, nextSlots =
-                    patchRotateSlots state s.ActionId axis.X axis.Y axis.Z nextAngle
-                { state with Doc = nextDoc; SlotValues = nextSlots }, noEffects
-
-    let private updateHalfPlaneOffsetDrag
-            (state: EditorState)
-            (s: HalfPlaneOffsetDragSession)
-            (ray: PointerRay) : EditorState * Effect list =
-        match PointerRay.projectOntoAxis ray s.Anchor s.AxisDir with
-        | None -> state, noEffects
-        | Some t ->
-            let nextOffset = s.InitialOffset + (t - s.InitialT)
-            let nextDoc, nextSlots = patchHalfPlaneOffset state s.ActionId nextOffset
-            { state with Doc = nextDoc; SlotValues = nextSlots }, noEffects
-
-    let sceneOnPointerDown (state: EditorState) (target: Pickable) (ray: PointerRay) : EditorState * Effect list =
-        match target with
-        | PickGizmoHandle(_, actionId, GAxis axisIdx) -> beginGizmoAxisDrag state actionId axisIdx ray
-        | PickGizmoHandle(_, actionId, GPlane planeIdx) -> beginGizmoPlaneDrag state actionId planeIdx ray
-        | PickGizmoHandle(_, actionId, GRotateAxis) -> beginRotateAxisDrag state actionId
-        | PickGizmoHandle(_, actionId, GRotateAngle) -> beginRotateAngleDrag state actionId ray
-        | PickGizmoHandle(_, actionId, GHalfPlaneAxis axisIdx) -> setHalfPlaneAxis state actionId axisIdx
-        | PickGizmoHandle(_, actionId, GHalfPlaneOffset) -> beginHalfPlaneOffsetDrag state actionId ray
-        | _ ->
-            // No non-gizmo pickables flow through Scene* this pass —
-            // selection / sketch drag / etc. still use their existing
-            // messages. Silently ignore anything else so future call
-            // sites can widen the match without a breaking change.
-            state, noEffects
-
-    let sceneOnPointerMove (state: EditorState) (ray: PointerRay) : EditorState * Effect list =
-        match state.ActiveSession with
-        | Some (GizmoAxisDrag s) -> updateGizmoAxisDrag state s ray
-        | Some (GizmoPlaneDrag s) -> updateGizmoPlaneDrag state s ray
-        | Some (RotateAxisDrag s) -> updateRotateAxisDrag state s ray
-        | Some (RotateAngleDrag s) -> updateRotateAngleDrag state s ray
-        | Some (HalfPlaneOffsetDrag s) -> updateHalfPlaneOffsetDrag state s ray
-        | None -> state, noEffects
+    let sceneOnPointerMove (state: EditorState) (_ray: PointerRay) : EditorState * Effect list =
+        state, noEffects
 
     let sceneOnPointerUp (state: EditorState) : EditorState * Effect list =
         { state with ActiveSession = None }, noEffects
 
     let sceneOnCancel (state: EditorState) : EditorState * Effect list =
-        match state.ActiveSession with
-        | Some (GizmoAxisDrag s) ->
-            let nextDoc, nextSlots = patchTranslateSlots state s.ActionId s.InitialX s.InitialY s.InitialZ
-            { state with
-                Doc = nextDoc
-                SlotValues = nextSlots
-                ActiveSession = None }, noEffects
-        | Some (GizmoPlaneDrag s) ->
-            let nextDoc, nextSlots = patchTranslateSlots state s.ActionId s.InitialX s.InitialY s.InitialZ
-            { state with
-                Doc = nextDoc
-                SlotValues = nextSlots
-                ActiveSession = None }, noEffects
-        | Some (RotateAxisDrag s) ->
-            let nextDoc, nextSlots =
-                patchRotateSlots state s.ActionId s.InitialAxisX s.InitialAxisY s.InitialAxisZ (rotateAngleValue state s.ActionId)
-            { state with
-                Doc = nextDoc
-                SlotValues = nextSlots
-                ActiveSession = None }, noEffects
-        | Some (RotateAngleDrag s) ->
-            let axis = normalizedRotateAxisLocal state s.ActionId
-            let nextDoc, nextSlots =
-                patchRotateSlots state s.ActionId axis.X axis.Y axis.Z s.InitialAngle
-            { state with
-                Doc = nextDoc
-                SlotValues = nextSlots
-                ActiveSession = None }, noEffects
-        | Some (HalfPlaneOffsetDrag s) ->
-            let nextDoc, nextSlots =
-                patchHalfPlaneOffset state s.ActionId s.InitialOffset
-            { state with
-                Doc = nextDoc
-                SlotValues = nextSlots
-                ActiveSession = None }, noEffects
-        | None -> state, noEffects
+        { state with ActiveSession = None }, noEffects
 
     let private patchDragTargetSlotValues (state: EditorState) (drag: SketchDrag) (target: LabelPos) =
         let patched = Array.copy state.SlotValues
@@ -1235,13 +742,37 @@ module Editor =
             match state.ActiveSketchDrag with
             | Some active when active = drag ->
                 if state.PendingSketchDragCommit then
-                    { state with
-                        Doc = SketchSolve.commitSolvedSketch drag.SketchId solvedLocal state.Doc
-                        ActiveSketchDrag = None
-                        PendingSketchDragCommit = false
-                        SolvedSketchParams = Map.empty }
-                    |> recompileState,
-                    noEffects
+                    let sketchOpt =
+                        match SketchAuthoring.trySelectedSketch state.Doc with
+                        | Some ctx when ctx.Id = drag.SketchId -> Some ctx.Sketch
+                        | _ -> None
+                    match sketchOpt with
+                    | Some sketch ->
+                        let fields = SketchSolve.localFields sketch
+                        let count = min fields.Length solvedLocal.Length
+                        let nextDoc =
+                            ((state.Doc, [ 0 .. count - 1 ])
+                             ||> List.fold (fun current index ->
+                                 Document.patchParamValue drag.SketchId fields.[index] (VFloat(float solvedLocal.[index])) current))
+                        // `recompileNotebook` rebuilds `LastNotebookBytes`
+                        // (the IR shipped to the kernel). Without it, the
+                        // patched sketch coords are visible in the overlay
+                        // but constant-baked downstream IR — e.g.
+                        // wing-remap-preview's endpoint constants — keeps
+                        // the pre-drag values.
+                        { state with
+                            Doc = nextDoc
+                            ActiveSketchDrag = None
+                            PendingSketchDragCommit = false
+                            SolvedSketchParams = Map.empty }
+                        |> recompileNotebook
+                        |> recompileState,
+                        noEffects
+                    | None ->
+                        { state with
+                            ActiveSketchDrag = None
+                            PendingSketchDragCommit = false
+                            SolvedSketchParams = Map.empty }, noEffects
                 else
                     { state with SolvedSketchParams = state.SolvedSketchParams |> Map.add drag.SketchId solvedLocal }, noEffects
             | _ ->
@@ -1251,21 +782,34 @@ module Editor =
             | Some active when active.SketchId = sketchId ->
                 state, noEffects
             | _ ->
-                match state.Doc.Actions |> List.tryFind (fun action -> action.Id = sketchId) with
-                | Some { Kind = Sketch(_, _, sketch) } ->
+                match SketchAuthoring.trySelectedSketch state.Doc with
+                | Some ctx when ctx.Id = sketchId ->
                     { state with
-                        SlotValues = SketchSolve.patchSolvedSketchSlots state.SlotValues state.Compiled.Slots sketchId sketch solvedLocal
+                        SlotValues = SketchSolve.patchSolvedSketchSlots state.SlotValues state.Compiled.Slots sketchId ctx.Sketch solvedLocal
                         SolvedSketchParams = state.SolvedSketchParams |> Map.add sketchId solvedLocal },
                     noEffects
                 | _ ->
                     state, noEffects
         | FinishSketchDrag ->
+            // Drag-and-release shouldn't leave the point/label selected —
+            // the click that started the drag put it in `SelectedTargets`
+            // (via the mousedown's `ViewerPick`), but a drag is a transient
+            // interaction, not a "pick this for further edits" gesture.
+            // `FinishSketchDrag` only fires after `dragActive` flipped past
+            // `DRAG_THRESHOLD_PX`, so plain click-to-select on a point
+            // (which never crosses threshold and dispatches no
+            // `FinishSketchDrag`) keeps the new selection.
             match state.ActiveSketchDrag with
             | Some drag ->
                 if isLabelDrag drag then
-                    { state with ActiveSketchDrag = None; PendingSketchDragCommit = false }, noEffects
+                    { state with
+                        ActiveSketchDrag = None
+                        PendingSketchDragCommit = false
+                        SelectedTargets = [] }, noEffects
                 else
-                    { state with PendingSketchDragCommit = true }, [ FinalizeSketchDrag drag ]
+                    { state with
+                        PendingSketchDragCommit = true
+                        SelectedTargets = [] }, [ FinalizeSketchDrag drag ]
             | None ->
                 { state with PendingSketchDragCommit = false; SolvedSketchParams = Map.empty }, noEffects
         | CancelSketchDrag ->
@@ -1281,136 +825,10 @@ module Editor =
         | _ ->
             let next =
                 match message with
-                | SelectAction id ->
-                    // Selection doesn't touch the expansion set any
-                    // more — users can have several actions open and
-                    // jump between them without losing context.
-                    { state with
-                        Doc = Document.select id state.Doc
-                        EditFocusIdx = 0
-                        EditingInputField = None
-                        EditingInputInitial = None
-                        RefPickIdx = 0 }
-                | ExpandAction actionId ->
-                    match state.Doc.Actions |> List.tryFind (fun a -> a.Id = actionId) with
-                    | Some action ->
-                        // Expanding a Sketch action also drops into
-                        // sketch-edit mode so the user can start
-                        // drawing immediately.
-                        let enterSketchEdit =
-                            match action.Kind with
-                            | Sketch _ -> true
-                            | _ -> false
-                        { state with
-                            ExpandedActionIds = Set.add actionId state.ExpandedActionIds
-                            SketchEditMode = if enterSketchEdit then true else state.SketchEditMode }
-                        |> normalizeState
-                    | None -> state
-                | CollapseAction actionId ->
-                    // Dropping the focused action's expansion resets
-                    // focus to the action row + clears sub-edit state.
-                    let clearFocus = state.Doc.SelectedId = Some actionId
-                    { state with
-                        ExpandedActionIds = Set.remove actionId state.ExpandedActionIds
-                        EditFocusIdx = if clearFocus then 0 else state.EditFocusIdx
-                        EditingInputField = if clearFocus then None else state.EditingInputField
-                        EditingInputInitial = if clearFocus then None else state.EditingInputInitial
-                        RefPickIdx = if clearFocus then 0 else state.RefPickIdx }
-                | SetEditFocus idx ->
-                    { state with
-                        EditFocusIdx = max 0 idx
-                        EditingInputField = None
-                        EditingInputInitial = None
-                        RefPickIdx = 0 }
-                | StartEditingInputField(field, idx, initial) ->
-                    { state with
-                        EditingInputField = Some field
-                        EditingInputInitial = initial
-                        RefPickIdx = max 0 idx }
-                | StopEditingInputField ->
-                    { state with
-                        EditingInputField = None
-                        EditingInputInitial = None
-                        RefPickIdx = 0 }
-                | SetRefPickIdx idx ->
-                    { state with RefPickIdx = max 0 idx }
-                | OpenActionPicker ->
-                    { state with ActionPickerOpen = true }
-                | CloseActionPicker ->
-                    { state with ActionPickerOpen = false }
-                | QuickAddAction template ->
-                    // Same shape as `AddDefaultAction` but the id is
-                    // generated from the current doc (so the UI doesn't
-                    // have to thread it through). Closes the picker and
-                    // drops straight into edit mode on the new action so
-                    // the user can start tweaking inputs immediately.
-                    let kindName = templateKindName template
-                    let id = Document.freshActionId kindName state.Doc
-                    let kind = actionTemplateKind template
-                    let action : DocAction =
-                        { Id = id
-                          Name = None
-                          Kind = kind
-                          Visibility = Document.defaultVisibility kind }
-                    let enterSketchEdit =
-                        match action.Kind with
-                        | Sketch _ -> true
-                        | _ -> false
-                    { state with
-                        Doc = Document.addAction action state.Doc
-                        ActionPickerOpen = false
-                        ExpandedActionIds = Set.add id state.ExpandedActionIds
-                        EditFocusIdx = 0
-                        EditingInputField = None
-                        EditingInputInitial = None
-                        RefPickIdx = 0
-                        SketchEditMode =
-                            if enterSketchEdit then true else state.SketchEditMode }
-                    |> recompileState
                 | SetHoveredTarget hoveredTarget ->
                     { state with HoveredTarget = hoveredTarget }
                 | SetSelectedTargets selectedTargets ->
                     { state with SelectedTargets = selectedTargets }
-                | AddDefaultAction(template, id) ->
-                    let kind = actionTemplateKind template
-                    let action : DocAction =
-                        { Id = id
-                          Name = None
-                          Kind = kind
-                          Visibility = Document.defaultVisibility kind }
-                    let next = { state with Doc = Document.addAction action state.Doc }
-                    // Drop straight into sketch-edit mode on a fresh
-                    // Sketch action — the user otherwise has to click
-                    // the edit toggle as their first action every time.
-                    let next =
-                        match template with
-                        | SketchTemplate -> { next with SketchEditMode = true }
-                        | _ -> next
-                    next |> recompileState
-                | AddAction action ->
-                    { state with Doc = Document.addAction action state.Doc } |> recompileState
-                | UpdateAction(id, action) ->
-                    { state with Doc = Document.updateAction id action state.Doc } |> recompileState
-                | RemoveAction id ->
-                    { state with Doc = Document.removeAction id state.Doc } |> recompileState
-                | ReorderActions ids ->
-                    { state with Doc = Document.reorder ids state.Doc } |> recompileState
-                | CycleActionVisibility actionId ->
-                    match state.Doc.Actions |> List.tryFind (fun a -> a.Id = actionId) with
-                    | Some action ->
-                        let isField =
-                            Map.tryFind actionId state.Compiled.TypeMap = Some FieldType.Field
-                        let next = Document.cycleVisibility action.Kind isField action.Visibility
-                        { state with Doc = Document.setVisibility actionId next state.Doc }
-                        |> normalizeState
-                    | None -> state
-                | SetActionSlotValue(id, key, value) ->
-                    { state with
-                        Doc = Document.patchParamValue id key value state.Doc
-                        SlotValues = patchActionSlotValues state id key value }
-                    |> normalizeState
-                | SetActionStructureValue(id, key, value) ->
-                    { state with Doc = Document.patchParamValue id key value state.Doc } |> recompileState
                 | DeleteIntent ->
                     applyDeleteIntent state
                 | ViewerHover candidates ->
@@ -1421,14 +839,10 @@ module Editor =
                     |> normalizeState
                 | ViewerPick(intent, candidates) ->
                     match reduceSelectionCandidates state candidates with
-                    | Some(target, _score, actionId) ->
+                    | Some(target, _score, _actionId) ->
                         { state with
                             HoveredTarget = Some target
-                            SelectedTargets = applySelectionIntent intent target state.SelectedTargets
-                            Doc =
-                                match actionSelectionForTarget state target actionId with
-                                | Some id -> Document.select id state.Doc
-                                | None -> state.Doc }
+                            SelectedTargets = applySelectionIntent intent target state.SelectedTargets }
                         |> normalizeState
                     | None ->
                         { state with
@@ -1438,8 +852,8 @@ module Editor =
                 | StartEditingDimension index ->
                     let editing =
                         match SketchAuthoring.trySelectedSketch state.Doc with
-                        | Some selected when state.SketchEditMode && state.Doc.SelectedId = Some selected.Action.Id ->
-                            SketchAuthoring.tryEditableDimension selected.Action.Id selected.Sketch index
+                        | Some selected when state.SketchEditMode ->
+                            SketchAuthoring.tryEditableDimension selected.Id selected.Sketch index
                         | _ -> None
                     { clearToolState state with
                         SketchTool = "none"
@@ -1473,20 +887,11 @@ module Editor =
                         { state with
                             ConstraintPlacementDraft =
                                 SketchAuthoring.updatePlacementDraft
-                                    selected.Action.Id
+                                    selected.Id
                                     (constraintPlacementName kind)
                                     state.HoveredTarget
                                     state.ConstraintPlacementDraft }
                         |> normalizeState
-                    | _ ->
-                        state
-                | ReplaceSketch(actionId, sketch) ->
-                    match state.Doc.Actions |> List.tryFind (fun action -> action.Id = actionId) with
-                    | Some { Kind = Sketch(_, _, _) } ->
-                        { state with
-                            Doc = SketchAuthoring.withUpdatedSketch state.Doc actionId sketch }
-                        |> clearTransient
-                        |> recompileState
                     | _ ->
                         state
                 | BeginSketchDrag _
@@ -1505,7 +910,7 @@ module Editor =
                     | Some selected when state.SketchEditMode && state.SketchTool <> "none" ->
                         let clickedPointRef =
                             match state.HoveredTarget with
-                            | Some(TargetPoint(sketchId, pointId)) when sketchId = selected.Action.Id -> Some pointId
+                            | Some(TargetPoint(sketchId, pointId)) when sketchId = selected.Id -> Some pointId
                             | _ -> None
                         let clickedPoint =
                             match clickedPointRef with
@@ -1525,7 +930,7 @@ module Editor =
                             | Some result ->
                                 let nextState =
                                     { clearTransient state with
-                                        Doc = SketchAuthoring.withUpdatedSketch state.Doc selected.Action.Id result.Sketch
+                                        Doc = SketchAuthoring.withUpdatedSketch state.Doc selected.Id result.Sketch
                                         ConstraintPlacementMode = state.ConstraintPlacementMode }
                                     |> recompileState
 
@@ -1587,7 +992,7 @@ module Editor =
                     match SketchAuthoring.trySelectedSketch state.Doc with
                     | Some ctx ->
                         let nextDoc =
-                            SketchAuthoring.withUpdatedSketch state.Doc ctx.Action.Id (SketchAuthoring.removeConstraintAt index ctx.Sketch)
+                            SketchAuthoring.withUpdatedSketch state.Doc ctx.Id (SketchAuthoring.removeConstraintAt index ctx.Sketch)
                         { state with Doc = nextDoc }
                         |> clearTransient
                         |> recompileState
@@ -1595,45 +1000,231 @@ module Editor =
                         state
                 | SetConstraintPlacementCursor cursor ->
                     { state with ConstraintPlacementCursor = cursor } |> normalizeState
-                | PaletteOpen ->
-                    { state with PaletteSession = Palette.openSession () }
-                | PaletteSetQuery query ->
-                    { state with PaletteSession = Palette.setQuery query state.PaletteSession }
-                | PalettePick id ->
-                    let nextPalette =
-                        match state.PaletteSession.PickedKind with
-                        | None -> Palette.pickCommand id state.PaletteSession
-                        | Some _ -> Palette.pickItem id state.PaletteSession
-                    { state with PaletteSession = nextPalette }
-                    |> paletteMaybeBuild
-                | PaletteSetScalarField(key, value) ->
-                    { state with PaletteSession = Palette.setScalarField key value state.PaletteSession }
-                | PaletteCommitScalars ->
-                    { state with PaletteSession = Palette.commitScalars state.PaletteSession }
-                    |> paletteMaybeBuild
-                | PaletteFinish idSuffix ->
-                    { state with PaletteSession = Palette.skipToEnd state.PaletteSession }
-                    |> paletteMaybeBuild
-                | PaletteBack ->
-                    { state with PaletteSession = Palette.back state.PaletteSession }
-                | PaletteClose ->
-                    { state with PaletteSession = Palette.empty }
                 | ReplaceDocument doc ->
                     { state with Doc = doc } |> recompileState
-                | LoadModel model ->
-                    let selectedId =
-                        model.Actions
-                        |> List.tryFind (fun a -> a.Id = "origin")
-                        |> Option.orElseWith (fun () -> model.Actions |> List.tryHead)
-                        |> Option.map (fun a -> a.Id)
-                    loadDoc { Name = model.Name; Actions = model.Actions; SelectedId = selectedId } state
                 | ClearModel ->
                     loadDoc (Document.emptyDocument ()) state
-                | SetViewerMode mode ->
-                    { state with ViewerMode = mode }
+                // ── Typed-block notebook ──────────────────────────────────
+                | AddNativeBlock specName ->
+                    let spec = Server.Lang.BlockSpec.find specName
+                    // Seed every declared parameter with a default. Scalars
+                    // pull from the spec's default map (or 0.0); refs start
+                    // unwired.
+                    let typed = Server.Lang.BlockSpec.typedInterface spec
+                    let args =
+                        typed.Params
+                        |> List.map (fun p ->
+                            let arg =
+                                match p.Type with
+                                | Server.Lang.Type.Scalar ->
+                                    let v =
+                                        match Map.tryFind p.Name spec.ScalarDefaults with
+                                        | Some d -> d
+                                        | None -> 0.0
+                                    Server.Lang.Notebook.ArgScalar v
+                                | _ -> Server.Lang.Notebook.ArgRef None
+                            p.Name, arg)
+                        |> Map.ofList
+                    let id = state.Doc.NextBlockId
+                    let block : Server.Lang.Notebook.Block = {
+                        Id = id
+                        Name = sprintf "%s_%d" specName id
+                        Body = Server.Lang.Notebook.NativeBody(specName, args)
+                        Visibility = Server.Lang.Notebook.VIsosurface
+                        ColorIndex = 0
+                        SlicePlane = Server.Lang.Notebook.defaultSlicePlane
+                    }
+                    { state with
+                        Doc = {
+                            state.Doc with
+                                Blocks = state.Doc.Blocks @ [ block ]
+                                NextBlockId = id + 1
+                                SelectedBlockId = Some id } }
+                    |> recompileNotebook
+                | AddSketchBlock ->
+                    let id = state.Doc.NextBlockId
+                    let block : Server.Lang.Notebook.Block = {
+                        Id = id
+                        Name = sprintf "sketch_%d" id
+                        Body = Server.Lang.Notebook.SketchBody {
+                            Sketch = ActionSketch.empty
+                            Plane = SketchPlane.defaults
+                        }
+                        Visibility = Server.Lang.Notebook.VIsosurface
+                        ColorIndex = 0
+                        SlicePlane = Server.Lang.Notebook.defaultSlicePlane
+                    }
+                    { state with
+                        Doc = {
+                            state.Doc with
+                                Blocks = state.Doc.Blocks @ [ block ]
+                                NextBlockId = id + 1
+                                SelectedBlockId = Some id
+                        }
+                        SketchEditMode = true }
+                    |> recompileNotebook
+                | SelectBlock id ->
+                    let block = state.Doc.Blocks |> List.tryFind (fun b -> b.Id = id)
+                    let sketchEdit =
+                        match block with
+                        | Some b ->
+                            match b.Body with
+                            | Server.Lang.Notebook.SketchBody _ -> true
+                            | _ -> false
+                        | None -> state.SketchEditMode
+                    { state with
+                        Doc = { state.Doc with SelectedBlockId = Some id }
+                        SketchEditMode = sketchEdit }
+                | MoveBlock(sourceId, insertBefore) ->
+                    // Pluck `sourceId` out of the list and reinsert it at the
+                    // position indicated by `insertBefore`. No-op if the
+                    // source doesn't exist, if it's already in the right
+                    // place, or if `insertBefore = Some sourceId` (would
+                    // collapse to identity). Recompile because reordering
+                    // can change the visible-field declaration order, which
+                    // matters for the kernel union root.
+                    match insertBefore with
+                    | Some t when t = sourceId -> state
+                    | _ ->
+                        let source = state.Doc.Blocks |> List.tryFind (fun b -> b.Id = sourceId)
+                        match source with
+                        | None -> state
+                        | Some src ->
+                            let without = state.Doc.Blocks |> List.filter (fun b -> b.Id <> sourceId)
+                            let next =
+                                match insertBefore with
+                                | None -> without @ [ src ]
+                                | Some t ->
+                                    let idx = without |> List.tryFindIndex (fun b -> b.Id = t)
+                                    match idx with
+                                    | Some i ->
+                                        let head, tail = List.splitAt i without
+                                        head @ [ src ] @ tail
+                                    | None -> without @ [ src ]
+                            { state with Doc = { state.Doc with Blocks = next } }
+                            |> recompileNotebook
+                | SetBlockArg(id, paramName, newArg) ->
+                    let updated =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> id then b
+                            else
+                                match b.Body with
+                                | Server.Lang.Notebook.NativeBody(specName, args) ->
+                                    let nextArgs = Map.add paramName newArg args
+                                    { b with Body = Server.Lang.Notebook.NativeBody(specName, nextArgs) }
+                                | _ -> b)
+                    // If the new arg is a ref to a downstream block, hoist
+                    // that block to sit just before the target so the
+                    // notebook stays a DAG without forcing the user to
+                    // think about declaration order.
+                    let blocks =
+                        match newArg with
+                        | Server.Lang.Notebook.ArgRef (Some refId) ->
+                            let idxOf bid =
+                                updated
+                                |> List.tryFindIndex (fun b -> b.Id = bid)
+                            match idxOf refId, idxOf id with
+                            | Some refIdx, Some tgtIdx when refIdx > tgtIdx ->
+                                // Pull `refId` out and reinsert just before `id`.
+                                let refBlock = updated.[refIdx]
+                                let withoutRef =
+                                    updated |> List.filter (fun b -> b.Id <> refId)
+                                let newTgtIdx =
+                                    withoutRef |> List.findIndex (fun b -> b.Id = id)
+                                let before, after = List.splitAt newTgtIdx withoutRef
+                                before @ [ refBlock ] @ after
+                            | _ -> updated
+                        | _ -> updated
+                    // SetBlockArg commits a pick (or any other arg edit);
+                    // either way, exit pick mode if we were in it.
+                    { state with
+                        Doc = { state.Doc with Blocks = blocks }
+                        EditingBlockRef = None }
+                    |> recompileNotebook
+                | ExpandBlock id ->
+                    { state with ExpandedBlockIds = Set.add id state.ExpandedBlockIds }
+                | CollapseBlock id ->
+                    { state with ExpandedBlockIds = Set.remove id state.ExpandedBlockIds }
+                | RenameBlock(id, newName) ->
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b -> if b.Id = id then { b with Name = newName } else b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
+                | DeleteBlock id ->
+                    let blocks = state.Doc.Blocks |> List.filter (fun b -> b.Id <> id)
+                    let selectedBlock =
+                        if state.Doc.SelectedBlockId = Some id then None
+                        else state.Doc.SelectedBlockId
+                    { state with
+                        Doc = {
+                            state.Doc with
+                                Blocks = blocks
+                                SelectedBlockId = selectedBlock } }
+                    |> recompileNotebook
+                | CycleBlockVisibility id ->
+                    let nextVis (v: Server.Lang.Notebook.BlockVisibility) =
+                        match v with
+                        | Server.Lang.Notebook.VHidden     -> Server.Lang.Notebook.VIsosurface
+                        | Server.Lang.Notebook.VIsosurface -> Server.Lang.Notebook.VFieldLines
+                        | Server.Lang.Notebook.VFieldLines -> Server.Lang.Notebook.VHidden
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id = id then { b with Visibility = nextVis b.Visibility }
+                            else b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
+                | SetBlockColor(id, colorIndex) ->
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id = id then { b with ColorIndex = colorIndex }
+                            else b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
+                | UpdateSketchBlockSketch(id, sketch) ->
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> id then b
+                            else
+                                match b.Body with
+                                | Server.Lang.Notebook.SketchBody data ->
+                                    { b with Body = Server.Lang.Notebook.SketchBody { data with Sketch = sketch } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
+                | SetSketchPlane(id, plane) ->
+                    // `recompileState` (after `recompileNotebook`) so the
+                    // viewer-side sketch transform (`resolveSketchTransform`,
+                    // which reads `Plane`) is recomputed against the new
+                    // orientation. Sketches are pre-bound in the eval env so
+                    // both the notebook IR and the overlay see the change.
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> id then b
+                            else
+                                match b.Body with
+                                | Server.Lang.Notebook.SketchBody data ->
+                                    { b with Body = Server.Lang.Notebook.SketchBody { data with Plane = plane } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
+                    |> recompileState
+                | BeginPickBlockRef(id, paramName) ->
+                    // Toggle: clicking the same bubble cancels.
+                    let next =
+                        match state.EditingBlockRef with
+                        | Some(prevId, prevName) when prevId = id && prevName = paramName -> None
+                        | _ -> Some(id, paramName)
+                    { state with EditingBlockRef = next }
+                | CancelPickBlockRef ->
+                    { state with EditingBlockRef = None }
             let effects =
                 match message with
-                | SetActionSlotValue _
                 | CommitEditingDimension _
                 | ViewerPlaceConstraint _
                 | AddConstraintFromSelection _ -> [ ResolveAllSketches ]

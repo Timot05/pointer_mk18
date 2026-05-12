@@ -18,21 +18,29 @@ let private axesOf (transform: RigidTransform) =
     let yAxis = transform.Rot.Rotate({ X = 0.0; Y = 1.0; Z = 0.0 })
     pos, xAxis, yAxis
 
+let private worldOriginFrame : FrameView =
+    { Id = "origin"
+      Transform = RigidTransform.Identity }
+
 /// Per-sketch frame uniform block — matches the `SketchFrame` WGSL
-/// struct in Line.wgsl (16 floats / 64 bytes).
-let private sketchFrameData (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) : float32[] =
+/// struct in Line.wgsl (16 floats / 64 bytes). The trailing tint vec4
+/// is an rgba multiplier applied at fragment stage; non-active sketches
+/// fade when another sketch is being edited.
+let private sketchFrameData
+        (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) (tint: float32) : float32[] =
     [| float32 pos.X;   float32 pos.Y;   float32 pos.Z;   0.0f
        float32 xAxis.X; float32 xAxis.Y; float32 xAxis.Z; 0.0f
        float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f
-       0.0f; 0.0f; 0.0f; 0.0f |]
+       1.0f; 1.0f; 1.0f; tint |]
 
 let private sketchLabelData
         (canvasWpx: float32) (canvasHpx: float32)
-        (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) : float32[] =
+        (pos: Vec3) (xAxis: Vec3) (yAxis: Vec3) (tint: float32) : float32[] =
     [| canvasWpx; canvasHpx; 0.0f; 0.0f
        float32 pos.X;   float32 pos.Y;   float32 pos.Z;   0.0f
        float32 xAxis.X; float32 xAxis.Y; float32 xAxis.Z; 0.0f
-       float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f |]
+       float32 yAxis.X; float32 yAxis.Y; float32 yAxis.Z; 0.0f
+       1.0f; 1.0f; 1.0f; tint |]
 
 /// Write every visible sketch's frame + label uniform blocks into the
 /// shared per-sketch buffers at distinct dynamic-offset slots, *before*
@@ -44,7 +52,8 @@ let private sketchLabelData
 /// buffer).
 let private writeSketchUniforms
         (scene: Scene.Scene)
-        (sketchTransforms: FrameView list) : Map<ActionId, int> =
+        (sketchTransforms: FrameView list)
+        (activeSketchId: ActionId option) : Map<ActionId, int> =
     let canvasWpx = float32 (scene.Canvas.clientWidth * scene.Dpr)
     let canvasHpx = float32 (scene.Canvas.clientHeight * scene.Dpr)
     let used = min sketchTransforms.Length Scene.FRAME_CAPACITY
@@ -53,22 +62,28 @@ let private writeSketchUniforms
     |> List.mapi (fun i f ->
         let pos, xAxis, yAxis = axesOf f.Transform
         let offset = i * Scene.FRAME_STRIDE
+        let tint =
+            match activeSketchId with
+            | Some sid when sid = f.Id -> 1.0f
+            | _ -> 0.35f
         WebGPU.writeFloat32 scene.Device.queue scene.FrameBuffer offset
-            (sketchFrameData pos xAxis yAxis)
+            (sketchFrameData pos xAxis yAxis tint)
         WebGPU.writeFloat32 scene.Device.queue scene.LabelUniformBuffer offset
-            (sketchLabelData canvasWpx canvasHpx pos xAxis yAxis)
+            (sketchLabelData canvasWpx canvasHpx pos xAxis yAxis tint)
         f.Id, offset)
     |> Map.ofList
 
 /// Render one frame. Call from a requestAnimationFrame loop in Viewer.
-/// The 3D field can be produced by the Zig-WASM voxel kernel (`background`)
-/// or by the GPU raymarcher (`raymarch`); `state.ViewerMode` selects.
+/// The 3D field is produced by the Zig-WASM voxel kernel (`background`).
+/// The GPU raymarcher was retired alongside the action graph and its
+/// source files have been deleted. `fieldSlice` overlays iso-contour
+/// lines on per-block slice planes for any block whose visibility is
+/// `VFieldLines`.
 let renderFrame
         (scene: Scene.Scene)
         (toolCursor: (ActionId * float * float) option)
         (background: Kernel.Background.Background option)
-        (raymarch: Raymarch.Raymarch option)
-        (fieldSlice: FieldSlice.FieldSlice option) =
+        (fieldSlice: FieldSlice.FieldSlice) =
     let w : int = scene.Canvas?width
     let h : int = scene.Canvas?height
 
@@ -96,40 +111,43 @@ let renderFrame
 
     let state = AppStore.store.State
 
-    // Raymarch needs its per-block probe + analysis compute passes to
-    // run BEFORE the render pass begins — the fragment reads the
-    // storage buffers those passes write.
-    match state.ViewerMode, raymarch with
-    | Raymarch, Some rm ->
-        Raymarch.update rm state
-        Raymarch.encodeCompute rm encoder
-    | _ -> ()
-
     let colorPass =
         WebGPU.beginRenderPassClearColor encoder colorView 0.996 0.988 0.953 depthView
 
     // Field background — drawn first so every sketch/overlay paints on
-    // top. Either the Zig-WASM voxel kernel or the GPU sphere-marcher,
-    // user-selectable via `state.ViewerMode`.
-    match state.ViewerMode, background, raymarch with
-    | IntervalKernel, Some bg, _ ->
+    // top. Powered by the Zig-WASM voxel kernel.
+    match background with
+    | Some bg ->
         Kernel.Background.update bg
         Kernel.Background.draw bg colorPass
-    | Raymarch, _, Some rm ->
-        Raymarch.draw rm colorPass
-    | _ -> ()
+    | None -> ()
+
+    // Field-slice overlay. Iso-contour quads for any block whose
+    // visibility is `VFieldLines`. Drawn after the background so its
+    // depth writes integrate with the surface; sketches drawn after
+    // can z-test against either surface.
+    let sliceInputs =
+        match state.NotebookIr with
+        | None -> []
+        | Some _ ->
+            state.Doc.Blocks
+            |> List.choose (fun (b: Server.Lang.Notebook.Block) ->
+                if b.Visibility <> Server.Lang.Notebook.VFieldLines then None
+                else
+                    match Map.tryFind b.Id state.NotebookFieldExprByBlock with
+                    | None -> None
+                    | Some expr ->
+                        Some
+                            { FieldSlice.BlockId   = b.Id
+                              FieldSlice.EntryName = sprintf "block_%d" b.Id
+                              FieldSlice.Expr      = expr
+                              FieldSlice.Plane     = b.SlicePlane })
+    FieldSlice.update fieldSlice state.NotebookIr sliceInputs state.SlotValues
+    FieldSlice.draw fieldSlice colorPass
+
     let model = ViewerPipeline.viewerModel state
     let viewState = ViewerPipeline.viewerState state
 
-    // Field iso-line overlay. Draws on top of the background (z-testing
-    // against the surface) and *behind* sketches (sketches with the same
-    // `less` compare land on top when they're in front of the slice
-    // plane). Runs regardless of viewer mode.
-    match fieldSlice with
-    | Some fs ->
-        FieldSlice.update fs state viewState
-        FieldSlice.draw fs colorPass
-    | None -> ()
     let frameById =
         viewState.SketchTransforms
         |> List.map (fun f -> f.Id, f.Transform)
@@ -138,11 +156,12 @@ let renderFrame
     // Reserve a unique dynamic-offset slot per sketch + upload its frame
     // uniforms once, before any draws are recorded. Every per-sketch
     // draw below looks the offset up by id.
-    let sketchOffsets = writeSketchUniforms scene viewState.SketchTransforms
+    let activeSketchId = Editor.activeSketchEditId state
+    let sketchOffsets =
+        writeSketchUniforms scene viewState.SketchTransforms activeSketchId
 
-    let isVisible (actionId: string) =
-        Map.tryFind actionId viewState.Visible
-        |> Option.defaultValue true
+    // Action visibility is gone with the action graph; everything renders.
+    let isVisible (_actionId: string) = true
 
     let slots = scene.Slots
 
@@ -195,7 +214,9 @@ let renderFrame
         | Some _, Some frameOffset ->
             let isActiveEditSketch =
                 viewState.SketchUi.EditMode
-                && state.Doc.SelectedId = Some sketch.Id
+                && (match state.Doc.SelectedBlockId with
+                    | Some bid -> Server.SketchAuthoring.blockSketchId bid = sketch.Id
+                    | None -> false)
 
             // Per-sketch buffer slot lookup — each category resolves to
             // this sketch's own `Slot` so sketches can't stomp each
@@ -332,12 +353,12 @@ let renderFrame
 
     // ── Color pass: frame gizmos + origin dots (world-space, no frame uniform) ──
     let visibleFrames =
-        viewState.Frames |> List.filter (fun f -> isVisible f.Id)
+        [ worldOriginFrame ]
 
     let frameGizmoData =
         SketchOverlayRender.buildFramesGizmoBuffer
             visibleFrames viewState.HighlightedTarget viewState.HighlightedTargets
-            state.Doc.SelectedId
+            None
 
     let translateCtx = TranslateGizmo.contextOf state
     let rotateCtx = RotateGizmo.contextOf state

@@ -253,9 +253,10 @@ module Document =
             Name = "full_wing"
             Body =
                 Server.Lang.Notebook.NativeBody(
-                    "mirror-symmetric-y",
+                    "mirror-symmetric",
                     Map.ofList
-                        [ "rootY", Server.Lang.Notebook.ArgScalar 0.0
+                        [ "axis", Server.Lang.Notebook.ArgScalar 1.0
+                          "root", Server.Lang.Notebook.ArgScalar 0.0
                           "child", Server.Lang.Notebook.ArgRef(Some 2) ])
             Visibility = Server.Lang.Notebook.VIsosurface
             ColorIndex = 0

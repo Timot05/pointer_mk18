@@ -57,7 +57,7 @@ let private descriptorForSpecName (name: string) : obj =
     | "cylinder" -> db2Database
     | "box" -> cube
     | "translate" -> moveIcon
-    | "mirror-symmetric-y" -> rotateIcon
+    | "mirror-symmetric" -> rotateIcon
     | "union" -> joinFull
     | "intersect" -> joinInner
     | "subtract" -> joinLeft

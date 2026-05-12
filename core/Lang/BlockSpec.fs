@@ -173,16 +173,23 @@ module BlockSpec =
                     body
           ScalarDefaults = Map.ofList [ "x", 0.0; "y", 0.0; "z", 0.0 ] }
 
-    /// `mirror-symmetric-y rootY child` — evaluate the positive/root side
-    /// of `child` on both sides of the XZ plane at `rootY`.
-    let private mirrorSymmetricYSpec : BlockSpec =
-        let rootY = varE "rootY"
-        let child = varE "child"
-        let mirroredY = rootY +. absE (axE AxisY -. rootY)
-        let body = mk (ERemapAxes(child, axE AxisX, mirroredY, axE AxisZ))
-        { Name = "mirror-symmetric-y"
-          Body = lambda [ "rootY", Type.Scalar; "child", Type.Field ] body
-          ScalarDefaults = Map.ofList [ "rootY", 0.0 ] }
+    /// `mirror-symmetric axis root child` — evaluate the positive/root
+    /// side of `child` on both sides of the plane perpendicular to the
+    /// chosen axis at `root`. `axis` is a discrete choice (0=X, 1=Y,
+    /// 2=Z) stored as an `ArgScalar` and rendered as a dropdown by the
+    /// BlockList. The body below is a typed placeholder;
+    /// `NotebookCompose` intercepts this spec name and emits the real
+    /// `ERemapAxes` with the concrete axis baked in — same pattern as
+    /// `halfplane`.
+    let private mirrorSymmetricSpec : BlockSpec =
+        let placeholder = varE "child"
+        { Name = "mirror-symmetric"
+          Body = lambda
+                    [ "axis", Type.Scalar
+                      "root", Type.Scalar
+                      "child", Type.Field ]
+                    placeholder
+          ScalarDefaults = Map.ofList [ "axis", 1.0; "root", 0.0 ] }
 
     /// Iquilez polynomial smooth-min, with `radius <= eps` snapping to a
     /// hard min. The enable factor keeps radius=0 exact without adding a
@@ -274,7 +281,7 @@ module BlockSpec =
     do register cylinderSpec
     do register halfplaneSpec
     do register translateSpec
-    do register mirrorSymmetricYSpec
+    do register mirrorSymmetricSpec
     do register unionSpec
     do register intersectSpec
     do register subtractSpec

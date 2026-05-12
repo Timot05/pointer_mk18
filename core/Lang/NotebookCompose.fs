@@ -123,10 +123,57 @@ module NotebookCompose =
             | _ -> None)
         |> Map.ofList
 
+    /// Sample `numSegments + 1` points along an arc (ArcCenter mode),
+    /// from start endpoint to end endpoint, sweeping in the given
+    /// direction. Used by the closed-loop winding path: the chord-by-
+    /// chord polygonal approximation of the arc lets the winding-angle
+    /// integral converge to the correct ±2π per loop.
+    let private arcSamplePoints
+            (sx: float) (sy: float)
+            (ex: float) (ey: float)
+            (cx: float) (cy: float)
+            (clockwise: bool)
+            (numSegments: int) : (float * float) list =
+        let dx0 = sx - cx
+        let dy0 = sy - cy
+        let radius = sqrt (dx0 * dx0 + dy0 * dy0)
+        let startAngle = atan2 dy0 dx0
+        let endAngle = atan2 (ey - cy) (ex - cx)
+        let mutable delta = endAngle - startAngle
+        let twoPi = 2.0 * System.Math.PI
+        if clockwise && delta > 0.0 then delta <- delta - twoPi
+        elif (not clockwise) && delta < 0.0 then delta <- delta + twoPi
+        [ for i in 0 .. numSegments ->
+            let t = float i / float numSegments
+            let a = startAngle + delta * t
+            (cx + radius * cos a, cy + radius * sin a) ]
+
+    /// Number of chords used to approximate an arc when summing the
+    /// winding-angle integral for a closed loop. 16 keeps each chord
+    /// under ~6° for a quarter-circle arc — small enough that the
+    /// chord-loop's winding matches the true arc-loop's winding for any
+    /// sample point not sitting inside an individual chord's micro-lune.
+    let private ARC_WINDING_SEGMENTS = 16
+
+    /// Try to resolve an `REArc` into the geometry the kernel can render:
+    /// (start, end, center, clockwise). Only `ArcCenter` mode is
+    /// supported — `ArcThreePoint` is authoring-only per `SketchLoops`.
+    let private tryArcGeometry
+            (pts: Map<string, float * float>)
+            (entity: Server.RenderEntity)
+            : ((float * float) * (float * float) * (float * float) * bool) option =
+        match entity with
+        | Server.REArc(_, startId, endId, Server.ArcCenter(centerId, clockwise)) ->
+            match Map.tryFind startId pts, Map.tryFind endId pts, Map.tryFind centerId pts with
+            | Some (sx, sy), Some (ex, ey), Some (cx, cy) ->
+                Some ((sx, sy), (ex, ey), (cx, cy), clockwise)
+            | _ -> None
+        | _ -> None
+
     /// Walk the sketch's entities and emit one AST primitive node per
-    /// line/circle. Bezier and arc entities are skipped (current kernel
-    /// support matches the legacy `fromSketchImpl`); they can be plugged
-    /// in here as `EBezier*` / `EArcCenter` nodes when needed.
+    /// line/circle/arc. Bezier entities are still skipped; ArcThreePoint
+    /// is authoring-only and falls through to nothing (matches
+    /// `SketchLoops.detectLoops` behaviour).
     let private lowerSketchToPrimitives
             (sp: Span)
             (sketch: Server.ActionSketch)
@@ -135,7 +182,8 @@ module NotebookCompose =
         let numAt (x: float) : Expr = numEAt sp x
         let lookup id = Map.tryFind id pts
         sketch.Entities
-        |> List.choose (function
+        |> List.choose (fun ent ->
+            match ent with
             | Server.RELine(_, startId, endId) ->
                 match lookup startId, lookup endId with
                 | Some (sx, sy), Some (ex, ey) ->
@@ -146,6 +194,10 @@ module NotebookCompose =
                 | Some (cx, cy) ->
                     Some (mkAt sp (ECircle(plane, numAt cx, numAt cy, numAt radius)))
                 | None -> None
+            | Server.REArc _ ->
+                tryArcGeometry pts ent
+                |> Option.map (fun ((sx, sy), (ex, ey), (cx, cy), cw) ->
+                    mkAt sp (EArcCenter(plane, numAt sx, numAt sy, numAt ex, numAt ey, numAt cx, numAt cy, cw)))
             | _ -> None)
 
     // ── Signed distance for closed loops ──────────────────────────────────
@@ -242,11 +294,15 @@ module NotebookCompose =
             | Some (cx, cy) -> Some (circleSignedAst sp plane cx cy radius)
             | None -> None
         | _ ->
-            // Build unsigned primitives + per-line winding contributions in
-            // the same pass. If any non-line entity is present, we can't
-            // compute a winding sum, so fall back to unsigned-only for the
-            // whole loop.
-            let mutable allLines = true
+            // Build unsigned primitives + per-segment winding contributions
+            // in one pass. Arcs contribute the exact analytic distance via
+            // `EArcCenter` *and* a polygonal chord approximation for the
+            // winding integral (the chord-loop's winding matches the
+            // arc-loop's winding away from arc-bulge lunes). A circle
+            // breaks the signed path because its winding integral is
+            // implicit, not boundary-traversal-based; we fall back to
+            // unsigned-only when a circle is present.
+            let mutable signedSupported = true
             let unsigned = ResizeArray<Expr>()
             let windings = ResizeArray<Expr>()
             for ent in entitiesOfLoop do
@@ -261,20 +317,37 @@ module NotebookCompose =
                     match Map.tryFind centerId pointCoords with
                     | Some (cx, cy) ->
                         unsigned.Add (mkAt sp (ECircle(plane, numEAt sp cx, numEAt sp cy, numEAt sp radius)))
-                        allLines <- false
+                        signedSupported <- false
                     | None -> ()
+                | Server.REArc _ ->
+                    match tryArcGeometry pointCoords ent with
+                    | Some ((sx, sy), (ex, ey), (cx, cy), cw) ->
+                        unsigned.Add
+                            (mkAt sp (EArcCenter(plane, numEAt sp sx, numEAt sp sy, numEAt sp ex, numEAt sp ey, numEAt sp cx, numEAt sp cy, cw)))
+                        let samples = arcSamplePoints sx sy ex ey cx cy cw ARC_WINDING_SEGMENTS
+                        samples
+                        |> List.pairwise
+                        |> List.iter (fun ((ax, ay), (bx, by)) ->
+                            windings.Add (lineWindingAst sp plane ax ay bx by))
+                    | None ->
+                        // ArcThreePoint or missing point coord — can't
+                        // ship a primitive for it. The loop's signed
+                        // result will be wrong; fall back to unsigned.
+                        signedSupported <- false
                 | _ ->
-                    allLines <- false
+                    signedSupported <- false
             if unsigned.Count = 0 then None
             else
                 let unsignedExpr =
                     if unsigned.Count = 1 then unsigned.[0]
                     else mkAt sp (EFold(MathIr.FoldOp.Min, List.ofSeq unsigned))
-                if allLines && windings.Count >= 2 then
+                if signedSupported && windings.Count >= 2 then
                     Some (signedFromWindings sp unsignedExpr (List.ofSeq windings))
                 else
-                    // Mixed-shape loop (e.g. line + circle): the winding
-                    // sum isn't well-defined here, so emit unsigned only.
+                    // Loop contains a circle (or an entity we couldn't
+                    // walk for winding): the boundary integral isn't
+                    // well-defined for the polygonal sum, so emit
+                    // unsigned only.
                     Some unsignedExpr
 
     /// Build the SLet RHS for a from-sketch block. Detects closed loops
@@ -303,12 +376,14 @@ module NotebookCompose =
         let loopExprs =
             loops |> List.choose (buildLoopExpr sp plane entitiesById pts)
 
-        // Non-loop line/circle entities still contribute their unsigned
-        // distance to the field so dangling sketches render too.
+        // Non-loop line/circle/arc entities still contribute their
+        // unsigned distance to the field so dangling sketches render
+        // too. Beziers and ArcThreePoint stay out.
         let orphanExprs =
             entities
             |> List.filter (fun e -> not (Set.contains (entityId e) loopEntityIds))
-            |> List.choose (function
+            |> List.choose (fun ent ->
+                match ent with
                 | Server.RELine(_, startId, endId) ->
                     match Map.tryFind startId pts, Map.tryFind endId pts with
                     | Some (sx, sy), Some (ex, ey) ->
@@ -319,6 +394,10 @@ module NotebookCompose =
                     | Some (cx, cy) ->
                         Some (mkAt sp (ECircle(plane, numEAt sp cx, numEAt sp cy, numEAt sp radius)))
                     | None -> None
+                | Server.REArc _ ->
+                    tryArcGeometry pts ent
+                    |> Option.map (fun ((sx, sy), (ex, ey), (cx, cy), cw) ->
+                        mkAt sp (EArcCenter(plane, numEAt sp sx, numEAt sp sy, numEAt sp ex, numEAt sp ey, numEAt sp cx, numEAt sp cy, cw)))
                 | _ -> None)
 
         match loopExprs @ orphanExprs with
@@ -398,6 +477,58 @@ module NotebookCompose =
                     // typechecker reports it cleanly.
                     let call = applyChainAt bsp (varEAt bsp specName) []
                     stmts.Add(SLet([ userAt block.Name bsp ], call))
+                | Some spec when specName = "mirror-symmetric" ->
+                    // Lower `mirror-symmetric axis root child` to a
+                    // ERemapAxes that folds the negative side of `child`
+                    // onto the positive side around the plane
+                    // perpendicular to `axis` at `root`. Encoded as
+                    // axis = ArgScalar (0=X, 1=Y, 2=Z) so the BlockList
+                    // UI can render a dropdown — same data model as
+                    // `halfplane`.
+                    let axisChoice =
+                        match Map.tryFind "axis" args with
+                        | Some (ArgScalar n) ->
+                            match int (round n) with
+                            | 0 -> AxisX
+                            | 2 -> AxisZ
+                            | _ -> AxisY
+                        | _ -> AxisY
+                    let rootExpr =
+                        match Map.tryFind "root" args with
+                        | Some (ArgScalar n) -> numEAt bsp n
+                        | _ -> numEAt bsp 0.0
+                    let childExpr =
+                        match Map.tryFind "child" args with
+                        | Some (ArgRef (Some refId)) ->
+                            match Map.tryFind refId blockNames with
+                            | Some n -> varEAt bsp n
+                            | None -> varEAt bsp UNWIRED_PLACEHOLDER
+                        | _ -> varEAt bsp UNWIRED_PLACEHOLDER
+                    let absSub a b =
+                        mkAt bsp (EUnary(UnaryOp.Abs, mkAt bsp (EBinary(BinaryOp.Sub, a, b))))
+                    let addE a b = mkAt bsp (EBinary(BinaryOp.Add, a, b))
+                    let mirrored = addE rootExpr (absSub (mkAt bsp (EAxis axisChoice)) rootExpr)
+                    let xExpr = mkAt bsp (EAxis AxisX)
+                    let yExpr = mkAt bsp (EAxis AxisY)
+                    let zExpr = mkAt bsp (EAxis AxisZ)
+                    let body =
+                        match axisChoice with
+                        | AxisX -> mkAt bsp (ERemapAxes(childExpr, mirrored, yExpr, zExpr))
+                        | AxisY -> mkAt bsp (ERemapAxes(childExpr, xExpr, mirrored, zExpr))
+                        | AxisZ -> mkAt bsp (ERemapAxes(childExpr, xExpr, yExpr, mirrored))
+                    stmts.Add(SLet([ userAt block.Name bsp ], body))
+
+                    let outTy = specOutputType spec
+                    blockOutputs <- Map.add block.Id outTy blockOutputs
+                    let surfaceVisible =
+                        match block.Visibility with
+                        | VIsosurface           -> true
+                        | VHidden | VFieldLines -> false
+                    if outTy = Type.Field && surfaceVisible then
+                        visibleFieldNames.Add block.Name
+                        visibleFieldBlockIds.Add block.Id
+                        visibleFieldKinds.Add block.Visibility
+                        visibleFieldColorIndices.Add block.ColorIndex
                 | Some spec when specName = "halfplane" ->
                     // Lower `halfplane axis offset` to `<axis> - offset`.
                     // `axis` is encoded as an `ArgScalar` (0=X, 1=Y, 2=Z) so

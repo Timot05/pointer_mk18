@@ -168,6 +168,57 @@ module NotebookEval =
                             { Id = block.Id
                               Output = None
                               Error = Some e }
+            | NativeBody(specName, args) when specName = "mirror-symmetric" ->
+                // Parallel to the `NotebookCompose` interception: the
+                // spec body is a typed placeholder, so we have to build
+                // the real `RemapAxes` AST here and evaluate it directly.
+                // Without this, the test driver sees just the bare child.
+                let axisChoice =
+                    match Map.tryFind "axis" args with
+                    | Some (ArgScalar n) ->
+                        match int (round n) with
+                        | 0 -> Ast.AxisX
+                        | 2 -> Ast.AxisZ
+                        | _ -> Ast.AxisY
+                    | _ -> Ast.AxisY
+                let root =
+                    match Map.tryFind "root" args with
+                    | Some (ArgScalar n) -> n
+                    | _ -> 0.0
+                let childOpt =
+                    match Map.tryFind "child" args with
+                    | Some (ArgRef (Some refId)) -> Map.tryFind refId outputs
+                    | _ -> None
+                match childOpt with
+                | Some (VField childExpr) ->
+                    let axisIr =
+                        match axisChoice with
+                        | Ast.AxisX -> ctx.Ir.X()
+                        | Ast.AxisY -> ctx.Ir.Y()
+                        | Ast.AxisZ -> ctx.Ir.Z()
+                    let rootIr = ctx.Ir.Constant root
+                    let diff = ctx.Ir.Binary(MathIr.Binary.Sub, axisIr, rootIr)
+                    let absDiff = ctx.Ir.Unary(MathIr.Unary.Abs, diff)
+                    let mirrored = ctx.Ir.Binary(MathIr.Binary.Add, rootIr, absDiff)
+                    let xExpr = ctx.Ir.X()
+                    let yExpr = ctx.Ir.Y()
+                    let zExpr = ctx.Ir.Z()
+                    let remap =
+                        match axisChoice with
+                        | Ast.AxisX -> ctx.Ir.RemapAxes(childExpr, mirrored, yExpr, zExpr)
+                        | Ast.AxisY -> ctx.Ir.RemapAxes(childExpr, xExpr, mirrored, zExpr)
+                        | Ast.AxisZ -> ctx.Ir.RemapAxes(childExpr, xExpr, yExpr, mirrored)
+                    let v = VField remap
+                    outputs <- Map.add block.Id v outputs
+                    perBlock.Add { Id = block.Id; Output = Some v; Error = None }
+                | _ ->
+                    perBlock.Add
+                        { Id = block.Id
+                          Output = None
+                          Error =
+                              Some
+                                  { Message = "mirror-symmetric: 'child' arg is missing or not a Field"
+                                    Span = { Start = 0; Stop = 0 } } }
             | NativeBody(specName, args) ->
                 match BlockSpec.tryFind specName with
                 | None ->

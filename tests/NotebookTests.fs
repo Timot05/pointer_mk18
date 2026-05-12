@@ -79,12 +79,13 @@ let ``translate referencing an upstream sphere yields a RemapAxes-rooted Field``
     | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]
-let ``mirror symmetric y wraps an upstream field in a RemapAxes node`` () =
+let ``mirror symmetric wraps an upstream field in a RemapAxes node`` () =
     let nb =
         notebookOf [
             nativeBlock 0 "half" "sphere" [ "radius", ArgScalar 1.0 ]
-            nativeBlock 1 "full" "mirror-symmetric-y"
-                [ "rootY", ArgScalar 0.0
+            nativeBlock 1 "full" "mirror-symmetric"
+                [ "axis", ArgScalar 1.0
+                  "root", ArgScalar 0.0
                   "child", ArgRef (Some 0) ]
         ]
     let result = NotebookEval.eval nb

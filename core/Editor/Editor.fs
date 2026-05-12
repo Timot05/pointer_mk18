@@ -188,6 +188,10 @@ type Message =
     /// Replace a sketch block's `ActionSketch` payload (used by
     /// SketchAuthoring tools, gizmo drag commits, dimension edits).
     | UpdateSketchBlockSketch of Server.Lang.Notebook.BlockId * ActionSketch
+    /// Change the plane (XY / XZ / YZ) a sketch block draws on. Existing
+    /// 2D entity coords are reinterpreted in the new plane's local axes —
+    /// the sketch keeps its shape but moves to the new world orientation.
+    | SetSketchPlane of Server.Lang.Notebook.BlockId * SketchPlane
     /// Click-to-pick: enter pick mode for a block ref input. The
     /// BlockList highlights compatible upstream rows; the next click on
     /// such a row commits via `SetBlockArg` and exits pick mode.
@@ -1192,6 +1196,24 @@ module Editor =
                                 | _ -> b)
                     { state with Doc = { state.Doc with Blocks = blocks } }
                     |> recompileNotebook
+                | SetSketchPlane(id, plane) ->
+                    // `recompileState` (after `recompileNotebook`) so the
+                    // viewer-side sketch transform (`resolveSketchTransform`,
+                    // which reads `Plane`) is recomputed against the new
+                    // orientation. Sketches are pre-bound in the eval env so
+                    // both the notebook IR and the overlay see the change.
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> id then b
+                            else
+                                match b.Body with
+                                | Server.Lang.Notebook.SketchBody data ->
+                                    { b with Body = Server.Lang.Notebook.SketchBody { data with Plane = plane } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
+                    |> recompileState
                 | BeginPickBlockRef(id, paramName) ->
                     // Toggle: clicking the same bubble cancels.
                     let next =

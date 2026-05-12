@@ -301,6 +301,44 @@ let private renderScalarEditor
 // as an `ArgScalar` (0=X, 1=Y, 2=Z) so the existing data model carries it
 // — no new `BlockArg` case needed.
 
+/// Plane dropdown for sketch blocks. Dispatches `SetSketchPlane` so the
+/// reducer can recompile both the notebook IR and the viewer-side sketch
+/// transform when the plane changes.
+let private renderSketchPlaneDropdown
+        (dispatch: Message -> unit)
+        (blockId: Notebook.BlockId)
+        (current: SketchPlane) : HTMLElement =
+    let select = document.createElement "select" :?> HTMLSelectElement
+    select.className <- "input-row-edit"
+    let addOption (label: string) (value: SketchPlane) =
+        let opt = document.createElement "option" :?> HTMLOptionElement
+        opt.value <- label
+        opt.text <- label
+        if value = current then opt.selected <- true
+        select.appendChild (opt :> Node) |> ignore
+    addOption "XY" XY
+    addOption "XZ" XZ
+    addOption "YZ" YZ
+    select.addEventListener (
+        "change",
+        fun _ ->
+            let plane =
+                match select.value with
+                | "XZ" -> XZ
+                | "YZ" -> YZ
+                | _ -> XY
+            dispatch (SetSketchPlane(blockId, plane)))
+    select :> HTMLElement
+
+let private renderSketchPlaneRow
+        (dispatch: Message -> unit)
+        (block: Notebook.Block)
+        (plane: SketchPlane) : HTMLElement =
+    let row = Dom.el "div" "input-row"
+    row.appendChild (Dom.elText "span" "input-row-label" "plane" :> Node) |> ignore
+    row.appendChild (renderSketchPlaneDropdown dispatch block.Id plane :> Node) |> ignore
+    row
+
 let private renderAxisDropdown
         (dispatch: Message -> unit)
         (blockId: Notebook.BlockId)
@@ -412,7 +450,7 @@ let private renderInputRow
             | Notebook.NativeBody(name, _) -> name
             | _ -> ""
         match param.Type with
-        | Type.Scalar when specName = "halfplane" && param.Name = "axis" ->
+        | Type.Scalar when (specName = "halfplane" || specName = "mirror-symmetric") && param.Name = "axis" ->
             let current =
                 match tryFindBlockArg specName param.Name args with
                 | Some (Notebook.ArgScalar n) -> int (round n)
@@ -542,8 +580,13 @@ let private renderRow
     | _ -> ()
 
     let typedSpec = specOf block |> Option.map BlockSpec.typedInterface
+    let isSketchBody =
+        match block.Body with
+        | Notebook.SketchBody _ -> true
+        | _ -> false
     let hasInputs =
-        typedSpec |> Option.exists (fun ts -> not ts.Params.IsEmpty)
+        isSketchBody
+        || typedSpec |> Option.exists (fun ts -> not ts.Params.IsEmpty)
     let isExpanded =
         hasInputs && Set.contains block.Id doc.ExpandedBlockIds
     if isExpanded then row.classList.add "is-expanded"
@@ -908,6 +951,11 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
                 let typed = BlockSpec.typedInterface spec
                 for param in typed.Params do
                     list.appendChild (renderInputRow dispatch doc block param args :> Node) |> ignore
+            | _, Notebook.SketchBody data ->
+                // Sketches have no spec-typed params, but the plane (XY /
+                // XZ / YZ) is a per-block choice. Expose it as a dropdown
+                // when the row is expanded.
+                list.appendChild (renderSketchPlaneRow dispatch block data.Plane :> Node) |> ignore
             | _ -> ()
     panel.appendChild (list :> Node) |> ignore
 

@@ -27,6 +27,7 @@ let private containerImage  : obj = importDefault "@carbon/icons/es/container-im
 let private circleDash      : obj = importDefault "@carbon/icons/es/circle-dash/16"
 let private layers          : obj = importDefault "@carbon/icons/es/layers/16"
 let private view            : obj = importDefault "@carbon/icons/es/view/16"
+let private logoGithub      : obj = importDefault "@carbon/icons/es/logo--github/16"
 
 [<Emit("Object.entries($0)")>]
 let private entries (o: obj) : (string * obj)[] = jsNative
@@ -80,3 +81,6 @@ let fallback () : Element =
 
 let eye () : Element =
     buildSvg view
+
+let github () : Element =
+    buildSvg logoGithub

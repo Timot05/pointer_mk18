@@ -170,6 +170,24 @@ body {
   background: var(--bg-surface);
 }
 
+.topbar-github {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.topbar-github:hover {
+  color: var(--text-primary);
+}
+
+.topbar-github svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
 /* ── Layout ────────────────────────────────────────────────────────── */
 
 .layout {

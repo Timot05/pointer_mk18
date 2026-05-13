@@ -78,4 +78,13 @@ let render
     fileMenu.appendChild (fileDropdown :> Node) |> ignore
     topbar.appendChild (fileMenu :> Node) |> ignore
     topbar.appendChild (Dom.el "span" "topbar-spacer" :> Node) |> ignore
+
+    let githubLink = Dom.el "a" "topbar-github"
+    githubLink.setAttribute ("href", "https://github.com/Timot05/pointer_mk18")
+    githubLink.setAttribute ("target", "_blank")
+    githubLink.setAttribute ("rel", "noopener noreferrer")
+    githubLink.title <- "View source on GitHub"
+    githubLink.appendChild (Icons.github () :> Node) |> ignore
+    topbar.appendChild (githubLink :> Node) |> ignore
+
     topbar

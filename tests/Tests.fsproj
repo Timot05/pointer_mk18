@@ -15,6 +15,7 @@
     <!-- SketchAuthoringTests.fs disabled: action-graph anchored, needs
          rewrite against block-anchored sketch authoring. -->
     <Compile Include="LangTests.fs" />
+    <Compile Include="UserScriptTests.fs" />
     <Compile Include="TypecheckTests.fs" />
     <Compile Include="NotebookTests.fs" />
     <Compile Include="Program.fs" />

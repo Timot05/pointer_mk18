@@ -243,6 +243,113 @@ let ``BlockSpec: union extracts as [target:Field; tool:Field; radius:Scalar] -> 
     Assert.Equal<string list>([ "target"; "tool"; "radius" ], names)
     Assert.Equal<Type.T list>([ Type.Field; Type.Field; Type.Scalar ], types)
 
+// ─── F#-style param annotations ─────────────────────────────────────────────
+
+[<Fact>]
+let ``parse: lambda with annotated paren param carries Some paramAnno`` () =
+    let e = parseExprOnly "fun (x: Scalar) -> x end"
+    match e.Node with
+    | Ast.ELambda(param, Some ty, _) ->
+        Assert.Equal("x", param.Name)
+        Assert.Equal(Type.Scalar, ty)
+    | other -> failwithf "expected annotated lambda, got %A" other
+
+[<Fact>]
+let ``parse: two annotated params build a curried lambda`` () =
+    let e = parseExprOnly "fun (x: Scalar) (y: Field) -> x * y end"
+    match e.Node with
+    | Ast.ELambda(p1, Some t1, inner) ->
+        Assert.Equal("x", p1.Name)
+        Assert.Equal(Type.Scalar, t1)
+        match inner.Node with
+        | Ast.ELambda(p2, Some t2, _) ->
+            Assert.Equal("y", p2.Name)
+            Assert.Equal(Type.Field, t2)
+        | other -> failwithf "expected inner annotated lambda, got %A" other
+    | other -> failwithf "expected outer annotated lambda, got %A" other
+
+[<Fact>]
+let ``parse: unannotated lambda still produces None on paramAnno`` () =
+    let e = parseExprOnly "fun x -> x + 1 end"
+    match e.Node with
+    | Ast.ELambda(_, None, _) -> ()
+    | Ast.ELambda(_, Some t, _) ->
+        failwithf "expected unannotated, got Some %A" t
+    | other -> failwithf "expected lambda, got %A" other
+
+[<Fact>]
+let ``parse: bogus type name yields a parse error`` () =
+    match Parser.parseProgram "fun (x: Bogus) -> x end" with
+    | Ok _ -> failwith "expected parse error for unknown type"
+    | Error e -> Assert.Contains("Bogus", e.Message)
+
+[<Fact>]
+let ``parse: function def uses fun ... end with annotated params`` () =
+    match Parser.parseProgram "let donut = fun (r: Scalar) -> r + 1 end" with
+    | Ok [ Ast.SLet([ name ], value) ] ->
+        Assert.Equal("donut", name.Name)
+        match value.Node with
+        | Ast.ELambda(p, Some t, _) ->
+            Assert.Equal("r", p.Name)
+            Assert.Equal(Type.Scalar, t)
+        | other -> failwithf "expected annotated lambda RHS, got %A" other
+    | other -> failwithf "expected single SLet, got %A" other
+
+[<Fact>]
+let ``parse: multi-param fun with mixed types`` () =
+    match Parser.parseProgram "let f = fun (x: Scalar) (y: Field) -> y * x end" with
+    | Ok [ Ast.SLet([ name ], value) ] ->
+        Assert.Equal("f", name.Name)
+        match value.Node with
+        | Ast.ELambda(p1, Some Type.Scalar, inner) ->
+            Assert.Equal("x", p1.Name)
+            match inner.Node with
+            | Ast.ELambda(p2, Some Type.Field, _) ->
+                Assert.Equal("y", p2.Name)
+            | other -> failwithf "expected inner Field-annotated lambda, got %A" other
+        | other -> failwithf "expected outer Scalar-annotated lambda, got %A" other
+    | other -> failwithf "expected single SLet, got %A" other
+
+[<Fact>]
+let ``parse: F#-style let-sugar with params is NOT supported`` () =
+    // `let f x = body` must error — defs always go through `fun ... end`.
+    match Parser.parseProgram "let f x = x + 1" with
+    | Ok _ -> failwith "expected let-sugar to fail; only `let f = fun x -> body end` should parse"
+    | Error _ -> ()
+
+[<Fact>]
+let ``parse: F#-style annotated let-sugar is NOT supported`` () =
+    match Parser.parseProgram "let f (x: Scalar) = x + 1" with
+    | Ok _ -> failwith "expected annotated let-sugar to fail"
+    | Error _ -> ()
+
+[<Fact>]
+let ``parse: simple let binds a value`` () =
+    match Parser.parseProgram "let x = 1" with
+    | Ok [ Ast.SLet([ name ], value) ] ->
+        Assert.Equal("x", name.Name)
+        match value.Node with
+        | Ast.ENumber 1.0 -> ()
+        | other -> failwithf "expected ENumber 1.0, got %A" other
+    | other -> failwithf "expected single SLet, got %A" other
+
+[<Fact>]
+let ``parse: multi-name destructuring still works`` () =
+    match Parser.parseProgram "let a, b = 1" with
+    | Ok [ Ast.SLet(names, _) ] ->
+        Assert.Equal<string list>([ "a"; "b" ], names |> List.map (fun n -> n.Name))
+    | other -> failwithf "expected destructuring SLet, got %A" other
+
+[<Fact>]
+let ``eval: fun ... end def then call`` () =
+    let _, v = runOk "let add = fun a b -> a + b end\nadd 2 3"
+    Assert.Equal(Value.VNumber 5.0, v)
+
+[<Fact>]
+let ``eval: fun with type-annotated params`` () =
+    let _, v = runOk "let scale = fun (x: Scalar) (y: Scalar) -> x * y end\nscale 6 7"
+    Assert.Equal(Value.VNumber 42.0, v)
+
 [<Fact>]
 let ``eval: applying sphere spec to 1.0 yields a Sub-rooted Field`` () =
     // The block driver will saturate the lambda by `EApply`-ing a slot-

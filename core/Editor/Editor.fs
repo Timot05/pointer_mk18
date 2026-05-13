@@ -66,6 +66,10 @@ type EditorState =
       HoveredTarget: SelectionTarget option
       SelectedTargets: SelectionTarget list
       SketchEditMode: bool
+      /// Whether the Monaco-backed script editor panel is open. Toggled
+      /// by `ToggleScriptEditor`. The Shell mounts a 3-column layout
+      /// (block list + script panel + viewer) when true.
+      ScriptEditorOpen: bool
       SketchTool: string
       SketchToolPoints: LabelPos list
       SketchToolPointRefs: string option list
@@ -152,6 +156,16 @@ type Message =
     | ViewerToolClick of float * float
     | ViewerPlaceConstraint of float * float
     | ToggleSketchEdit
+    /// Show / hide the Monaco-backed script editor panel between the
+    /// block list and the viewer. The panel mounts the document's
+    /// `ScriptSourceText`; closing the panel doesn't tear down the
+    /// editor instance (the host element is re-parented, not destroyed).
+    | ToggleScriptEditor
+    /// Replace `Doc.ScriptSourceText`. Dispatched (debounced) from the
+    /// Monaco editor's onDidChangeModelContent. Triggers a notebook
+    /// recompile so user-defined specs in the new source land in the
+    /// BlockList palette and downstream blocks reference the new bodies.
+    | UpdateScriptSource of string
     | SetSketchTool of SketchToolKind
     | ToggleConstraintPlacement of ConstraintPlacementKind
     | AddConstraintFromSelection of GeometricConstraintKind
@@ -247,14 +261,20 @@ module Editor =
     /// pipeline succeeds), per-block error and output-type maps, and a
     /// panel-level summary message. Used both for the initial seed and
     /// for every block-mutating reducer step via `recompileNotebook`.
-    let private compileNotebook (blocks: Server.Lang.Notebook.Block list) (nextId: Server.Lang.Notebook.BlockId) : Server.Lang.NotebookCompose.CompileResult =
-        let nb : Server.Lang.Notebook.Notebook = { NextId = nextId; Blocks = blocks }
-        Server.Lang.NotebookCompose.compile nb
+    ///
+    /// `ScriptSourceText` from the document is analysed every call —
+    /// `UserScript.analyze` is cheap (parse + lambda walk over a tiny
+    /// source) so a memo is overkill for first cut. Add one if profiling
+    /// finds it on a hot path.
+    let private compileNotebook (doc: Server.Document) : Server.Lang.NotebookCompose.CompileResult =
+        let nb : Server.Lang.Notebook.Notebook = { NextId = doc.NextBlockId; Blocks = doc.Blocks }
+        let userScript = Server.Lang.UserScript.analyze doc.ScriptSourceText
+        Server.Lang.NotebookCompose.compileWith nb userScript
 
     let initState () =
         let doc = Document.emptyDocument ()
         let compiled = BlockCompile.compile doc.Blocks
-        let nbResult = compileNotebook doc.Blocks doc.NextBlockId
+        let nbResult = compileNotebook doc
         { Doc = doc
           Compiled = compiled
           SlotValues = Array.copy compiled.Slots.Values
@@ -262,6 +282,7 @@ module Editor =
           HoveredTarget = None
           SelectedTargets = []
           SketchEditMode = false
+          ScriptEditorOpen = false
           SketchTool = "none"
           SketchToolPoints = []
           SketchToolPointRefs = []
@@ -472,7 +493,7 @@ module Editor =
     /// (BlockList row styling, ref-drop type filter) and the kernel push
     /// (Viewer subscribes to `LastNotebookBytes`) stay in sync.
     let recompileNotebook (state: EditorState) : EditorState =
-        let nbResult = compileNotebook state.Doc.Blocks state.Doc.NextBlockId
+        let nbResult = compileNotebook state.Doc
         { state with
             LastNotebookError = nbResult.Summary
             LastNotebookBytes = nbResult.Bytes
@@ -965,6 +986,14 @@ module Editor =
                 | ToggleSketchEdit ->
                     { state with SketchEditMode = not state.SketchEditMode }
                     |> normalizeState
+                | ToggleScriptEditor ->
+                    { state with ScriptEditorOpen = not state.ScriptEditorOpen }
+                | UpdateScriptSource source ->
+                    // Mutate the document source then recompile so user-spec
+                    // additions/deletions immediately flow through
+                    // typeEnv-seeding and the BlockList palette.
+                    { state with Doc = { state.Doc with ScriptSourceText = source } }
+                    |> recompileNotebook
                 | SetSketchTool tool ->
                     { clearToolState state with
                         SketchEditMode = true
@@ -1006,11 +1035,23 @@ module Editor =
                     loadDoc (Document.emptyDocument ()) state
                 // ── Typed-block notebook ──────────────────────────────────
                 | AddNativeBlock specName ->
-                    let spec = Server.Lang.BlockSpec.find specName
+                    // Try user-defined specs first, then built-ins. User
+                    // specs have no scalar defaults today (the syntax
+                    // doesn't carry them) so scalar params land at 0.0.
+                    let userScript =
+                        Server.Lang.UserScript.analyze state.Doc.ScriptSourceText
+                    let typed, scalarDefaults =
+                        match Map.tryFind specName userScript.Specs with
+                        | Some us ->
+                            ({ Server.Lang.TypeExtract.Params = us.Params
+                               Server.Lang.TypeExtract.Output = us.Output } : Server.Lang.TypeExtract.ExtractedSpec),
+                            Map.empty
+                        | None ->
+                            let spec = Server.Lang.BlockSpec.find specName
+                            Server.Lang.BlockSpec.typedInterface spec, spec.ScalarDefaults
                     // Seed every declared parameter with a default. Scalars
                     // pull from the spec's default map (or 0.0); refs start
                     // unwired.
-                    let typed = Server.Lang.BlockSpec.typedInterface spec
                     let args =
                         typed.Params
                         |> List.map (fun p ->
@@ -1018,7 +1059,7 @@ module Editor =
                                 match p.Type with
                                 | Server.Lang.Type.Scalar ->
                                     let v =
-                                        match Map.tryFind p.Name spec.ScalarDefaults with
+                                        match Map.tryFind p.Name scalarDefaults with
                                         | Some d -> d
                                         | None -> 0.0
                                     Server.Lang.Notebook.ArgScalar v

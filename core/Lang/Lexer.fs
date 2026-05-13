@@ -133,6 +133,7 @@ module Lexer =
             elif c = '=' then i <- i + 1; push start Equals
             elif c = ';' then i <- i + 1; push start Semicolon
             elif c = ',' then i <- i + 1; push start Comma
+            elif c = ':' then i <- i + 1; push start Colon
             elif c = '?' then i <- i + 1; push start Question
             elif c = '!' then i <- i + 1; push start Bang
             elif c = '*' then i <- i + 1; push start Star

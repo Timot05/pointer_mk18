@@ -24,12 +24,21 @@ let render
         : HTMLElement =
     let root = Dom.el "div" "ui-root"
 
-    root.appendChild (TopBar.render dispatch onSave onLoad :> Node) |> ignore
+    root.appendChild (TopBar.render dispatch onSave onLoad doc.ScriptEditorOpen :> Node) |> ignore
 
     let layout = Dom.el "div" "layout"
+    if doc.ScriptEditorOpen then
+        layout.classList.add "has-script-editor"
     let leftHost = Dom.el "div" "panel-host panel-host-actions"
     leftHost.appendChild (BlockList.render dispatch doc :> Node) |> ignore
     layout.appendChild (leftHost :> Node) |> ignore
+
+    // Middle column: Monaco script editor. The host element is persistent
+    // (same DOM object across renders) so Monaco's internal state survives.
+    if doc.ScriptEditorOpen then
+        let scriptHost = Dom.el "div" "panel panel-script"
+        scriptHost.appendChild (ScriptEditorPanel.render dispatch doc.ScriptSourceText :> Node) |> ignore
+        layout.appendChild (scriptHost :> Node) |> ignore
 
     let center = Dom.el "div" "panel panel-center"
     center.appendChild (viewerHost :> Node) |> ignore

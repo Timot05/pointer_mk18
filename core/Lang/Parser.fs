@@ -402,15 +402,53 @@ module Parser =
                 parseStmt p >>= fun item -> loop (item :: acc)
         loop []
 
+    /// Parse a type name. Maps reserved Idents `Scalar | Field | Sketch | Frame`
+    /// to `Type.T`. Anything else is a parse error. Used by parenthesised-
+    /// annotated parameter syntax `(x: Scalar)`.
+    and parseType (p: State) : Result<Type.T, ParseError> =
+        skipNewlines p
+        let tok = current p
+        match tok.Kind with
+        | Ident "Scalar" -> advance p |> ignore; Ok Type.Scalar
+        | Ident "Field"  -> advance p |> ignore; Ok Type.Field
+        | Ident "Sketch" -> advance p |> ignore; Ok Type.Sketch
+        | Ident "Frame"  -> advance p |> ignore; Ok Type.Frame
+        | Ident name -> err tok (sprintf "unknown type '%s'" name)
+        | _ -> err tok "expected type name (Scalar | Field | Sketch | Frame)"
+
+    /// Parse a single lambda / let parameter. Accepted forms:
+    ///   bareIdent              →  (ident, None)
+    ///   ( ident )              →  (ident, None)
+    ///   ( ident : TypeName )   →  (ident, Some ty)   — F#-style annotation
+    and parseParam (p: State) : Result<Ident * Type.T option, ParseError> =
+        skipNewlines p
+        match (current p).Kind with
+        | LParen ->
+            advance p |> ignore
+            parseBindingIdent p >>= fun id ->
+                match (current p).Kind with
+                | Colon ->
+                    advance p |> ignore
+                    parseType p >>= fun ty ->
+                        expect p RParen |> mapOk (fun _ -> (id, Some ty))
+                | RParen ->
+                    advance p |> ignore
+                    Ok (id, None)
+                | _ -> err (current p) "expected ':' or ')' in parameter"
+        | _ ->
+            parseBindingIdent p |> mapOk (fun id -> (id, None))
+
     and parseFun (p: State) : Result<Expr, ParseError> =
-        let rec collectParams (acc: Ident list) =
+        let rec collectParams (acc: (Ident * Type.T option) list) =
             skipNewlines p
             match (current p).Kind with
             | Arrow ->
                 advance p |> ignore
                 Ok (List.rev acc)
+            | LParen ->
+                parseParam p >>= fun par -> collectParams (par :: acc)
             | _ ->
-                parseBindingIdent p >>= fun id -> collectParams (id :: acc)
+                parseBindingIdent p >>= fun id -> collectParams ((id, None) :: acc)
         collectParams [] >>= fun ps ->
             skipNewlines p
             let bodyStart = tokenSpan p
@@ -432,12 +470,12 @@ module Parser =
                 let body = { body with Span = mergeSpan bodyStart body.Span }
                 let ps =
                     match ps with
-                    | [] -> [ { Name = "_"; IdentKind = User; Span = body.Span } ]
+                    | [] -> [ ({ Name = "_"; IdentKind = User; Span = body.Span }, None) ]
                     | _ -> ps
                 let lambda =
                     List.foldBack
-                        (fun (param: Ident) (acc: Expr) ->
-                            mkExpr (ELambda(param, None, acc)) (mergeSpan param.Span acc.Span))
+                        (fun (param: Ident, ty: Type.T option) (acc: Expr) ->
+                            mkExpr (ELambda(param, ty, acc)) (mergeSpan param.Span acc.Span))
                         ps body
                 Ok lambda
 

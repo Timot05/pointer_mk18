@@ -4,6 +4,9 @@ import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Monaco workers are registered via `ui/monaco-setup.ts` using Vite's
+// native `?worker` import — see that file. No plugin needed.
+
 export default defineConfig({
   resolve: {
     alias: {

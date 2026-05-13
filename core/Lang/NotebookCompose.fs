@@ -422,11 +422,23 @@ module NotebookCompose =
     /// involvement. The block name → identifier mapping is preserved so
     /// downstream tools (typecheck error reporting, ref-drop UI) can
     /// recover which block an AST node came from.
-    let compose (notebook: Notebook) : Composed =
-        // Seed type env with every primitive's typed signature.
+    /// Curried function type for a user-defined spec — same shape as
+    /// `specFunType` produces from a built-in BlockSpec.
+    let private userSpecFunType (us: UserScript.UserSpec) : Type.T =
+        let inputs = us.Params |> List.map (fun p -> p.Type)
+        Type.curried inputs us.Output
+
+    let composeWith (notebook: Notebook) (userScript: UserScript.Result) : Composed =
+        // Seed type env: built-in specs first, then user specs. User specs
+        // override built-ins with the same name (last write wins on the
+        // Map.add). That matches the env-binding order in `buildValueEnv`
+        // and in the prepended user `Stmts`, so name resolution stays
+        // consistent end-to-end.
         let mutable typeEnv : Typecheck.TypeEnv = Map.empty
         for spec in BlockSpec.all () do
             typeEnv <- Map.add spec.Name (specFunType spec) typeEnv
+        for kv in userScript.Specs do
+            typeEnv <- Map.add kv.Key (userSpecFunType kv.Value) typeEnv
 
         let blockNames =
             notebook.Blocks
@@ -470,6 +482,42 @@ module NotebookCompose =
                 ()
             | NativeBody(specName, args) ->
                 let bsp = spanForBlock block.Id
+                // Emit a single block as `let block_X = applyChain (varE specName) [args...]`
+                // plus its bookkeeping (output type, visible-field union
+                // membership). Shared between the generic built-in path and
+                // the user-defined-spec path; both routes resolve the spec
+                // by name at eval time via env lookup, so the only thing the
+                // emitter needs is the typed parameter interface.
+                let emitGeneric (typed: TypeExtract.ExtractedSpec) =
+                    let argExprs =
+                        typed.Params
+                        |> List.map (fun p ->
+                            match tryFindBlockArg specName p.Name args with
+                            | Some (ArgScalar n) -> numEAt bsp n
+                            | Some (ArgRef (Some refId)) ->
+                                match Map.tryFind refId blockNames with
+                                | Some n -> varEAt bsp n
+                                | None -> varEAt bsp UNWIRED_PLACEHOLDER
+                            | Some (ArgRef None)
+                            | None -> varEAt bsp UNWIRED_PLACEHOLDER)
+                    let call = applyChainAt bsp (varEAt bsp specName) argExprs
+                    stmts.Add(SLet([ userAt block.Name bsp ], call))
+                    blockOutputs <- Map.add block.Id typed.Output blockOutputs
+                    let surfaceVisible =
+                        match block.Visibility with
+                        | VIsosurface           -> true
+                        | VHidden | VFieldLines -> false
+                    if typed.Output = Type.Field && surfaceVisible then
+                        visibleFieldNames.Add block.Name
+                        visibleFieldBlockIds.Add block.Id
+                        visibleFieldKinds.Add block.Visibility
+                        visibleFieldColorIndices.Add block.ColorIndex
+
+                // User-defined specs win over built-ins with the same name.
+                match Map.tryFind specName userScript.Specs with
+                | Some us ->
+                    emitGeneric { Params = us.Params; Output = us.Output }
+                | None ->
                 match BlockSpec.tryFind specName with
                 | None ->
                     // Unknown spec — surface via an undefined ref so the
@@ -503,43 +551,7 @@ module NotebookCompose =
                         visibleFieldKinds.Add block.Visibility
                         visibleFieldColorIndices.Add block.ColorIndex
                 | Some spec ->
-                    let typed = BlockSpec.typedInterface spec
-
-                    // Build args in the order the spec declares them.
-                    let argExprs =
-                        typed.Params
-                        |> List.map (fun p ->
-                            match tryFindBlockArg specName p.Name args with
-                            | Some (ArgScalar n) ->
-                                numEAt bsp n
-                            | Some (ArgRef (Some refId)) ->
-                                match Map.tryFind refId blockNames with
-                                | Some n -> varEAt bsp n
-                                | None -> varEAt bsp UNWIRED_PLACEHOLDER
-                            | Some (ArgRef None)
-                            | None ->
-                                varEAt bsp UNWIRED_PLACEHOLDER)
-
-                    let call = applyChainAt bsp (varEAt bsp specName) argExprs
-                    stmts.Add(SLet([ userAt block.Name bsp ], call))
-
-                    let outTy = specOutputType spec
-                    blockOutputs <- Map.add block.Id outTy blockOutputs
-                    // Field blocks contribute to the surface union when
-                    // their visibility is `VIsosurface`. `VFieldLines` is
-                    // overlay-only and is drawn separately by the F#
-                    // viewer's FieldSlice pass — including it in the
-                    // union would double-draw the block as solid surface
-                    // AND contour lines.
-                    let surfaceVisible =
-                        match block.Visibility with
-                        | VIsosurface           -> true
-                        | VHidden | VFieldLines -> false
-                    if outTy = Type.Field && surfaceVisible then
-                        visibleFieldNames.Add block.Name
-                        visibleFieldBlockIds.Add block.Id
-                        visibleFieldKinds.Add block.Visibility
-                        visibleFieldColorIndices.Add block.ColorIndex
+                    emitGeneric (BlockSpec.typedInterface spec)
 
         // Render root = sharp `union` over every visible Field block.
         // Empty list → no trailing expression → "no renderable output".
@@ -553,7 +565,12 @@ module NotebookCompose =
             let folded = tail |> List.fold (fun acc n -> unionCall acc (varE n)) (varE head)
             stmts.Add(SExpr folded)
 
-        { Ast = mk (EBlock (List.ofSeq stmts))
+        // Prepend user-script stmts so user lambdas / constants land in the
+        // env before any per-block let-binding references them. Order: user
+        // stmts → block lets → render-root SExpr.
+        let allStmts = userScript.Stmts @ List.ofSeq stmts
+
+        { Ast = mk (EBlock allStmts)
           TypeEnv = typeEnv
           BlockNames = blockNames
           BlockSpans = blockSpans
@@ -562,6 +579,10 @@ module NotebookCompose =
           VisibleFieldBlockIds = List.ofSeq visibleFieldBlockIds
           VisibleFieldKinds = List.ofSeq visibleFieldKinds
           VisibleFieldColorIndices = List.ofSeq visibleFieldColorIndices }
+
+    /// Backward-compat wrapper: compose without a user script.
+    let compose (notebook: Notebook) : Composed =
+        composeWith notebook UserScript.empty
 
     // ── Evaluation ─────────────────────────────────────────────────────────
 
@@ -715,8 +736,10 @@ module NotebookCompose =
         |> Map.ofSeq
 
     /// Full notebook compile — typecheck + (on success) eval + serialise.
-    let compile (notebook: Notebook) : CompileResult =
-        let composed = compose notebook
+    /// `userScript` injects user-defined specs ahead of the built-in
+    /// registry and prepends user-source stmts to the composed program.
+    let compileWith (notebook: Notebook) (userScript: UserScript.Result) : CompileResult =
+        let composed = composeWith notebook userScript
         match Typecheck.elaborate composed.TypeEnv composed.Ast with
         | Error errs ->
             let blockErrors = routeErrorsToBlocks composed errs
@@ -793,13 +816,19 @@ module NotebookCompose =
                   BlockOutputs = composed.BlockOutputs
                   Summary = Some e.Message }
 
+    /// Backward-compat wrapper: compile a notebook with no user script.
+    let compile (notebook: Notebook) : CompileResult =
+        compileWith notebook UserScript.empty
+
     /// Older shim for code paths that just want the (ir, root) pair.
     /// Returns `Error` when typecheck fails — call sites outside Editor
     /// (init seed, tests) still use this.
-    let compileView
+    let compileViewWith
             (notebook: Notebook)
-            (_surfaceBlock: string option) : Result<MathIr.MathIR * MathIr.Expr, Typecheck.TypeError list> =
-        let composed = compose notebook
+            (_surfaceBlock: string option)
+            (userScript: UserScript.Result)
+            : Result<MathIr.MathIR * MathIr.Expr, Typecheck.TypeError list> =
+        let composed = composeWith notebook userScript
         match Typecheck.elaborate composed.TypeEnv composed.Ast with
         | Error errs -> Error errs
         | Ok _ ->
@@ -809,3 +838,9 @@ module NotebookCompose =
                 Error [ Typecheck.InvalidOperand("notebook produced no Field render root", { Start = 0; Stop = 0 }) ]
             | Error e ->
                 Error [ Typecheck.InvalidOperand(e.Message, e.Span) ]
+
+    let compileView
+            (notebook: Notebook)
+            (surfaceBlock: string option)
+            : Result<MathIr.MathIR * MathIr.Expr, Typecheck.TypeError list> =
+        compileViewWith notebook surfaceBlock UserScript.empty

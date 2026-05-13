@@ -46,6 +46,7 @@ module Token =
         | Pipe
         | Bar
         | Compose
+        | Colon
         | Ident of string
         | InternalIdent of string
         | Float of float
@@ -92,6 +93,7 @@ module Token =
         | Pipe -> "|>"
         | Bar -> "|"
         | Compose -> ">>"
+        | Colon -> ":"
         | Ident s -> "identifier " + s
         | InternalIdent s -> "internal identifier @" + s
         | Float _ -> "float"

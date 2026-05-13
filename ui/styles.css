@@ -188,6 +188,36 @@ body {
   fill: currentColor;
 }
 
+/* ── Script editor panel ──────────────────────────────────────────── */
+
+.panel-script {
+  min-width: 0;
+  border-right: 1px solid var(--border);
+  display: flex;
+  background: var(--bg-page);
+}
+
+.script-editor-panel {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.script-editor-panel .cm-editor {
+  height: 100%;
+}
+
+.script-editor-panel .cm-dsl-comment {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.script-editor-panel .cm-dsl-string {
+  color: #6a8759;
+}
+
 /* ── Layout ────────────────────────────────────────────────────────── */
 
 .layout {

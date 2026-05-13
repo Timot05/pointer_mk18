@@ -36,6 +36,7 @@
     <Compile Include="core\Lang\Eval.fs" />
     <Compile Include="core\Lang\TypeExtract.fs" />
     <Compile Include="core\Lang\BlockSpec.fs" />
+    <Compile Include="core\Lang\UserScript.fs" />
     <Compile Include="core\Lang\Typecheck.fs" />
     <Compile Include="core\Lang\MathIrCodec.fs" />
     <Compile Include="core\Lang\MathIrWgsl.fs" />
@@ -78,6 +79,7 @@
     <Compile Include="ui\TopBar.fs" />
     <Compile Include="ui\BlockList.fs" />
     <Compile Include="ui\SketchAuthoringPanel.fs" />
+    <Compile Include="ui\ScriptEditorPanel.fs" />
     <Compile Include="ui\Shortcuts.fs" />
 
     <!-- viewer (WebGPU rendering) -->

@@ -25,7 +25,8 @@ let private dropdownItem (label: string) (shortcut: string option) : HTMLButtonE
 let render
         (dispatch: Message -> unit)
         (onSave: unit -> unit)
-        (onLoad: unit -> unit) : HTMLElement =
+        (onLoad: unit -> unit)
+        (scriptOpen: bool) : HTMLElement =
     let topbar = Dom.el "div" "topbar"
     topbar.appendChild (Dom.elText "span" "topbar-logo" "Dekal" :> Node) |> ignore
 
@@ -77,6 +78,22 @@ let render
     fileMenu.appendChild (fileBtn :> Node) |> ignore
     fileMenu.appendChild (fileDropdown :> Node) |> ignore
     topbar.appendChild (fileMenu :> Node) |> ignore
+
+    // Script editor toggle. `.topbar-button-active` paints the bold/primary
+    // state when the panel is open (mirrors how block-list selection works).
+    let scriptBtnClass =
+        if scriptOpen then "topbar-button topbar-button-active"
+        else "topbar-button"
+    let scriptBtn = Dom.elText "button" scriptBtnClass "Script"
+    scriptBtn.title <- "Toggle DSL script editor"
+    scriptBtn.addEventListener (
+        "click",
+        fun e ->
+            e.stopPropagation ()
+            dispatch ToggleScriptEditor
+    )
+    topbar.appendChild (scriptBtn :> Node) |> ignore
+
     topbar.appendChild (Dom.el "span" "topbar-spacer" :> Node) |> ignore
 
     let githubLink = Dom.el "a" "topbar-github"

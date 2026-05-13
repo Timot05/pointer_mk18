@@ -344,3 +344,81 @@ let ``compose preserves visible field color indices`` () =
             ColorIndex = 8 }
     let composed = NotebookCompose.compose (notebookOf [ block ])
     Assert.Equal<int list>([ 8 ], composed.VisibleFieldColorIndices)
+
+// ─── User-defined specs (script editor) ─────────────────────────────────────
+
+[<Fact>]
+let ``composeWith: user spec seeds typeEnv with curried function type`` () =
+    let userScript =
+        UserScript.analyze "let donut = fun (r: Scalar) -> r + 1 end"
+    let nb = notebookOf []
+    let composed = NotebookCompose.composeWith nb userScript
+    // donut : Scalar -> Field
+    match Map.tryFind "donut" composed.TypeEnv with
+    | Some (Type.Fun(Type.Scalar, Type.Field)) -> ()
+    | other -> failwithf "expected Scalar -> Field, got %A" other
+
+[<Fact>]
+let ``composeWith: user-defined block resolves and typechecks against user spec`` () =
+    let userScript =
+        UserScript.analyze "let donut = fun (r: Scalar) -> r + 1 end"
+    let nb =
+        notebookOf [ nativeBlock 0 "ring" "donut" [ "r", ArgScalar 0.5 ] ]
+    let composed = NotebookCompose.composeWith nb userScript
+    // Block output should be the user spec's declared output (Field).
+    Assert.Equal(Some Type.Field, Map.tryFind 0 composed.BlockOutputs)
+    // Typecheck should pass.
+    match Typecheck.elaborate composed.TypeEnv composed.Ast with
+    | Ok _ -> ()
+    | Error errs ->
+        let msg = errs |> List.map Typecheck.formatError |> String.concat "; "
+        failwithf "expected typecheck to pass with user spec, got: %s" msg
+
+[<Fact>]
+let ``composeWith: unknown spec still errors when no user spec covers it`` () =
+    let nb =
+        notebookOf [ nativeBlock 0 "weird" "donut" [ "r", ArgScalar 0.5 ] ]
+    // No user script — donut is unknown.
+    let composed = NotebookCompose.composeWith nb UserScript.empty
+    match Typecheck.elaborate composed.TypeEnv composed.Ast with
+    | Ok _ -> failwith "expected typecheck failure for unknown spec"
+    | Error _ -> ()
+
+[<Fact>]
+let ``compileWith: user-defined block compiles to MathIR end to end`` () =
+    // A genuinely Field-valued user spec — `union` on a sphere doubles
+    // up as a field, returning a Field.
+    let userScript =
+        UserScript.analyze "let bubble = fun (r: Scalar) -> sphere r end"
+    let nb =
+        notebookOf [ nativeBlock 0 "ring" "bubble" [ "r", ArgScalar 1.0 ] ]
+    let result = NotebookCompose.compileWith nb userScript
+    // The single visible Field block should compile to a non-empty IR.
+    Assert.True(result.Ir.IsSome, "expected an IR")
+    Assert.True(result.BlockErrors.IsEmpty, "expected no block errors")
+
+[<Fact>]
+let ``compileWith: default capsule script compiles end to end`` () =
+    // The capsule definition in Document.emptyDocument uses let-blocks,
+    // translate, sphere, cylinder, union — all the patterns a user is
+    // likely to start from. Instantiating one as a block must produce
+    // a clean compile with a non-empty IR.
+    let doc = Server.Document.emptyDocument ()
+    let userScript = UserScript.analyze doc.ScriptSourceText
+    let nb =
+        notebookOf
+            [ nativeBlock 0 "pill" "capsule"
+                [ "radius", ArgScalar 0.5
+                  "length", ArgScalar 2.0 ] ]
+    let result = NotebookCompose.compileWith nb userScript
+    Assert.True(result.Ir.IsSome, "expected an IR from capsule compile")
+    Assert.True(
+        result.BlockErrors.IsEmpty,
+        sprintf "expected no block errors, got %A" result.BlockErrors)
+    // IR must contain real geometry — at least the sphere + cylinder +
+    // union nodes (≫ 10). On .NET, MathIrCodec.serialize no-ops (Fable
+    // Uint8Array bindings), so `Bytes` / `Summary` aren't checked here.
+    let ir = result.Ir.Value
+    Assert.True(
+        ir.Nodes.Count > 10,
+        sprintf "expected non-trivial IR, got %d nodes" ir.Nodes.Count)

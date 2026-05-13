@@ -70,7 +70,12 @@ type Document =
     { Name: string
       Blocks: Server.Lang.Notebook.Block list
       NextBlockId: Server.Lang.Notebook.BlockId
-      SelectedBlockId: Server.Lang.Notebook.BlockId option }
+      SelectedBlockId: Server.Lang.Notebook.BlockId option
+      /// Free-form DSL source authored in the Monaco script panel. Top-level
+      /// `let f (x: Scalar) ... = body` defs surface as draggable blocks via
+      /// `UserScript.analyze`. Empty for documents authored before the
+      /// script editor shipped — JSON load tolerates the missing field.
+      ScriptSourceText: string }
 
 module Document =
 
@@ -264,8 +269,29 @@ module Document =
                 { Server.Lang.Notebook.defaultSlicePlane with
                     Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } } ]
 
+    /// Demo content the script editor shows on a fresh document. Defines
+    /// one user spec (`capsule`) so the user can immediately see how a
+    /// `let f (...) = body` def becomes a draggable block in the +Add
+    /// palette (⌘K). Built-in primitives (sphere / box / cylinder /
+    /// union / subtract / intersect / translate) are in scope by name.
+    let private defaultScriptSource = """// User-defined block kinds. Each top-level
+//     let name = fun (param: Type) ... -> body end
+// appears in the +Add palette (⌘K). Built-in primitives —
+// sphere, box, cylinder, union, subtract, intersect, translate —
+// are in scope.
+
+let capsule = fun (radius: Scalar) (length: Scalar) ->
+    let half = length / 2
+    let body = cylinder radius length
+    let top = translate 0 0 half (sphere radius)
+    let bottom = translate 0 0 (0 - half) (sphere radius)
+    union (union body top 0) bottom 0
+end
+"""
+
     let emptyDocument () : Document =
         { Name = "untitled"
           Blocks = defaultBlocks
           NextBlockId = 4
-          SelectedBlockId = Some 3 }
+          SelectedBlockId = Some 3
+          ScriptSourceText = defaultScriptSource }

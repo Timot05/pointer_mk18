@@ -125,15 +125,30 @@ let private actionListSignature (doc: DocumentView) =
             sprintf "%s(%s)" name argDigest
         | Server.Lang.Notebook.SketchBody _ -> "sketch"
     let rows = doc.Blocks |> List.map (fun b -> b.Id, b.Name, bodyTag b.Body, b.Visibility, b.ColorIndex)
-    sprintf "%A|%A|%A|%A"
+    // User-spec names + analysis errors flow into the +Add palette and
+    // BlockList row rendering, so include them in the signature so a
+    // script-source edit triggers a BlockList sync without needing a
+    // full Shell re-render.
+    let userSpecNames =
+        doc.UserScript.Specs |> Map.toList |> List.map fst
+    let userScriptErrSummary =
+        match doc.UserScript.ParseError with
+        | Some e -> e.Message
+        | None ->
+            doc.UserScript.AnalysisErrors
+            |> List.map (fun (n, m) -> sprintf "%s:%s" n m)
+            |> String.concat ";"
+    sprintf "%A|%A|%A|%A|%A|%s"
         doc.SelectedBlockId
         doc.ExpandedBlockIds
         doc.EditingBlockRef
         rows
+        userSpecNames
+        userScriptErrSummary
 
 let private uiSignature (state: EditorState) =
     sprintf
-        "%A|%A|%A|%A|%A|%A|%A|%A"
+        "%A|%A|%A|%A|%A|%A|%A|%A|%A"
         state.SketchEditMode
         state.SketchTool
         state.SelectedTargets
@@ -142,6 +157,7 @@ let private uiSignature (state: EditorState) =
         state.ConstraintPlacementMode
         state.ConstraintPlacementDraft
         state.ConstraintPlacementCursor
+        state.ScriptEditorOpen
 
 let mutable private lastCompiled = store.State.Compiled
 let mutable private lastSlotValues = store.State.SlotValues

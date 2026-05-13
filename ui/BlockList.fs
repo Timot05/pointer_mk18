@@ -220,6 +220,21 @@ let private specOf (block: Notebook.Block) : BlockSpec.BlockSpec option =
     | Notebook.NativeBody(name, _) -> BlockSpec.tryFind name
     | _ -> None
 
+/// Resolve a spec name to its typed interface, checking user-defined
+/// specs first and falling back to the built-in BlockSpec registry. The
+/// typed interface is all the BlockList needs to render param editors
+/// and route ref-drop type filters — neither built-in `BlockSpec` nor
+/// user `UserSpec` are otherwise inspected here.
+let private extractedOf (doc: DocumentView) (specName: string) : TypeExtract.ExtractedSpec option =
+    match Map.tryFind specName doc.UserScript.Specs with
+    | Some us -> Some { Params = us.Params; Output = us.Output }
+    | None -> BlockSpec.tryFind specName |> Option.map BlockSpec.typedInterface
+
+let private extractedOfBlock (doc: DocumentView) (block: Notebook.Block) : TypeExtract.ExtractedSpec option =
+    match block.Body with
+    | Notebook.NativeBody(name, _) -> extractedOf doc name
+    | _ -> None
+
 let private bodyKindLabel (body: Notebook.BlockBody) : string =
     match body with
     | Notebook.NativeBody(name, _) -> name
@@ -492,11 +507,7 @@ let private expectedRefType
         (paramName: string) : Type.T option =
     doc.Blocks
     |> List.tryFind (fun b -> b.Id = sourceBlockId)
-    |> Option.bind (fun b ->
-        match b.Body with
-        | Notebook.NativeBody(specName, _) -> BlockSpec.tryFind specName
-        | _ -> None)
-    |> Option.map BlockSpec.typedInterface
+    |> Option.bind (extractedOfBlock doc)
     |> Option.bind (fun ti ->
         ti.Params
         |> List.tryFind (fun p -> p.Name = paramName)
@@ -579,7 +590,7 @@ let private renderRow
         row.title <- String.concat "\n" msgs
     | _ -> ()
 
-    let typedSpec = specOf block |> Option.map BlockSpec.typedInterface
+    let typedSpec = extractedOfBlock doc block
     let isSketchBody =
         match block.Body with
         | Notebook.SketchBody _ -> true
@@ -786,11 +797,20 @@ let private fuzzyMatch (query: string) (text: string) : bool =
         if qi < q.Length && t.[ti] = q.[qi] then qi <- qi + 1
     qi = q.Length
 
+/// Updated on every `BlockList.render` so the keyboard-triggered palette
+/// (⌘K → `togglePalette`) can list user-defined specs even though it
+/// fires from a global keydown handler that has no direct `doc` access.
+/// Names appear in source order ahead of the built-in catalogue.
+let mutable private currentUserSpecNames : string list = []
+
 let private allPaletteEntries () : (string * Message) list =
+    let userEntries =
+        currentUserSpecNames
+        |> List.map (fun n -> n, AddNativeBlock n)
     let nativeEntries =
         BlockSpec.allNames ()
         |> List.map (fun n -> n, AddNativeBlock n)
-    nativeEntries @ [ "sketch", AddSketchBlock ]
+    userEntries @ nativeEntries @ [ "sketch", AddSketchBlock ]
 
 let mutable private paletteOpen = false
 
@@ -918,6 +938,12 @@ let togglePalette (dispatch: Message -> unit) =
 // ── Top-level render ──────────────────────────────────────────────────────
 
 let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
+    // Refresh the user-spec name cache so the ⌘K palette (which fires
+    // from a global keydown handler) sees the latest top-level lambda
+    // defs without needing a direct `doc` reference.
+    currentUserSpecNames <-
+        doc.UserScript.Specs |> Map.toList |> List.map fst
+
     let panel = Dom.el "div" "panel"
 
     let header = Dom.el "div" "panel-header"
@@ -946,9 +972,8 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
         // action-row, same pattern ActionList uses — the CSS rotates
         // the caret and indents the input rows under their parent.
         if Set.contains block.Id doc.ExpandedBlockIds then
-            match specOf block, block.Body with
-            | Some spec, Notebook.NativeBody(_, args) ->
-                let typed = BlockSpec.typedInterface spec
+            match extractedOfBlock doc block, block.Body with
+            | Some typed, Notebook.NativeBody(_, args) ->
                 for param in typed.Params do
                     list.appendChild (renderInputRow dispatch doc block param args :> Node) |> ignore
             | _, Notebook.SketchBody data ->

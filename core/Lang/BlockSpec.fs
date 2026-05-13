@@ -36,8 +36,7 @@ module BlockSpec =
 
     /// `@name` reference — resolves through `Builtins.dispatch` at eval
     /// time. Used for spec bodies whose math isn't expressible in pure
-    /// AST (e.g. `from-sketch` needs to walk a `VSketch` payload and
-    /// emit MathIR primitives — that's a builtin).
+    /// AST.
     let private internalE (name: string) : Expr = mk (EVar (internal' name))
 
     let private nE (n: float) : Expr = mk (ENumber n)
@@ -55,6 +54,12 @@ module BlockSpec =
     let private minE  (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Min, a, b))
     let private maxE  (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Max, a, b))
     let private cmpE  (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Compare, a, b))
+
+    /// Exact selector for small enum-like scalar parameters:
+    /// `1 - abs(compare(value, choice))`, yielding 1 when equal and 0
+    /// otherwise for the axis values 0/1/2.
+    let private eqChoiceE (value: Expr) (choice: float) : Expr =
+        nE 1.0 -. absE (cmpE value (nE choice))
 
     /// Build a curried lambda with explicit parameter type hints,
     /// outermost first.
@@ -102,14 +107,16 @@ module BlockSpec =
     /// `halfplane axis offset` — axis-aligned halfspace.
     /// `axis` is a discrete choice (0=X, 1=Y, 2=Z) stored as an `ArgScalar`
     /// and rendered in the UI as a dropdown (see `BlockList.renderInputRow`).
-    /// SDF: `<axis> - offset`. The body below is a typed placeholder;
-    /// `NotebookCompose` intercepts the `halfplane` spec name and emits
-    /// the real AST with the concrete axis baked in — same pattern as
-    /// `from-sketch`.
+    /// SDF: `<axis> - offset`.
     let private halfplaneSpec : BlockSpec =
-        let placeholder = sqrtE (sqE (axE AxisX)) -. nE 0.0
+        let axis = varE "axis"
+        let offset = varE "offset"
+        let sx = eqChoiceE axis 0.0
+        let sy = eqChoiceE axis 1.0
+        let sz = eqChoiceE axis 2.0
+        let selected = sx *. axE AxisX +. sy *. axE AxisY +. sz *. axE AxisZ
         { Name = "halfplane"
-          Body = lambda [ "axis", Type.Scalar; "offset", Type.Scalar ] placeholder
+          Body = lambda [ "axis", Type.Scalar; "offset", Type.Scalar ] (selected -. offset)
           ScalarDefaults = Map.ofList [ "axis", 0.0; "offset", 0.0 ] }
 
     /// `box width height depth` — outside + inside form.
@@ -177,18 +184,32 @@ module BlockSpec =
     /// side of `child` on both sides of the plane perpendicular to the
     /// chosen axis at `root`. `axis` is a discrete choice (0=X, 1=Y,
     /// 2=Z) stored as an `ArgScalar` and rendered as a dropdown by the
-    /// BlockList. The body below is a typed placeholder;
-    /// `NotebookCompose` intercepts this spec name and emits the real
-    /// `ERemapAxes` with the concrete axis baked in — same pattern as
-    /// `halfplane`.
+    /// BlockList.
     let private mirrorSymmetricSpec : BlockSpec =
-        let placeholder = varE "child"
+        let axis = varE "axis"
+        let root = varE "root"
+        let child = varE "child"
+        let sx = eqChoiceE axis 0.0
+        let sy = eqChoiceE axis 1.0
+        let sz = eqChoiceE axis 2.0
+        let choose selector original mirrored =
+            selector *. mirrored +. (nE 1.0 -. selector) *. original
+        let mirrorCoord coord = root +. absE (coord -. root)
+        let x = axE AxisX
+        let y = axE AxisY
+        let z = axE AxisZ
+        let body =
+            mk (ERemapAxes(
+                child,
+                choose sx x (mirrorCoord x),
+                choose sy y (mirrorCoord y),
+                choose sz z (mirrorCoord z)))
         { Name = "mirror-symmetric"
           Body = lambda
                     [ "axis", Type.Scalar
                       "root", Type.Scalar
                       "child", Type.Field ]
-                    placeholder
+                    body
           ScalarDefaults = Map.ofList [ "axis", 1.0; "root", 0.0 ] }
 
     /// Iquilez polynomial smooth-min, with `radius <= eps` snapping to a

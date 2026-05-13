@@ -41,7 +41,6 @@
     <Compile Include="core\Lang\MathIrWgsl.fs" />
     <Compile Include="core\Lang\Notebook.fs" />
     <Compile Include="core\Lang\NotebookCompose.fs" />
-    <Compile Include="core\Lang\NotebookEval.fs" />
 
     <!-- core / Editor (domain) -->
     <Compile Include="core\Editor\Domain.fs" />

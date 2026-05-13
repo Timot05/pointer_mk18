@@ -26,8 +26,24 @@ let private sketchBlockOf id name (sketch: ActionSketch) (plane: SketchPlane) : 
 let private notebookOf (blocks: Block list) : Notebook =
     { NextId = List.length blocks; Blocks = blocks }
 
-let private blockEvalOf (id: BlockId) (eval: Evaluation) : BlockEval =
-    eval.PerBlock |> List.find (fun be -> be.Id = id)
+let private composeChecked (nb: Notebook) : NotebookCompose.Composed =
+    let composed = NotebookCompose.compose nb
+    match Typecheck.elaborate composed.TypeEnv composed.Ast with
+    | Ok _ -> composed
+    | Error errs ->
+        let msg = errs |> List.map Typecheck.formatError |> String.concat "; "
+        failwithf "typecheck failed: %s" msg
+
+let private evaluateOk (nb: Notebook) : NotebookCompose.Composed * NotebookCompose.EvalResult =
+    let composed = composeChecked nb
+    match NotebookCompose.evaluate nb composed with
+    | Ok result -> composed, result
+    | Error e -> failwithf "evaluate failed: %s" e.Message
+
+let private bindingOf (name: string) (result: NotebookCompose.EvalResult) : Value.Value =
+    match Map.tryFind name result.Bindings with
+    | Some v -> v
+    | None -> failwithf "missing binding '%s'" name
 
 let private simpleLineSketch : ActionSketch =
     { Entities =
@@ -51,11 +67,9 @@ let ``single sphere block produces a Field output`` () =
         notebookOf [
             nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.0 ]
         ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 0 result
-    Assert.Equal(None, be.Error)
-    match be.Output with
-    | Some (Value.VField _) -> ()
+    let _, result = evaluateOk nb
+    match bindingOf "shape" result with
+    | Value.VField _ -> ()
     | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]
@@ -69,11 +83,9 @@ let ``translate referencing an upstream sphere yields a RemapAxes-rooted Field``
                   "z", ArgScalar 0.0
                   "child", ArgRef (Some 0) ]
         ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 1 result
-    Assert.Equal(None, be.Error)
-    match be.Output with
-    | Some (Value.VField root) ->
+    let _, result = evaluateOk nb
+    match bindingOf "shifted" result with
+    | Value.VField root ->
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
     | other -> failwithf "expected VField, got %A" other
@@ -88,11 +100,9 @@ let ``mirror symmetric wraps an upstream field in a RemapAxes node`` () =
                   "root", ArgScalar 0.0
                   "child", ArgRef (Some 0) ]
         ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 1 result
-    Assert.Equal(None, be.Error)
-    match be.Output with
-    | Some (Value.VField root) ->
+    let _, result = evaluateOk nb
+    match bindingOf "full" result with
+    | Value.VField root ->
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
     | other -> failwithf "expected VField, got %A" other
@@ -105,18 +115,16 @@ let ``union of two spheres accepts target tool and radius inputs`` () =
             nativeBlock 1 "b" "sphere" [ "radius", ArgScalar 2.0 ]
             nativeBlock 2 "u" "union" [ "target", ArgRef (Some 0); "tool", ArgRef (Some 1); "radius", ArgScalar 0.25 ]
         ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 2 result
-    Assert.Equal(None, be.Error)
-    match be.Output with
-    | Some (Value.VField root) ->
+    let _, result = evaluateOk nb
+    match bindingOf "u" result with
+    | Value.VField root ->
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
         Assert.Equal(int MathIr.Binary.Sub, rootNode.Op)
     | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]
-let ``unwired ref records an error but doesn't halt the notebook`` () =
+let ``unwired ref records a block error on the compose path`` () =
     let nb =
         notebookOf [
             nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.0 ]
@@ -127,21 +135,19 @@ let ``unwired ref records an error but doesn't halt the notebook`` () =
                   "child", ArgRef None ]
             nativeBlock 2 "tail" "sphere" [ "radius", ArgScalar 0.5 ]
         ]
-    let result = NotebookEval.eval nb
-    let broken = blockEvalOf 1 result
-    Assert.True(broken.Error.IsSome, "broken block should have an error")
-    let tail = blockEvalOf 2 result
-    Assert.Equal(None, tail.Error)
+    let result = NotebookCompose.compile nb
+    Assert.True(Map.containsKey 1 result.BlockErrors, "broken block should have an error")
+    Assert.Equal(None, result.Bytes)
+    Assert.Equal(Some Type.Field, Map.tryFind 2 result.BlockOutputs)
 
 // ─── Sketch blocks ──────────────────────────────────────────────────────────
 
 [<Fact>]
 let ``sketch block surfaces as a VSketch output`` () =
     let nb = notebookOf [ sketchBlockOf 0 "outline" simpleLineSketch XY ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 0 result
-    match be.Output with
-    | Some (Value.VSketch sv) ->
+    let _, result = evaluateOk nb
+    match bindingOf "outline" result with
+    | Value.VSketch sv ->
         Assert.Equal(3, List.length sv.Sketch.Entities)
         Assert.Equal(XY, sv.Plane)
     | other -> failwithf "expected VSketch, got %A" other
@@ -156,11 +162,9 @@ let ``wing remap preview consumes two sketch refs and emits remapped profile`` (
                 [ "leading", ArgRef (Some 0)
                   "trailing", ArgRef (Some 1) ]
         ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 2 result
-    Assert.Equal(None, be.Error)
-    match be.Output with
-    | Some (Value.VField root) ->
+    let _, result = evaluateOk nb
+    match bindingOf "wing" result with
+    | Value.VField root ->
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
         Assert.Equal(int MathIr.Binary.Max, rootNode.Op)
@@ -192,11 +196,9 @@ let ``from-sketch over two lines roots a Fold(Min, [LineSegment; LineSegment])``
             sketchBlockOf 0 "sk" sk XY
             nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
         ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 1 result
-    Assert.Equal(None, be.Error)
-    match be.Output with
-    | Some (Value.VField root) ->
+    let _, result = evaluateOk nb
+    match bindingOf "field" result with
+    | Value.VField root ->
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.Fold, rootNode.Kind)
         Assert.Equal(int MathIr.FoldOp.Min, rootNode.Op)
@@ -221,10 +223,9 @@ let ``from-sketch over a single line returns the LineSegment node directly`` () 
             sketchBlockOf 0 "sk" sk XY
             nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
         ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 1 result
-    match be.Output with
-    | Some (Value.VField root) ->
+    let _, result = evaluateOk nb
+    match bindingOf "field" result with
+    | Value.VField root ->
         Assert.Equal(MathIr.NodeKind.LineSegment, result.Ir.Nodes.[root.Id].Kind)
     | other -> failwithf "expected VField, got %A" other
 
@@ -248,11 +249,9 @@ let ``from-sketch over a triangle wraps the Fold(Min, ...) in a sign flip (Mul)`
             sketchBlockOf 0 "sk" sk XY
             nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
         ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 1 result
-    Assert.Equal(None, be.Error)
-    match be.Output with
-    | Some (Value.VField root) ->
+    let _, result = evaluateOk nb
+    match bindingOf "field" result with
+    | Value.VField root ->
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
         Assert.Equal(int MathIr.Binary.Mul, rootNode.Op)
@@ -278,11 +277,9 @@ let ``from-sketch over a single circle lowers to analytic signed disk distance``
             sketchBlockOf 0 "sk" sk XY
             nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
         ]
-    let result = NotebookEval.eval nb
-    let be = blockEvalOf 1 result
-    Assert.Equal(None, be.Error)
-    match be.Output with
-    | Some (Value.VField root) ->
+    let _, result = evaluateOk nb
+    match bindingOf "field" result with
+    | Value.VField root ->
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
         Assert.Equal(int MathIr.Binary.Sub, rootNode.Op)

@@ -8,7 +8,7 @@ namespace Server.Lang
 // with the values bound to each input — scalars (drag-edited via a slot),
 // refs (wired to upstream blocks), or structured payloads like sketches.
 //
-// The driver lives in NotebookEval.fs.
+// The active driver lives in NotebookCompose.fs.
 // ---------------------------------------------------------------------------
 
 module Notebook =
@@ -88,20 +88,4 @@ module Notebook =
     type Notebook = {
         NextId: BlockId
         Blocks: Block list
-    }
-
-    /// Per-block evaluation result. `Output` is the single value the
-    /// block exposes downstream; for sketch blocks this is the wrapped
-    /// `VSketch`. Errors are localised to the block — a downstream block
-    /// referencing a failed upstream sees its slot as unbound.
-    type BlockEval = {
-        Id: BlockId
-        Output: Value option
-        Error: EvalError option
-    }
-
-    type Evaluation = {
-        PerBlock: BlockEval list
-        Outputs: Map<BlockId, Value>
-        Ir: MathIr.MathIR
     }

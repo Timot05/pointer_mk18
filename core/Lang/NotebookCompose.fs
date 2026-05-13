@@ -356,11 +356,10 @@ module NotebookCompose =
     /// Empty sketch → an unwired placeholder so the typecheck path
     /// surfaces the same kind of error a missing input would.
     ///
-    /// Public because `NotebookEval` reuses it: both drivers now share
-    /// the same `sketch → AST → Eval → MathIR` pipeline, so sketch
-    /// semantics live in one place. The legacy MathIR-direct mirror
-    /// (`lowerSketchData`) was retired alongside the duplicate
-    /// `lineWindingIr` / `circleSignedIr` helpers.
+    /// Shared by the production compose/evaluate path and tests:
+    /// sketch semantics live here as `sketch → AST → Eval → MathIR`.
+    /// The legacy MathIR-direct mirror (`lowerSketchData`) was retired
+    /// alongside the duplicate `lineWindingIr` / `circleSignedIr` helpers.
     let buildFromSketchBody
             (sp: Span)
             (sketchData: Notebook.SketchData) : Expr =

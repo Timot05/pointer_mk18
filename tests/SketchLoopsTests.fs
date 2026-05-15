@@ -132,3 +132,99 @@ let ``polygonSignedArea positive for CCW triangle`` () =
 let ``polygonSignedArea negative for CW triangle`` () =
     let pts = [ 0.0, 0.0; 0.0, 1.0; 1.0, 0.0; 0.0, 0.0 ]
     Assert.True(SketchLoops.polygonSignedArea pts < 0.0)
+
+// ── Reconciliation ────────────────────────────────────────────────────────
+
+let private detected (entityIds: string list) : SketchLoop =
+    { Id = "ignored"   // reconcile matches by EntityIds set, not by Id
+      EntityIds = entityIds
+      SignedArea = 1.0 }
+
+let private record (id: string) (entityIds: string list) (userNamed: bool) : LoopRecord =
+    { Id = id; EntityIds = entityIds; UserNamed = userNamed }
+
+[<Fact>]
+let ``reconcile: empty inputs yield empty registry`` () =
+    let result = SketchLoops.reconcile [] []
+    Assert.Empty(result)
+
+[<Fact>]
+let ``reconcile: first-time detection assigns loop_0`` () =
+    let result = SketchLoops.reconcile [] [ detected [ "ab"; "bc"; "ca" ] ]
+    Assert.Equal(1, List.length result)
+    Assert.Equal("loop_0", result.[0].Id)
+    Assert.False(result.[0].UserNamed)
+
+[<Fact>]
+let ``reconcile: matching entity set carries persisted ID forward`` () =
+    let persisted = [ record "loop_0" [ "ab"; "bc"; "ca" ] false ]
+    let result = SketchLoops.reconcile persisted [ detected [ "ab"; "bc"; "ca" ] ]
+    Assert.Equal("loop_0", result.[0].Id)
+
+[<Fact>]
+let ``reconcile: matching is order-insensitive`` () =
+    let persisted = [ record "loop_0" [ "ab"; "bc"; "ca" ] false ]
+    // Detection might traverse the same loop in reverse order.
+    let result = SketchLoops.reconcile persisted [ detected [ "ca"; "bc"; "ab" ] ]
+    Assert.Equal("loop_0", result.[0].Id)
+
+[<Fact>]
+let ``reconcile: persisted user-named flag is preserved on match`` () =
+    let persisted = [ record "outer_face" [ "ab"; "bc"; "ca" ] true ]
+    let result = SketchLoops.reconcile persisted [ detected [ "ab"; "bc"; "ca" ] ]
+    Assert.Equal("outer_face", result.[0].Id)
+    Assert.True(result.[0].UserNamed)
+
+[<Fact>]
+let ``reconcile: vanished detections drop their persisted record`` () =
+    let persisted = [ record "loop_0" [ "ab"; "bc"; "ca" ] false ]
+    let result = SketchLoops.reconcile persisted []
+    Assert.Empty(result)
+
+[<Fact>]
+let ``reconcile: new detection alongside existing one allocates next loop_N`` () =
+    let persisted = [ record "loop_0" [ "ab"; "bc"; "ca" ] false ]
+    let result =
+        SketchLoops.reconcile persisted
+            [ detected [ "ab"; "bc"; "ca" ]
+              detected [ "de"; "ef"; "fd" ] ]
+    Assert.Equal(2, List.length result)
+    let ids = result |> List.map (fun r -> r.Id) |> Set.ofList
+    Assert.Contains("loop_0", ids)
+    Assert.Contains("loop_1", ids)
+
+[<Fact>]
+let ``reconcile: ID allocation skips numbers in use by other persisted records`` () =
+    // Both records survive; the new detection gets loop_2 (next > max).
+    let persisted =
+        [ record "loop_0" [ "ab" ] false
+          record "loop_1" [ "cd" ] false ]
+    let result =
+        SketchLoops.reconcile persisted
+            [ detected [ "ab" ]
+              detected [ "cd" ]
+              detected [ "ef" ] ]
+    let newRecord = result |> List.find (fun r -> r.EntityIds = [ "ef" ])
+    Assert.Equal("loop_2", newRecord.Id)
+
+[<Fact>]
+let ``reconcile: output order matches detection order`` () =
+    let persisted = [ record "loop_0" [ "ab" ] false ]
+    let result =
+        SketchLoops.reconcile persisted
+            [ detected [ "cd" ]   // new — gets a fresh id
+              detected [ "ab" ] ] // existing
+    // Detection order preserved → "cd" loop comes first.
+    Assert.Equal<string list>([ "cd" ], result.[0].EntityIds)
+    Assert.Equal<string list>([ "ab" ], result.[1].EntityIds)
+    Assert.Equal("loop_0", result.[1].Id)
+
+[<Fact>]
+let ``reconcile: user-named record without matching detection is dropped`` () =
+    let persisted = [ record "outer" [ "ab"; "bc"; "ca" ] true ]
+    let result = SketchLoops.reconcile persisted [ detected [ "de"; "ef"; "fd" ] ]
+    // Strict matching policy: vanished loop is dropped even if user-named.
+    // Loosening this is a later policy decision.
+    Assert.Equal(1, List.length result)
+    Assert.NotEqual<string>("outer", result.[0].Id)
+    Assert.False(result.[0].UserNamed)

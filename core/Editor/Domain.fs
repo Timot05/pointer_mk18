@@ -211,7 +211,11 @@ module Document =
                                 match field with
                                 | SketchEntityField(entityId, entityField) -> patchSketchEntity entityId entityField value data.Sketch
                                 | SketchConstraintField(index, constraintField) -> patchSketchConstraint index constraintField value data.Sketch
-                            { b with Body = Server.Lang.Notebook.SketchBody { data with Sketch = nextSketch } }
+                            // Entity-coord patches don't change which entities exist
+                            // — `normalize` is a near-no-op match here but kept for
+                            // consistency so every write-back path runs reconciliation.
+                            let normalized = SketchLoops.normalize nextSketch
+                            { b with Body = Server.Lang.Notebook.SketchBody { data with Sketch = normalized } }
                         | _ -> b)
             { doc with Blocks = blocks }
 
@@ -220,7 +224,8 @@ module Document =
             [ REPoint("p0", x0, y0)
               REPoint("p1", x1, y1)
               RELine("line0", "p0", "p1") ]
-          Constraints = [] }
+          Constraints = []
+          Loops = [] }
 
     /// Boot-time notebook: two sketch guide curves wired into the half-wing
     /// preview block, then mirrored symmetrically across the root XZ plane.

@@ -284,6 +284,22 @@ module BlockSpec =
           Body = lambda [ "sketch", Type.Sketch ] body
           ScalarDefaults = Map.empty }
 
+    /// `revolve sketch` — sweep a closed 2D profile around a hardcoded
+    /// axis in its plane. Body is a typed placeholder; `NotebookCompose`
+    /// intercepts blocks with this spec name and wraps the from-sketch
+    /// 2D signed-distance in `ERemapAxes` so world coords feed the 2D
+    /// SDF as (radial, height). Revolve axis per plane:
+    ///   XY → Y axis (radial = sqrt(x² + z²), height = y)
+    ///   XZ → Z axis (radial = sqrt(x² + y²), height = z)
+    ///   YZ → Z axis (radial = sqrt(x² + y²), height = z)
+    /// Closed profiles only — open profiles revolve into thin shells
+    /// whose unsigned distance doesn't raymarch well.
+    let private revolveSpec : BlockSpec =
+        let body = mk (EFold(MathIr.FoldOp.Min, []))
+        { Name = "revolve"
+          Body = lambda [ "sketch", Type.Sketch ] body
+          ScalarDefaults = Map.empty }
+
     /// `wing-remap-preview leading trailing` — experimental field that
     /// remaps a canonical unit chord/span strip through two one-line XY
     /// sketch guides. This validates the curve-distance/remap path before
@@ -309,6 +325,7 @@ module BlockSpec =
     do register thickenSpec
     do register shellSpec
     do register fromSketchSpec
+    do register revolveSpec
     do register wingRemapPreviewSpec
 
     // ── Lookups ────────────────────────────────────────────────────────────

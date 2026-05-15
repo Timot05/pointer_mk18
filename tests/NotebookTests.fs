@@ -50,14 +50,14 @@ let private simpleLineSketch : ActionSketch =
         [ REPoint("p0", 0.0, 0.0)
           REPoint("p1", 1.0, 0.0)
           RELine("l0", "p0", "p1") ]
-      Constraints = [] }
+      Constraints = []; Loops = [] }
 
 let private verticalLineSketch x : ActionSketch =
     { Entities =
         [ REPoint("p0", x, 0.0)
           REPoint("p1", x, 2.0)
           RELine("l0", "p0", "p1") ]
-      Constraints = [] }
+      Constraints = []; Loops = [] }
 
 // ─── Native blocks ──────────────────────────────────────────────────────────
 
@@ -190,7 +190,7 @@ let ``from-sketch over two lines roots a Fold(Min, [LineSegment; LineSegment])``
               REPoint("b1", 1.0, 1.0)
               RELine("la", "a0", "a1")
               RELine("lb", "b0", "b1") ]
-          Constraints = [] }
+          Constraints = []; Loops = [] }
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
@@ -217,7 +217,7 @@ let ``from-sketch over a single line returns the LineSegment node directly`` () 
             [ REPoint("p0", 0.0, 0.0)
               REPoint("p1", 1.0, 0.0)
               RELine("l", "p0", "p1") ]
-          Constraints = [] }
+          Constraints = []; Loops = [] }
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
@@ -243,7 +243,7 @@ let ``from-sketch over a triangle wraps the Fold(Min, ...) in a sign flip (Mul)`
               RELine("ab", "a", "b")
               RELine("bc", "b", "c")
               RELine("ca", "c", "a") ]
-          Constraints = [] }
+          Constraints = []; Loops = [] }
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
@@ -271,7 +271,7 @@ let ``from-sketch over a single circle lowers to analytic signed disk distance``
         { Entities =
             [ REPoint("c", 0.0, 0.0)
               RECircle("circ", "c", 1.5) ]
-          Constraints = [] }
+          Constraints = []; Loops = [] }
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
@@ -288,6 +288,64 @@ let ``from-sketch over a single circle lowers to analytic signed disk distance``
         Assert.Equal(MathIr.NodeKind.UnaryK, sqrtNode.Kind)
         Assert.Equal(int MathIr.Unary.Sqrt, sqrtNode.Op)
     | other -> failwithf "expected VField, got %A" other
+
+[<Fact>]
+let ``revolve over a circle sketch wraps the 2D SDF in RemapAxes`` () =
+    // A circle on the XY plane revolved around Y produces a torus-like
+    // 3D field. The root of the revolved expression should be a
+    // RemapAxes node whose target is the from-sketch 2D signed disk
+    // distance. The RemapAxes' newX is `sqrt(x² + z²)` (radial).
+    let sk =
+        { Entities =
+            [ REPoint("c", 2.0, 0.0)
+              RECircle("circ", "c", 0.5) ]
+          Constraints = []; Loops = [] }
+    let nb =
+        notebookOf [
+            sketchBlockOf 0 "sk" sk XY
+            nativeBlock 1 "torus" "revolve" [ "sketch", ArgRef (Some 0) ]
+        ]
+    let _, result = evaluateOk nb
+    match bindingOf "torus" result with
+    | Value.VField root ->
+        let rootNode = result.Ir.Nodes.[root.Id]
+        Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
+        // newX (=B) is sqrt(x² + z²) — a Unary.Sqrt over a Binary.Add of squares.
+        let newXNode = result.Ir.Nodes.[rootNode.B]
+        Assert.Equal(MathIr.NodeKind.UnaryK, newXNode.Kind)
+        Assert.Equal(int MathIr.Unary.Sqrt, newXNode.Op)
+        let sumNode = result.Ir.Nodes.[newXNode.A]
+        Assert.Equal(MathIr.NodeKind.BinaryK, sumNode.Kind)
+        Assert.Equal(int MathIr.Binary.Add, sumNode.Op)
+        // newY (=C) is the world Y axis var node.
+        let newYNode = result.Ir.Nodes.[rootNode.C]
+        Assert.Equal(MathIr.NodeKind.Var, newYNode.Kind)
+        Assert.Equal(int MathIr.Axis.Y, newYNode.Op)
+    | other -> failwithf "expected VField, got %A" other
+
+[<Fact>]
+let ``revolve block output is typed as Field`` () =
+    let sk =
+        { Entities =
+            [ REPoint("c", 1.0, 0.0)
+              RECircle("circ", "c", 0.25) ]
+          Constraints = []; Loops = [] }
+    let nb =
+        notebookOf [
+            sketchBlockOf 0 "sk" sk XY
+            nativeBlock 1 "tor" "revolve" [ "sketch", ArgRef (Some 0) ]
+        ]
+    let composed = composeChecked nb
+    Assert.Equal(Some Type.Field, Map.tryFind 1 composed.BlockOutputs)
+
+[<Fact>]
+let ``revolve with no sketch wired records a block error`` () =
+    let nb =
+        notebookOf [ nativeBlock 0 "tor" "revolve" [ "sketch", ArgRef None ] ]
+    let result = NotebookCompose.compile nb
+    Assert.True(
+        Map.containsKey 0 result.BlockErrors,
+        "unwired revolve should surface a block error")
 
 // ─── Fold node ─────────────────────────────────────────────────────────────
 

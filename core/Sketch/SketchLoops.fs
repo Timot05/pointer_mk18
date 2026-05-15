@@ -286,3 +286,94 @@ module SketchLoops =
                                   SignedArea = signedArea })
 
             circleLoops @ (List.ofSeq faceLoops)
+
+    // ── Reconciliation ─────────────────────────────────────────────────
+    //
+    // `detectLoops` is a pure function from the entity graph, but its
+    // output IDs are content-derived (`loop:e0,e1,...`). Those change
+    // whenever an entity id changes, so they aren't suitable for
+    // DSL-facing references that need to survive sketch edits.
+    //
+    // `reconcile` projects a list of detected loops onto a persistent
+    // registry of `LoopRecord`s with stable, user-facing IDs
+    // (`loop_0`, `loop_1`, ...). The matching is by entity-id *set*
+    // (order-insensitive — face-walking can flip traversal direction
+    // without changing the loop). Records that no longer match anything
+    // are dropped; freshly-detected loops with no match get the next
+    // available auto ID.
+    //
+    // `UserNamed` is preserved when a record carries forward. The
+    // reconciler doesn't promote auto-named records to user-named or
+    // vice versa — that's the editor's job when the user renames.
+
+    /// Parse a `loop_<N>` auto-id back to its integer index. Anything
+    /// else (user-named, legacy `circle:…` / `loop:…` etc.) returns
+    /// `None` and doesn't participate in next-id computation.
+    let private tryParseAutoIndex (id: string) : int option =
+        if id.StartsWith "loop_" then
+            let rest = id.Substring 5
+            match System.Int32.TryParse rest with
+            | true, n when n >= 0 -> Some n
+            | _ -> None
+        else None
+
+    /// Next unused `loop_N` index given a list of records that may or
+    /// may not include any auto-named entries.
+    let private nextAutoIndex (records: LoopRecord list) : int =
+        records
+        |> List.choose (fun r -> tryParseAutoIndex r.Id)
+        |> function
+           | [] -> 0
+           | xs -> (List.max xs) + 1
+
+    /// Order-insensitive entity-id-set equality.
+    let private sameEntitySet (a: string list) (b: string list) : bool =
+        Set.ofList a = Set.ofList b
+
+    /// Match freshly-detected loops against the persisted registry and
+    /// return the updated registry. Output order follows detection
+    /// order so the UI's loop list is stable per-cycle.
+    let reconcile
+            (persisted: LoopRecord list)
+            (detected: SketchLoop list) : LoopRecord list =
+        // We allocate auto IDs by walking detected loops in order and
+        // pulling from a "fresh number" counter. To avoid colliding
+        // with persisted auto-named records that we're carrying
+        // forward, seed the counter past the existing max.
+        let mutable nextN = nextAutoIndex persisted
+        let used = System.Collections.Generic.HashSet<int>()
+
+        // Pre-mark all persisted auto-numbered IDs as used so reused
+        // entries don't collide with freshly-allocated ones.
+        for r in persisted do
+            match tryParseAutoIndex r.Id with
+            | Some n -> used.Add n |> ignore
+            | None -> ()
+
+        let allocFreshId () : string =
+            while used.Contains nextN do nextN <- nextN + 1
+            used.Add nextN |> ignore
+            let id = sprintf "loop_%d" nextN
+            nextN <- nextN + 1
+            id
+
+        detected
+        |> List.map (fun d ->
+            match persisted |> List.tryFind (fun r -> sameEntitySet r.EntityIds d.EntityIds) with
+            | Some r ->
+                // Carry the stable ID forward; update EntityIds in
+                // case the traversal order changed.
+                { r with EntityIds = d.EntityIds }
+            | None ->
+                { Id = allocFreshId ()
+                  EntityIds = d.EntityIds
+                  UserNamed = false })
+
+    /// Re-detect loops in `sketch.Entities` and reconcile against the
+    /// existing `sketch.Loops`, returning the sketch with its loop
+    /// registry brought up to date. This is the single chokepoint every
+    /// reducer that mutates `sketch.Entities` should route through.
+    /// Pure — no side effects.
+    let normalize (sketch: ActionSketch) : ActionSketch =
+        let detected = detectLoops sketch.Entities
+        { sketch with Loops = reconcile sketch.Loops detected }

@@ -1233,7 +1233,8 @@ module Editor =
                             else
                                 match b.Body with
                                 | Server.Lang.Notebook.SketchBody data ->
-                                    { b with Body = Server.Lang.Notebook.SketchBody { data with Sketch = sketch } }
+                                    let normalized = Server.SketchLoops.normalize sketch
+                                    { b with Body = Server.Lang.Notebook.SketchBody { data with Sketch = normalized } }
                                 | _ -> b)
                     { state with Doc = { state.Doc with Blocks = blocks } }
                     |> recompileNotebook

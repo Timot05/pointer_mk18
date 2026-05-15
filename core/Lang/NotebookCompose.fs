@@ -404,6 +404,60 @@ module NotebookCompose =
         | [ single ] -> single
         | many -> mkAt sp (EFold(MathIr.FoldOp.Min, many))
 
+    // ── revolve lowering ──────────────────────────────────────────────────
+    //
+    // Sweep a 2D profile around a hardcoded axis in its plane. The 3D SDF
+    // at world (x, y, z) equals `sketch_sdf_2d(radial, height)` where
+    //   radial = sqrt of the two world coords perpendicular to the revolve axis
+    //   height = world coord along the revolve axis
+    // We reuse `buildFromSketchBody` to construct the 2D signed-distance
+    // AST (closed loops produce signed; open profiles unsigned and look
+    // weird revolved — out of scope for MVP) and wrap with `ERemapAxes` so
+    // the EAxis references inside the 2D SDF resolve to the radial /
+    // height substitutions.
+    //
+    // Revolve axis per plane:
+    //   XY → Y axis  (radial = sqrt(x² + z²), height = y)
+    //   XZ → Z axis  (radial = sqrt(x² + y²), height = z)
+    //   YZ → Z axis  (radial = sqrt(x² + y²), height = z)
+
+    let private radialDistance (sp: Span) (a: Expr) (b: Expr) : Expr =
+        let sq e = mkAt sp (EUnary(UnaryOp.Square, e))
+        let sum = mkAt sp (EBinary(BinaryOp.Add, sq a, sq b))
+        mkAt sp (EUnary(UnaryOp.Sqrt, sum))
+
+    /// Build the SLet RHS for a revolve block. The sketch's 2D SDF
+    /// (whatever `buildFromSketchBody` would produce — typically a signed
+    /// closed-loop distance) gets wrapped in `ERemapAxes` so EAxis
+    /// references inside resolve to the radial / height substitutions.
+    /// Empty sketch falls through `buildFromSketchBody`'s unwired
+    /// placeholder, which then bypasses the remap (target is just a
+    /// var-ref to UNWIRED_PLACEHOLDER, which yields its own typecheck
+    /// error path).
+    let buildRevolveBody
+            (sp: Span)
+            (sketchData: Notebook.SketchData) : Expr =
+        let plane = planeMap sketchData.Plane
+        let target = buildFromSketchBody sp sketchData
+        let x = mkAt sp (EAxis AxisX)
+        let y = mkAt sp (EAxis AxisY)
+        let z = mkAt sp (EAxis AxisZ)
+        // Unused-axis slots stay as identity remaps (axis → itself) so the
+        // typechecker sees Field everywhere — `ENumber 0.0` would type as
+        // Scalar and fail `check env Type.Field`. The unused axis never
+        // appears inside `target` so the actual substitution is dead.
+        match plane with
+        | MathIr.Plane.XY ->
+            // 2D SDF uses AxisX, AxisY. Revolve around Y.
+            mkAt sp (ERemapAxes(target, radialDistance sp x z, y, z))
+        | MathIr.Plane.XZ ->
+            // 2D SDF uses AxisX, AxisZ. Revolve around Z.
+            mkAt sp (ERemapAxes(target, radialDistance sp x y, y, z))
+        | MathIr.Plane.YZ ->
+            // 2D SDF uses AxisY, AxisZ. Revolve around Z.
+            mkAt sp (ERemapAxes(target, x, radialDistance sp x y, z))
+        | _ -> target
+
     // ── Type signatures for native specs ───────────────────────────────────
 
     /// Curried function type derived from a spec's typed interface.
@@ -535,6 +589,32 @@ module NotebookCompose =
                         | Some (ArgRef (Some refId)) ->
                             match Map.tryFind refId sketchByBlockId with
                             | Some data -> buildFromSketchBody bsp data
+                            | None -> varEAt bsp UNWIRED_PLACEHOLDER
+                        | _ -> varEAt bsp UNWIRED_PLACEHOLDER
+                    stmts.Add(SLet([ userAt block.Name bsp ], body))
+
+                    let outTy = specOutputType spec
+                    blockOutputs <- Map.add block.Id outTy blockOutputs
+                    let surfaceVisible =
+                        match block.Visibility with
+                        | VIsosurface           -> true
+                        | VHidden | VFieldLines -> false
+                    if outTy = Type.Field && surfaceVisible then
+                        visibleFieldNames.Add block.Name
+                        visibleFieldBlockIds.Add block.Id
+                        visibleFieldKinds.Add block.Visibility
+                        visibleFieldColorIndices.Add block.ColorIndex
+                | Some spec when specName = "revolve" ->
+                    // Lower `revolve sketch` to `ERemapAxes(2D_sdf, ...)`
+                    // — same pattern as from-sketch but the resulting
+                    // expression is the 2D SDF sampled at (radial, height)
+                    // coordinates rather than directly at world (x, y).
+                    // See `buildRevolveBody` for the per-plane remap math.
+                    let body =
+                        match Map.tryFind "sketch" args with
+                        | Some (ArgRef (Some refId)) ->
+                            match Map.tryFind refId sketchByBlockId with
+                            | Some data -> buildRevolveBody bsp data
                             | None -> varEAt bsp UNWIRED_PLACEHOLDER
                         | _ -> varEAt bsp UNWIRED_PLACEHOLDER
                     stmts.Add(SLet([ userAt block.Name bsp ], body))

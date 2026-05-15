@@ -88,14 +88,29 @@ module SketchConstraint =
         | Tangent _
         | CurveTangent _ -> None
 
-/// The full content of a Sketch action: a set of entities and the
-/// constraints between them.
+/// Persistent loop registration. Closed loops are *detected* fresh each
+/// compose cycle by `SketchLoops.detectLoops` from the entity graph, but
+/// their stable user-facing IDs need to survive sketch edits — adding a
+/// fillet shouldn't rename `loop_0`. Reconciliation (in
+/// `SketchLoops.reconcile`) matches freshly-detected loops against this
+/// list by entity-id set and carries the IDs forward.
+///
+/// `UserNamed = true` flags loops the user has renamed manually; the
+/// reconciler treats those as sticky (prefer to preserve under ambiguity).
+type LoopRecord =
+    { Id: string
+      EntityIds: string list
+      UserNamed: bool }
+
+/// The full content of a Sketch action: a set of entities, the
+/// constraints between them, and the persisted loop ID registry.
 type ActionSketch =
     { Entities: RenderEntity list
-      Constraints: SketchConstraint list }
+      Constraints: SketchConstraint list
+      Loops: LoopRecord list }
 
 module ActionSketch =
-    let empty : ActionSketch = { Entities = []; Constraints = [] }
+    let empty : ActionSketch = { Entities = []; Constraints = []; Loops = [] }
 
 type SketchPlane =
     | XY

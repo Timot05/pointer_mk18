@@ -28,6 +28,7 @@ let private circleDash      : obj = importDefault "@carbon/icons/es/circle-dash/
 let private layers          : obj = importDefault "@carbon/icons/es/layers/16"
 let private view            : obj = importDefault "@carbon/icons/es/view/16"
 let private logoGithub      : obj = importDefault "@carbon/icons/es/logo--github/16"
+let private rotateClockwise : obj = importDefault "@carbon/icons/es/rotate--clockwise/16"
 
 [<Emit("Object.entries($0)")>]
 let private entries (o: obj) : (string * obj)[] = jsNative
@@ -65,6 +66,7 @@ let private descriptorForSpecName (name: string) : obj =
     | "thicken" -> containerImage
     | "shell" -> circleDash
     | "from-sketch" -> shapeUnite
+    | "revolve" -> rotateClockwise
     | "wing-remap-preview" -> zAxis
     | _ -> layers
 

@@ -98,7 +98,8 @@ module SketchAuthoring =
                     else
                         match b.Body with
                         | Server.Lang.Notebook.SketchBody data ->
-                            { b with Body = Server.Lang.Notebook.SketchBody { data with Sketch = nextSketch } }
+                            let normalized = SketchLoops.normalize nextSketch
+                            { b with Body = Server.Lang.Notebook.SketchBody { data with Sketch = normalized } }
                         | _ -> b)
             { doc with Blocks = blocks }
         | None -> doc

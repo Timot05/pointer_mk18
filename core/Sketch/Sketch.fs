@@ -88,6 +88,22 @@ module SketchConstraint =
         | Tangent _
         | CurveTangent _ -> None
 
+/// Per-loop persistent primitive registration. Each entity inside a
+/// closed loop (line/arc/circle) gets a stable, user-facing ID
+/// (`line_0`, `arc_0`, `circle_0`) that tracks the underlying raw
+/// entity ID across edits. Reconciliation (`SketchLoops.reconcilePrimitives`)
+/// matches by `EntityId` and carries the ID forward; deleted primitives
+/// drop out; new ones get the next available index for their variant.
+///
+/// Variant is determined at reconciliation time from the entity's kind
+/// (`RELine` → "line", `REArc` → "arc", `RECircle` → "circle"). Stored
+/// only as a name prefix on `Id`; the entity's actual kind is always
+/// available by looking up `EntityId` in the parent sketch's entities.
+type PrimitiveRecord =
+    { Id: string
+      EntityId: string
+      UserNamed: bool }
+
 /// Persistent loop registration. Closed loops are *detected* fresh each
 /// compose cycle by `SketchLoops.detectLoops` from the entity graph, but
 /// their stable user-facing IDs need to survive sketch edits — adding a
@@ -97,10 +113,15 @@ module SketchConstraint =
 ///
 /// `UserNamed = true` flags loops the user has renamed manually; the
 /// reconciler treats those as sticky (prefer to preserve under ambiguity).
+///
+/// `Primitives` carries the per-loop primitive registry — see
+/// `PrimitiveRecord`. Reconciled alongside the loop in
+/// `SketchLoops.normalize`.
 type LoopRecord =
     { Id: string
       EntityIds: string list
-      UserNamed: bool }
+      UserNamed: bool
+      Primitives: PrimitiveRecord list }
 
 /// The full content of a Sketch action: a set of entities, the
 /// constraints between them, and the persisted loop ID registry.

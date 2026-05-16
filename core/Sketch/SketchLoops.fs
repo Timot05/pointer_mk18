@@ -367,13 +367,113 @@ module SketchLoops =
             | None ->
                 { Id = allocFreshId ()
                   EntityIds = d.EntityIds
-                  UserNamed = false })
+                  UserNamed = false
+                  Primitives = [] })   // primitives populated by `normalize`
 
-    /// Re-detect loops in `sketch.Entities` and reconcile against the
-    /// existing `sketch.Loops`, returning the sketch with its loop
-    /// registry brought up to date. This is the single chokepoint every
-    /// reducer that mutates `sketch.Entities` should route through.
-    /// Pure — no side effects.
+    // ── Primitive reconciliation ──────────────────────────────────────
+    //
+    // Each entity inside a loop (line/arc/circle) gets a stable
+    // user-facing id (`line_0`, `arc_0`, `circle_0`) keyed by variant.
+    // We scope the index space per (loop, variant) so a loop with three
+    // lines and one arc gets `line_0`, `line_1`, `line_2`, `arc_0` — not
+    // tangled with the next loop's ids.
+    //
+    // Reconciliation: match by `EntityId`. Carried-forward records keep
+    // their id; new entities get the next free per-variant index.
+
+    /// Variant prefix for the entity kind, or `None` if the entity has
+    /// no role inside a loop (points, etc.).
+    let private primitivePrefix (e: RenderEntity) : string option =
+        match e with
+        | RELine _   -> Some "line"
+        | REArc _    -> Some "arc"
+        | RECircle _ -> Some "circle"
+        | REPoint _  -> None
+
+    /// Parse `<prefix>_<n>` back to its integer index; returns `None`
+    /// for user-named records so the next-id computation skips them.
+    let private tryParsePrimitiveIndex (prefix: string) (id: string) : int option =
+        let lead = prefix + "_"
+        if id.StartsWith lead then
+            let rest = id.Substring lead.Length
+            match System.Int32.TryParse rest with
+            | true, n when n >= 0 -> Some n
+            | _ -> None
+        else None
+
+    /// Per-loop primitive reconciliation. Carries forward records whose
+    /// `EntityId` is still present; drops vanished ones; assigns fresh
+    /// per-variant ids to new entities. Skips entities the loop refers
+    /// to that aren't a recognized primitive kind (defensive — loops
+    /// shouldn't reference non-curve entities).
+    let reconcilePrimitives
+            (persisted: PrimitiveRecord list)
+            (entitiesById: Map<string, RenderEntity>)
+            (entityIds: string list) : PrimitiveRecord list =
+        let persistedByEntity =
+            persisted |> List.map (fun r -> r.EntityId, r) |> Map.ofList
+        let used = System.Collections.Generic.HashSet<string>()
+        for r in persisted do used.Add r.Id |> ignore
+
+        // Per-prefix counter that respects already-used ids when
+        // allocating fresh names.
+        let counters = System.Collections.Generic.Dictionary<string, int>()
+        let nextIndexFor (prefix: string) : int =
+            if counters.ContainsKey prefix then counters.[prefix]
+            else
+                // Seed past the highest existing index of this prefix.
+                let seed =
+                    persisted
+                    |> List.choose (fun r -> tryParsePrimitiveIndex prefix r.Id)
+                    |> function [] -> 0 | xs -> (List.max xs) + 1
+                counters.[prefix] <- seed
+                seed
+        let allocId (prefix: string) : string =
+            let mutable n = nextIndexFor prefix
+            while used.Contains (sprintf "%s_%d" prefix n) do n <- n + 1
+            let id = sprintf "%s_%d" prefix n
+            used.Add id |> ignore
+            counters.[prefix] <- n + 1
+            id
+
+        entityIds
+        |> List.choose (fun eid ->
+            match Map.tryFind eid entitiesById with
+            | None -> None
+            | Some ent ->
+                match primitivePrefix ent with
+                | None -> None
+                | Some prefix ->
+                    match Map.tryFind eid persistedByEntity with
+                    | Some r -> Some r
+                    | None ->
+                        Some { Id = allocId prefix; EntityId = eid; UserNamed = false })
+
+    /// Re-detect loops in `sketch.Entities`, reconcile against
+    /// `sketch.Loops`, and bring each loop's `Primitives` registry up
+    /// to date too. Single chokepoint every reducer that mutates
+    /// `sketch.Entities` should route through. Pure.
     let normalize (sketch: ActionSketch) : ActionSketch =
         let detected = detectLoops sketch.Entities
-        { sketch with Loops = reconcile sketch.Loops detected }
+        let reconciled = reconcile sketch.Loops detected
+        let entitiesById =
+            sketch.Entities
+            |> List.map (fun e ->
+                let id =
+                    match e with
+                    | REPoint(id, _, _) -> id
+                    | RELine(id, _, _) -> id
+                    | RECircle(id, _, _) -> id
+                    | REArc(id, _, _, _) -> id
+                id, e)
+            |> Map.ofList
+        let withPrimitives =
+            reconciled
+            |> List.map (fun r ->
+                let prevPrimitives =
+                    sketch.Loops
+                    |> List.tryFind (fun pr -> pr.Id = r.Id)
+                    |> Option.map (fun p -> p.Primitives)
+                    |> Option.defaultValue []
+                { r with Primitives = reconcilePrimitives prevPrimitives entitiesById r.EntityIds })
+        { sketch with Loops = withPrimitives }

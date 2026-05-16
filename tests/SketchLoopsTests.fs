@@ -141,7 +141,7 @@ let private detected (entityIds: string list) : SketchLoop =
       SignedArea = 1.0 }
 
 let private record (id: string) (entityIds: string list) (userNamed: bool) : LoopRecord =
-    { Id = id; EntityIds = entityIds; UserNamed = userNamed }
+    { Id = id; EntityIds = entityIds; UserNamed = userNamed; Primitives = [] }
 
 [<Fact>]
 let ``reconcile: empty inputs yield empty registry`` () =

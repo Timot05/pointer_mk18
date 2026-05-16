@@ -29,25 +29,54 @@ module Value =
         Qx: float; Qy: float; Qz: float; Qw: float
     }
 
+    // `SketchValue`, `LoopValue`, `CurveValue`, `Value`, `Closure`,
+    // `BuiltinValue`, and `Env` form a single mutually-recursive group.
+
     /// Authoring-time sketch: the same `ActionSketch` shape mk18's UI
     /// produces (entities + constraints, raw float coords, string ids),
     /// plus the plane the sketch lives in. Lowering to MathIR primitives
     /// + slot allocation happens at the consumer (a future
     /// `@sketch_distance` / `@sketch_path` builtin), not here.
+    ///
+    /// `Fields` carries per-loop `VLoop` runtime values keyed by
+    /// `LoopRecord.Id`. Populated by the compose bridge from the
+    /// persisted Loops registry; consulted by `Eval.evalExpr` when an
+    /// `EPath` walks into a VSketch. Generic sketches built by ad-hoc
+    /// paths leave it as `Map.empty`.
     type SketchValue = {
         Sketch: Server.ActionSketch
         Plane:  Server.SketchPlane
+        Fields: Map<string, Value>
     }
 
-    type CurveValue = { PrimitiveId: int; Plane: MathIr.Plane }
+    /// A closed sketch loop. Its `Fields` map exposes the loop's derived
+    /// values — typically `signed_distance: VField`, plus per-primitive
+    /// `VPrimitive` entries. The runtime auto-projects a VLoop to its
+    /// `signed_distance` field at every VField-consuming site (binary
+    /// ops, fold, etc.), matching the `Loop { signed_distance: Field }
+    /// <: Field` subtyping rule in `Type.isSubtypeOf`.
+    and LoopValue = {
+        Fields: Map<string, Value>
+    }
 
-    type Value =
+    /// A single sketch primitive (line/arc/circle). Same shape as
+    /// LoopValue — its `Fields` map names whatever the bridge populated,
+    /// including `signed_distance: VField` for auto-projection.
+    and PrimitiveValue = {
+        Fields: Map<string, Value>
+    }
+
+    and CurveValue = { PrimitiveId: int; Plane: MathIr.Plane }
+
+    and Value =
         | VNumber of float
         | VBool of bool
         | VString of string
         | VField of MathIr.Expr
         | VFrame of Frame
         | VSketch of SketchValue
+        | VLoop of LoopValue
+        | VPrimitive of PrimitiveValue
         | VCurve of CurveValue
         | VRecord of (string * Value) list
         | VClosure of Closure
@@ -154,7 +183,27 @@ module Value =
         | VFrame f -> Ok f
         | _ -> evalError span "expected frame"
 
+    /// Project any structural value with a `signed_distance: VField`
+    /// member to that field. Mirrors the type-level subtyping rule
+    /// `(Loop | Primitive) { signed_distance: Field } <: Field`.
+    /// Every VField-consuming site calls this so loops and primitives
+    /// stand in for fields wherever fields are expected.
+    let projectToFieldValue (v: Value) : Value option =
+        match v with
+        | VLoop lv ->
+            match Map.tryFind "signed_distance" lv.Fields with
+            | Some (VField _ as f) -> Some f
+            | _ -> None
+        | VPrimitive pv ->
+            match Map.tryFind "signed_distance" pv.Fields with
+            | Some (VField _ as f) -> Some f
+            | _ -> None
+        | _ -> None
+
     let fieldOfValue (span: Span) (v: Value) : Result<MathIr.Expr, EvalError> =
         match v with
         | VField f -> Ok f
-        | _ -> evalError span "expected field"
+        | _ ->
+            match projectToFieldValue v with
+            | Some (VField f) -> Ok f
+            | _ -> evalError span "expected field"

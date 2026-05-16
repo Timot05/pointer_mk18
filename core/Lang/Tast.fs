@@ -26,6 +26,7 @@ module Tast =
         | TEUnit
         | TEAxis of Axis
         | TEVar of Ident
+        | TEPath of idents: Ident list
         | TELambda of param: Ident * paramType: Type.T * body: TExpr
         | TEApply of fn: TExpr * arg: TExpr
         | TEBinary of op: BinaryOp * left: TExpr * right: TExpr

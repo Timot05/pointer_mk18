@@ -275,6 +275,34 @@ module NotebookCompose =
         let signFlip = uop UnaryOp.Neg (bop BinaryOp.Compare absT pi)
         bop BinaryOp.Mul unsigned signFlip
 
+    /// Build a single-primitive distance Expr from an entity:
+    /// - line   → unsigned distance to the segment (`ELineSegment`)
+    /// - circle → signed disk distance (`circleSignedAst` for a true SDF)
+    /// - arc    → unsigned distance to the arc (`EArcCenter`)
+    /// Returns `None` for entities that don't have a primitive
+    /// representation (points, ArcThreePoint without geometry).
+    let private buildPrimitiveDistanceExpr
+            (sp: Span)
+            (plane: MathIr.Plane)
+            (pointCoords: Map<string, float * float>)
+            (entitiesById: Map<string, Server.RenderEntity>)
+            (entityId: string) : Expr option =
+        match Map.tryFind entityId entitiesById with
+        | Some (Server.RELine(_, startId, endId)) ->
+            match Map.tryFind startId pointCoords, Map.tryFind endId pointCoords with
+            | Some (sx, sy), Some (ex, ey) ->
+                Some (mkAt sp (ELineSegment(plane, numEAt sp sx, numEAt sp sy, numEAt sp ex, numEAt sp ey)))
+            | _ -> None
+        | Some (Server.RECircle(_, centerId, radius)) ->
+            match Map.tryFind centerId pointCoords with
+            | Some (cx, cy) -> Some (circleSignedAst sp plane cx cy radius)
+            | None -> None
+        | Some (Server.REArc _ as ent) ->
+            tryArcGeometry pointCoords ent
+            |> Option.map (fun ((sx, sy), (ex, ey), (cx, cy), cw) ->
+                mkAt sp (EArcCenter(plane, numEAt sp sx, numEAt sp sy, numEAt sp ex, numEAt sp ey, numEAt sp cx, numEAt sp cy, cw)))
+        | _ -> None
+
     /// Build a per-loop AST expression. Returns `None` if the loop is
     /// degenerate (no line/circle entities); the caller falls back to
     /// per-entity unsigned primitives in that case.
@@ -514,8 +542,29 @@ module NotebookCompose =
         for block in notebook.Blocks do
             match block.Body with
             | SketchBody data ->
-                typeEnv <- Map.add block.Name Type.Sketch typeEnv
-                blockOutputs <- Map.add block.Id Type.Sketch blockOutputs
+                // Build a structural refinement from the persisted Loops
+                // registry. Each `LoopRecord.Id` becomes a `Loop` whose
+                // refinement names `signed_distance: Field` plus a
+                // `Type.Primitive` member per persisted PrimitiveRecord.
+                // Loops and primitives both auto-project to Field via
+                // `Type.isSubtypeOf` (matched by the runtime), so the
+                // DSL surface `<sketch>.loop_0.line_2` and
+                // `<sketch>.loop_0` both work where a Field is expected.
+                let primitiveType : Type.T =
+                    Type.Primitive (Map.ofList [ "signed_distance", Type.Field ])
+                let refinement =
+                    data.Sketch.Loops
+                    |> List.map (fun r ->
+                        let loopFieldsMap =
+                            r.Primitives
+                            |> List.map (fun (prim: Server.PrimitiveRecord) -> prim.Id, primitiveType)
+                            |> Map.ofList
+                            |> Map.add "signed_distance" Type.Field
+                        r.Id, Type.Loop loopFieldsMap)
+                    |> Map.ofList
+                let sketchType = Type.Sketch refinement
+                typeEnv <- Map.add block.Name sketchType typeEnv
+                blockOutputs <- Map.add block.Id sketchType blockOutputs
                 sketchByBlockId <- Map.add block.Id data sketchByBlockId
             | _ -> ()
 
@@ -677,12 +726,61 @@ module NotebookCompose =
             | Ok v -> envBind ctx.Env spec.Name v
             | Error _ -> ()   // shouldn't happen for hand-built specs
 
-        // Sketch payloads.
+        // Sketch payloads. `Fields` is populated from the persisted Loops
+        // registry: each `LoopRecord` becomes an entry keyed by its Id,
+        // valued at the corresponding per-loop signed-distance `VField`.
+        // Loops that can't be lowered (degenerate / contain ArcThreePoint
+        // or Bezier) are silently skipped — DSL access to a missing loop
+        // surfaces as a runtime "no such member" error, mirroring how
+        // unwired entity references already surface.
         for block in notebook.Blocks do
             match block.Body with
             | SketchBody data ->
+                let plane = planeMap data.Plane
+                let entities = data.Sketch.Entities
+                let entitiesById =
+                    entities
+                    |> List.map (fun e -> entityId e, e)
+                    |> Map.ofList
+                let pts = pointCoordTable data.Sketch
+                let loopSpan = spanForBlock block.Id
+                // Per-loop VLoop value: carries its own `signed_distance`
+                // (whole-loop SDF) plus a VPrimitive per persisted
+                // PrimitiveRecord, keyed by the record's stable id
+                // (`line_0`, `arc_0`, `circle_0`). Failed lowerings are
+                // silently dropped from the loop's Fields map.
+                let buildPrimitiveFields (prims: Server.PrimitiveRecord list) : Map<string, Value> =
+                    prims
+                    |> List.choose (fun prim ->
+                        buildPrimitiveDistanceExpr loopSpan plane pts entitiesById prim.EntityId
+                        |> Option.bind (fun expr ->
+                            match Eval.evalExpr ctx expr with
+                            | Ok v ->
+                                let primVal =
+                                    VPrimitive { Fields = Map.ofList [ "signed_distance", v ] }
+                                Some (prim.Id, primVal)
+                            | Error _ -> None))
+                    |> Map.ofList
+
+                let fields =
+                    data.Sketch.Loops
+                    |> List.choose (fun r ->
+                        let pseudoLoop : Server.SketchLoop =
+                            { Id = r.Id
+                              EntityIds = r.EntityIds
+                              SignedArea = 0.0 }
+                        buildLoopExpr loopSpan plane entitiesById pts pseudoLoop
+                        |> Option.bind (fun expr ->
+                            match Eval.evalExpr ctx expr with
+                            | Ok v ->
+                                let loopFields =
+                                    buildPrimitiveFields r.Primitives
+                                    |> Map.add "signed_distance" v
+                                Some (r.Id, VLoop { Fields = loopFields })
+                            | Error _ -> None))
+                    |> Map.ofList
                 envBind ctx.Env block.Name
-                    (VSketch { Sketch = data.Sketch; Plane = data.Plane })
+                    (VSketch { Sketch = data.Sketch; Plane = data.Plane; Fields = fields })
             | _ -> ()
 
     type EvalResult = {
@@ -768,7 +866,11 @@ module NotebookCompose =
                 | Typecheck.NotAFunction(_, sp)
                 | Typecheck.MissingTypeAnnotation(_, sp)
                 | Typecheck.AnnotationConflict(_, _, sp)
-                | Typecheck.InvalidOperand(_, sp) -> sp
+                | Typecheck.InvalidOperand(_, sp)
+                | Typecheck.UnknownSketchMember(_, _, _, sp)
+                | Typecheck.NotASketch(_, sp)
+                | Typecheck.EmptyPath sp
+                | Typecheck.MissingSketchMembers(_, _, sp) -> sp
             let id =
                 match Map.tryFind span spanToBlock with
                 | Some id -> id

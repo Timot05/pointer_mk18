@@ -281,7 +281,7 @@ module BlockSpec =
     let private fromSketchSpec : BlockSpec =
         let body = mk (EFold(MathIr.FoldOp.Min, []))
         { Name = "from-sketch"
-          Body = lambda [ "sketch", Type.Sketch ] body
+          Body = lambda [ "sketch", Type.Sketch Map.empty ] body
           ScalarDefaults = Map.empty }
 
     /// `revolve sketch` — sweep a closed 2D profile around a hardcoded
@@ -297,7 +297,7 @@ module BlockSpec =
     let private revolveSpec : BlockSpec =
         let body = mk (EFold(MathIr.FoldOp.Min, []))
         { Name = "revolve"
-          Body = lambda [ "sketch", Type.Sketch ] body
+          Body = lambda [ "sketch", Type.Sketch Map.empty ] body
           ScalarDefaults = Map.empty }
 
     /// `wing-remap-preview leading trailing` — experimental field that
@@ -310,7 +310,7 @@ module BlockSpec =
                 mk (EApply(internalE "wing_remap_preview", varE "leading")),
                 varE "trailing"))
         { Name = "wing-remap-preview"
-          Body = lambda [ "leading", Type.Sketch; "trailing", Type.Sketch ] body
+          Body = lambda [ "leading", Type.Sketch Map.empty; "trailing", Type.Sketch Map.empty ] body
           ScalarDefaults = Map.empty }
 
     do register sphereSpec

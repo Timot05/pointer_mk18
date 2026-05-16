@@ -81,14 +81,28 @@ module Eval =
         | AxisY -> MathIr.Axis.Y
         | AxisZ -> MathIr.Axis.Z
 
-    /// Coerce a Value to a MathIr.Expr. Numbers lift to Const; fields pass
-    /// through; everything else errors. Used by the primitive-constructor
-    /// and fold node evaluators.
+    /// Coerce a Value to a MathIr.Expr. Numbers lift to Const; fields
+    /// pass through; loops/primitives auto-project via their
+    /// `signed_distance` member (mirrors `Type.isSubtypeOf`'s Loop|
+    /// Primitive → Field rule); everything else errors. Used by the
+    /// primitive-constructor and fold node evaluators.
     let private liftToExpr (ir: MathIr.MathIR) (span: Span) (v: Value) : Result<MathIr.Expr, EvalError> =
         match v with
         | VField e -> Ok e
         | VNumber n -> Ok (ir.Constant n)
-        | _ -> evalError span "expected number or field"
+        | _ ->
+            match projectToFieldValue v with
+            | Some (VField e) -> Ok e
+            | _ -> evalError span "expected number or field"
+
+    /// Auto-project loops/primitives to their VField (signed_distance)
+    /// before any operator/handler that pattern-matches against VField.
+    /// Pass-through for non-structural values so they can be matched by
+    /// the caller's existing arms.
+    let private coerceFieldLike (v: Value) : Value =
+        match projectToFieldValue v with
+        | Some f -> f
+        | None -> v
 
     let rec evalExpr (ctx: EvalContext) (e: Expr) : Result<Value, EvalError> =
         match e.Node with
@@ -130,6 +144,48 @@ module Eval =
                             match List.tryFind (fun (n, _) -> n = seg.Name) fields with
                             | Some (_, v) -> cur <- Ok v
                             | None -> cur <- evalError seg.Span (sprintf "record has no field '%s'" seg.Name)
+                        | Ok (VSketch sv) ->
+                            // Sketches expose their persisted loops as members
+                            // keyed by `LoopRecord.Id`. Populated by the
+                            // compose bridge. Lookup mirrors the VRecord arm.
+                            match Map.tryFind seg.Name sv.Fields with
+                            | Some v -> cur <- Ok v
+                            | None ->
+                                let available =
+                                    sv.Fields
+                                    |> Map.toList
+                                    |> List.map fst
+                                    |> String.concat ", "
+                                cur <- evalError seg.Span
+                                    (sprintf "sketch has no member '%s' (available: %s)" seg.Name available)
+                        | Ok (VLoop lv) ->
+                            // A loop's members (`signed_distance`,
+                            // per-primitive `line_N` / `arc_N` /
+                            // `circle_N`, future `area`/...). Same
+                            // lookup pattern as VSketch.
+                            match Map.tryFind seg.Name lv.Fields with
+                            | Some v -> cur <- Ok v
+                            | None ->
+                                let available =
+                                    lv.Fields
+                                    |> Map.toList
+                                    |> List.map fst
+                                    |> String.concat ", "
+                                cur <- evalError seg.Span
+                                    (sprintf "loop has no member '%s' (available: %s)" seg.Name available)
+                        | Ok (VPrimitive pv) ->
+                            // A primitive's members (`signed_distance`
+                            // today; future `length`/`radius`/...).
+                            match Map.tryFind seg.Name pv.Fields with
+                            | Some v -> cur <- Ok v
+                            | None ->
+                                let available =
+                                    pv.Fields
+                                    |> Map.toList
+                                    |> List.map fst
+                                    |> String.concat ", "
+                                cur <- evalError seg.Span
+                                    (sprintf "primitive has no member '%s' (available: %s)" seg.Name available)
                         | Ok _ ->
                             cur <- evalError seg.Span (sprintf "value is not a record (cannot read '.%s')" seg.Name)
                         | Error _ -> ()
@@ -148,7 +204,7 @@ module Eval =
         | ECall(callee, args) -> evalCall ctx e.Span callee args
         | EUnary(op, inner) ->
             evalExpr ctx inner >>= fun v ->
-                match v with
+                match coerceFieldLike v with
                 | VNumber n ->
                     match numericUnary op n with
                     | Ok r -> Ok (VNumber r)
@@ -169,7 +225,7 @@ module Eval =
             evalExpr ctx ny >>= fun yv ->
             evalExpr ctx nz >>= fun zv ->
                 let liftField span v =
-                    match v with
+                    match coerceFieldLike v with
                     | VField f -> Ok f
                     | VNumber n -> Ok (ctx.Ir.Constant n)
                     | _ -> evalError span "remap-axes expects field/number operands"
@@ -395,6 +451,10 @@ module Eval =
         | _ ->
             evalExpr ctx left >>= fun lv ->
                 evalExpr ctx right >>= fun rv ->
+                    // Project VLoop → VField up-front so the existing
+                    // numeric/field arms cover the new value kind for free.
+                    let lv = coerceFieldLike lv
+                    let rv = coerceFieldLike rv
                     match lv, rv with
                     | VNumber a, VNumber b ->
                         match numericBinary op a b with

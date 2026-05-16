@@ -411,7 +411,7 @@ module Parser =
         match tok.Kind with
         | Ident "Scalar" -> advance p |> ignore; Ok Type.Scalar
         | Ident "Field"  -> advance p |> ignore; Ok Type.Field
-        | Ident "Sketch" -> advance p |> ignore; Ok Type.Sketch
+        | Ident "Sketch" -> advance p |> ignore; Ok (Type.Sketch Map.empty)
         | Ident "Frame"  -> advance p |> ignore; Ok Type.Frame
         | Ident name -> err tok (sprintf "unknown type '%s'" name)
         | _ -> err tok "expected type name (Scalar | Field | Sketch | Frame)"

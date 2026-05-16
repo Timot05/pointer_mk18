@@ -32,6 +32,10 @@ module Typecheck =
         | MissingTypeAnnotation of paramName: string * Span
         | AnnotationConflict of annotated: Type.T * expected: Type.T * Span
         | InvalidOperand of context: string * Span
+        | UnknownSketchMember of sketchName: string * memberName: string * available: string list * Span
+        | NotASketch of actual: Type.T * Span
+        | EmptyPath of Span
+        | MissingSketchMembers of missing: string list * available: string list * Span
 
     let formatError (err: TypeError) : string =
         match err with
@@ -48,20 +52,77 @@ module Typecheck =
                 (Type.format annotated) (Type.format expected)
         | InvalidOperand(ctx, _) ->
             sprintf "invalid operand for %s" ctx
+        | UnknownSketchMember(sketchName, memberName, available, _) ->
+            let avail =
+                if List.isEmpty available then "<none>"
+                else String.concat ", " available
+            sprintf "sketch '%s' has no member '%s' (available: %s)"
+                sketchName memberName avail
+        | NotASketch(t, _) ->
+            sprintf "cannot read field from %s (only sketches and records support dotted access)"
+                (Type.format t)
+        | EmptyPath _ -> "empty path expression"
+        | MissingSketchMembers(missing, available, _) ->
+            let m = String.concat ", " missing
+            let a =
+                if List.isEmpty available then "<none>"
+                else String.concat ", " available
+            sprintf "sketch is missing required member(s) %s (available: %s)" m a
 
     type TypeEnv = Map<string, Type.T>
+
+    // ── Refinement-cell stack ─────────────────────────────────────────────
+    //
+    // When a lambda's parameter has type `Type.Sketch _`, the body is
+    // checked against a *mutable refinement* — a cell that accumulates
+    // the required members as `EPath` accesses appear. After the body
+    // typechecks, the cell is snapshotted into the parameter's final
+    // type so the function's signature carries its structural
+    // requirements (`Sketch { outer: Field, ... }`).
+    //
+    // The stack handles shadowing: nested lambdas with the same parameter
+    // name each push their own cell; the outer cell becomes visible
+    // again when the inner lambda exits. Cleared at the top of every
+    // `elaborate` call — `Typecheck` has no concurrent callers in this
+    // codebase (single-threaded F# on .NET, single-threaded Fable on
+    // browser), so a module-level stack is safe and avoids threading a
+    // ctx record through every recursive call site.
+
+    let private cellStack : System.Collections.Generic.Stack<string * Map<string, Type.T> ref> =
+        System.Collections.Generic.Stack()
+
+    let private lookupCell (name: string) : (Map<string, Type.T> ref) option =
+        // Top-of-stack-first scan: most-recent binding wins under shadowing.
+        let mutable result = None
+        for (n, c) in cellStack do
+            if result.IsNone && n = name then result <- Some c
+        result
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
     let private bind (env: TypeEnv) (name: string) (t: Type.T) : TypeEnv =
         Map.add name t env
 
+    /// Project a Loop or Primitive with a `signed_distance: Field`
+    /// member to plain Field for the purpose of arithmetic and other
+    /// numeric contexts. Mirrors the runtime `coerceFieldLike` in
+    /// `Eval.fs` and the subtyping rule in `Type.isSubtypeOf`.
+    let private projectToFieldLike (t: Type.T) : Type.T =
+        match t with
+        | Type.Loop fields
+        | Type.Primitive fields ->
+            match Map.tryFind "signed_distance" fields with
+            | Some Type.Field -> Type.Field
+            | _ -> t
+        | _ -> t
+
     /// Lift the result of binary / unary numeric ops. If either operand is
     /// `Field`, the lifted result is `Field` (matches `Eval`'s
     /// number↔field arithmetic semantics). Both `Scalar` → `Scalar`.
-    /// Anything else is invalid.
+    /// Anything else is invalid. Loops with a `signed_distance: Field`
+    /// member are accepted as Fields (the runtime auto-projects).
     let private liftNumeric (a: Type.T) (b: Type.T) : Type.T option =
-        match a, b with
+        match projectToFieldLike a, projectToFieldLike b with
         | Type.Scalar, Type.Scalar -> Some Type.Scalar
         | Type.Field, Type.Scalar
         | Type.Scalar, Type.Field
@@ -69,7 +130,7 @@ module Typecheck =
         | _ -> None
 
     let private liftUnary (t: Type.T) : Type.T option =
-        match t with
+        match projectToFieldLike t with
         | Type.Scalar -> Some Type.Scalar
         | Type.Field  -> Some Type.Field
         | _ -> None
@@ -101,10 +162,27 @@ module Typecheck =
             | None   -> Error [ UndefinedVar(id.Name, id.Span) ]
 
         | ELambda(p, Some t, body) ->
+            // For Sketch parameters, open a refinement cell so the body's
+            // EPath accesses can accumulate the required members. The
+            // cell starts seeded with whatever the annotation already
+            // declares (empty `Sketch` → empty cell; a future `Sketch
+            // { outer }` annotation would seed `outer` directly).
+            let isSketchParam, initialFields =
+                match t with
+                | Type.Sketch m -> true, m
+                | _ -> false, Map.empty
+            let cell = if isSketchParam then Some (ref initialFields) else None
+            cell |> Option.iter (fun c -> cellStack.Push(p.Name, c))
             let env' = bind env p.Name t
-            infer env' body |> Result.map (fun tBody ->
-                let lambdaTy = Type.Fun(t, tBody.Type)
-                Tast.mkTExpr (Tast.TELambda(p, t, tBody)) lambdaTy expr.Span)
+            let bodyResult = infer env' body
+            cell |> Option.iter (fun _ -> cellStack.Pop() |> ignore)
+            bodyResult |> Result.map (fun tBody ->
+                let resolvedParam =
+                    match cell with
+                    | Some c -> Type.Sketch !c
+                    | None -> t
+                let lambdaTy = Type.Fun(resolvedParam, tBody.Type)
+                Tast.mkTExpr (Tast.TELambda(p, resolvedParam, tBody)) lambdaTy expr.Span)
 
         | ELambda(p, None, _) ->
             // In infer-mode we can't synthesise the param type from
@@ -176,7 +254,76 @@ module Typecheck =
             |> Result.map (fun ts ->
                 Tast.mkTExpr (Tast.TETuple ts) Type.Scalar expr.Span)
 
-        | EPath _ | EStackTop | ECall _ | EMatch _ ->
+        | EPath idents ->
+            // Dotted access: `head.seg1.seg2...`. Walk segments through
+            // the head's structural type (today: only `Type.Sketch` with
+            // a field refinement supports this). Each non-terminal
+            // segment must itself be a record/sketch with the next name.
+            //
+            // If the head names a lambda parameter with an active
+            // refinement cell (only Sketch params today), an access to a
+            // member that isn't yet in the cell *grows* the cell to
+            // include it. This is how `let f (s : Sketch) = s.outer`
+            // infers `f`'s required refinement: walking the body adds
+            // `outer : Field` to the cell, which is later snapshotted
+            // into `f`'s parameter type when the lambda closes.
+            match idents with
+            | [] -> Error [ EmptyPath expr.Span ]
+            | head :: rest ->
+                let headCell = lookupCell head.Name
+                let headTyOpt =
+                    match headCell with
+                    | Some cell -> Some (Type.Sketch !cell)
+                    | None -> Map.tryFind head.Name env
+                match headTyOpt with
+                | None -> Error [ UndefinedVar(head.Name, head.Span) ]
+                | Some headTy ->
+                    let rec walk (curTy: Type.T) (curName: string) (trail: Ident list) =
+                        match trail with
+                        | [] -> Ok curTy
+                        | seg :: deeper ->
+                            match curTy with
+                            | Type.Sketch fields ->
+                                match Map.tryFind seg.Name fields with
+                                | Some t -> walk t seg.Name deeper
+                                | None ->
+                                    // If this is the head of a refinement-cell
+                                    // sketch (a lambda parameter), grow the
+                                    // cell with `seg : Loop {signed_distance:
+                                    // Field}` and continue. Only the head is
+                                    // cell-bearing; nested members go through
+                                    // fully-resolved types and don't auto-grow.
+                                    match headCell with
+                                    | Some cell when curName = head.Name ->
+                                        let inferredMember =
+                                            Type.Loop (Map.ofList [ "signed_distance", Type.Field ])
+                                        cell := Map.add seg.Name inferredMember !cell
+                                        walk inferredMember seg.Name deeper
+                                    | _ ->
+                                        let available =
+                                            fields |> Map.toList |> List.map fst
+                                        Error [ UnknownSketchMember(curName, seg.Name, available, seg.Span) ]
+                            | Type.Loop fields
+                            | Type.Primitive fields ->
+                                // Walking into a loop's or primitive's
+                                // named member (`.signed_distance`,
+                                // `.line_0`, ...). No cell growth at
+                                // this depth — only the path head is
+                                // cell-bearing. Missing names are real
+                                // errors.
+                                match Map.tryFind seg.Name fields with
+                                | Some t -> walk t seg.Name deeper
+                                | None ->
+                                    let available =
+                                        fields |> Map.toList |> List.map fst
+                                    Error [ UnknownSketchMember(curName, seg.Name, available, seg.Span) ]
+                            | other ->
+                                Error [ NotASketch(other, seg.Span) ]
+                    walk headTy head.Name rest
+                    |> Result.map (fun finalTy ->
+                        Tast.mkTExpr (Tast.TEPath idents) finalTy expr.Span)
+
+        | EStackTop | ECall _ | EMatch _ ->
             // Surface-only / legacy nodes that don't exist in the
             // typed-block program shape. Surface a generic mismatch.
             Error [ InvalidOperand("unsupported AST node in typechecker", expr.Span) ]
@@ -185,18 +332,54 @@ module Typecheck =
         match expr.Node, expected with
         | ELambda(p, anno, body), Type.Fun(a, b) ->
             // The annotation, if present, must match the expected param.
+            // `<>` here uses structural equality on Type.T — adequate
+            // for non-sketch types and for the common case where both
+            // sides are the same refinement.
             match anno with
             | Some t when t <> a ->
                 Error [ AnnotationConflict(t, a, p.Span) ]
             | _ ->
+                // Open a refinement cell when the expected param type is
+                // Sketch, matching the infer-mode lambda case. Allows
+                // refinement inference inside checked positions too.
+                let isSketchParam, initialFields =
+                    match a with
+                    | Type.Sketch m -> true, m
+                    | _ -> false, Map.empty
+                let cell = if isSketchParam then Some (ref initialFields) else None
+                cell |> Option.iter (fun c -> cellStack.Push(p.Name, c))
                 let env' = bind env p.Name a
-                check env' b body |> Result.map (fun tBody ->
-                    Tast.mkTExpr (Tast.TELambda(p, a, tBody)) (Type.Fun(a, b)) expr.Span)
+                let bodyResult = check env' b body
+                cell |> Option.iter (fun _ -> cellStack.Pop() |> ignore)
+                bodyResult |> Result.map (fun tBody ->
+                    let resolvedParam =
+                        match cell with
+                        | Some c -> Type.Sketch !c
+                        | None -> a
+                    Tast.mkTExpr (Tast.TELambda(p, resolvedParam, tBody)) (Type.Fun(resolvedParam, b)) expr.Span)
         | _ ->
-            // Default: infer then verify.
+            // Default: infer then verify. Use width-subtype for sketches
+            // so that a refined sketch (`Sketch { outer: Field, ... }`)
+            // satisfies a parameter typed as a generic sketch
+            // (`Sketch Map.empty`) — see `Type.isSubtypeOf`.
             infer env expr |> Result.bind (fun ti ->
-                if ti.Type = expected then Ok ti
-                else Error [ TypeMismatch(expected, ti.Type, expr.Span) ])
+                if Type.isSubtypeOf ti.Type expected then Ok ti
+                else
+                    // Sketch-vs-sketch mismatches get a richer error
+                    // listing exactly which required members are missing
+                    // and which the actual value provides. Falls through
+                    // to plain TypeMismatch for any other shape.
+                    match expected, ti.Type with
+                    | Type.Sketch required, Type.Sketch actual ->
+                        let missing =
+                            required
+                            |> Map.toList
+                            |> List.filter (fun (k, _) -> not (Map.containsKey k actual))
+                            |> List.map fst
+                        let available = actual |> Map.toList |> List.map fst
+                        Error [ MissingSketchMembers(missing, available, expr.Span) ]
+                    | _ ->
+                        Error [ TypeMismatch(expected, ti.Type, expr.Span) ])
 
     // ── Helpers used by infer ──────────────────────────────────────────────
 
@@ -323,6 +506,9 @@ module Typecheck =
 
     /// Elaborate a top-level expression against a starting environment.
     /// The environment seeds primitive function types (e.g. block specs)
-    /// before the AST is checked.
+    /// before the AST is checked. Clears the refinement-cell stack so
+    /// state from any earlier `elaborate` call (including ones that
+    /// errored partway through) doesn't leak into this run.
     let elaborate (env: TypeEnv) (expr: Expr) : Result<Tast.TExpr, TypeError list> =
+        cellStack.Clear()
         infer env expr

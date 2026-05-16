@@ -478,7 +478,9 @@ let private renderInputRow
                 | _ -> 0.0
             renderScalarEditor dispatch block.Id param.Name v
         | Type.Field
-        | Type.Sketch
+        | Type.Sketch _
+        | Type.Loop _
+        | Type.Primitive _
         | Type.Frame ->
             let r =
                 match tryFindBlockArg specName param.Name args with

@@ -15,6 +15,12 @@ let private nativeBlock id name specName args : Block =
       ColorIndex = 0
       SlicePlane = defaultSlicePlane }
 
+// Convenience constructors used by the test fixtures: block args are
+// now `Ast.Expr` directly. A scalar literal is `ENumber n`; a wire to
+// upstream block "name" is `EVar "name"`.
+let private argScalar (n: float) : Ast.Expr = AstBuilder.numE n
+let private argRef (name: string) : Ast.Expr = AstBuilder.varE name
+
 let private sketchBlockOf id name (sketch: ActionSketch) (plane: SketchPlane) : Block =
     { Id = id
       Name = name
@@ -65,7 +71,7 @@ let private verticalLineSketch x : ActionSketch =
 let ``single sphere block produces a Field output`` () =
     let nb =
         notebookOf [
-            nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.0 ]
+            nativeBlock 0 "shape" "sphere" [ "radius", argScalar 1.0 ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "shape" result with
@@ -76,12 +82,12 @@ let ``single sphere block produces a Field output`` () =
 let ``translate referencing an upstream sphere yields a RemapAxes-rooted Field`` () =
     let nb =
         notebookOf [
-            nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.0 ]
+            nativeBlock 0 "shape" "sphere" [ "radius", argScalar 1.0 ]
             nativeBlock 1 "shifted" "translate"
-                [ "x", ArgScalar 2.0
-                  "y", ArgScalar 0.0
-                  "z", ArgScalar 0.0
-                  "child", ArgRef (Some 0) ]
+                [ "x", argScalar 2.0
+                  "y", argScalar 0.0
+                  "z", argScalar 0.0
+                  "child", argRef "shape" ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "shifted" result with
@@ -94,11 +100,11 @@ let ``translate referencing an upstream sphere yields a RemapAxes-rooted Field``
 let ``mirror symmetric wraps an upstream field in a RemapAxes node`` () =
     let nb =
         notebookOf [
-            nativeBlock 0 "half" "sphere" [ "radius", ArgScalar 1.0 ]
+            nativeBlock 0 "half" "sphere" [ "radius", argScalar 1.0 ]
             nativeBlock 1 "full" "mirror-symmetric"
-                [ "axis", ArgScalar 1.0
-                  "root", ArgScalar 0.0
-                  "child", ArgRef (Some 0) ]
+                [ "axis", argScalar 1.0
+                  "root", argScalar 0.0
+                  "child", argRef "half" ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "full" result with
@@ -111,9 +117,9 @@ let ``mirror symmetric wraps an upstream field in a RemapAxes node`` () =
 let ``union of two spheres accepts target tool and radius inputs`` () =
     let nb =
         notebookOf [
-            nativeBlock 0 "a" "sphere" [ "radius", ArgScalar 1.0 ]
-            nativeBlock 1 "b" "sphere" [ "radius", ArgScalar 2.0 ]
-            nativeBlock 2 "u" "union" [ "target", ArgRef (Some 0); "tool", ArgRef (Some 1); "radius", ArgScalar 0.25 ]
+            nativeBlock 0 "a" "sphere" [ "radius", argScalar 1.0 ]
+            nativeBlock 1 "b" "sphere" [ "radius", argScalar 2.0 ]
+            nativeBlock 2 "u" "union" [ "target", argRef "a"; "tool", argRef "b"; "radius", argScalar 0.25 ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "u" result with
@@ -127,13 +133,12 @@ let ``union of two spheres accepts target tool and radius inputs`` () =
 let ``unwired ref records a block error on the compose path`` () =
     let nb =
         notebookOf [
-            nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.0 ]
+            nativeBlock 0 "shape" "sphere" [ "radius", argScalar 1.0 ]
             nativeBlock 1 "broken" "translate"
-                [ "x", ArgScalar 1.0
-                  "y", ArgScalar 0.0
-                  "z", ArgScalar 0.0
-                  "child", ArgRef None ]
-            nativeBlock 2 "tail" "sphere" [ "radius", ArgScalar 0.5 ]
+                [ "x", argScalar 1.0
+                  "y", argScalar 0.0
+                  "z", argScalar 0.0 ]   // "child" omitted = unwired
+            nativeBlock 2 "tail" "sphere" [ "radius", argScalar 0.5 ]
         ]
     let result = NotebookCompose.compile nb
     Assert.True(Map.containsKey 1 result.BlockErrors, "broken block should have an error")
@@ -159,8 +164,8 @@ let ``wing remap preview consumes two sketch refs and emits remapped profile`` (
             sketchBlockOf 0 "leading" (verticalLineSketch 0.0) XY
             sketchBlockOf 1 "trailing" (verticalLineSketch 1.0) XY
             nativeBlock 2 "wing" "wing-remap-preview"
-                [ "leading", ArgRef (Some 0)
-                  "trailing", ArgRef (Some 1) ]
+                [ "leading", argRef "leading"
+                  "trailing", argRef "trailing" ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "wing" result with
@@ -194,7 +199,7 @@ let ``from-sketch over two lines roots a Fold(Min, [LineSegment; LineSegment])``
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
+            nativeBlock 1 "field" "from-sketch" [ "sketch", argRef "sk" ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "field" result with
@@ -221,7 +226,7 @@ let ``from-sketch over a single line returns the LineSegment node directly`` () 
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
+            nativeBlock 1 "field" "from-sketch" [ "sketch", argRef "sk" ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "field" result with
@@ -247,7 +252,7 @@ let ``from-sketch over a triangle wraps the Fold(Min, ...) in a sign flip (Mul)`
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
+            nativeBlock 1 "field" "from-sketch" [ "sketch", argRef "sk" ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "field" result with
@@ -275,7 +280,7 @@ let ``from-sketch over a single circle lowers to analytic signed disk distance``
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
+            nativeBlock 1 "field" "from-sketch" [ "sketch", argRef "sk" ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "field" result with
@@ -303,7 +308,7 @@ let ``revolve over a circle sketch wraps the 2D SDF in RemapAxes`` () =
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "torus" "revolve" [ "sketch", ArgRef (Some 0) ]
+            nativeBlock 1 "torus" "revolve" [ "sketch", argRef "sk" ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "torus" result with
@@ -333,7 +338,7 @@ let ``revolve block output is typed as Field`` () =
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "tor" "revolve" [ "sketch", ArgRef (Some 0) ]
+            nativeBlock 1 "tor" "revolve" [ "sketch", argRef "sk" ]
         ]
     let composed = composeChecked nb
     Assert.Equal(Some Type.Field, Map.tryFind 1 composed.BlockOutputs)
@@ -341,7 +346,8 @@ let ``revolve block output is typed as Field`` () =
 [<Fact>]
 let ``revolve with no sketch wired records a block error`` () =
     let nb =
-        notebookOf [ nativeBlock 0 "tor" "revolve" [ "sketch", ArgRef None ] ]
+        // "sketch" omitted = unwired (compose falls back to UNWIRED_PLACEHOLDER)
+        notebookOf [ nativeBlock 0 "tor" "revolve" [] ]
     let result = NotebookCompose.compile nb
     Assert.True(
         Map.containsKey 0 result.BlockErrors,
@@ -383,7 +389,7 @@ let ``Fold emits a fn through MathIrWgsl with one return per entry`` () =
 let ``compileView returns the last Field output as the render root`` () =
     let nb =
         notebookOf [
-            nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.5 ]
+            nativeBlock 0 "shape" "sphere" [ "radius", argScalar 1.5 ]
         ]
     match NotebookCompose.compileView nb None with
     | Ok (ir, root) ->
@@ -398,7 +404,7 @@ let ``compileView returns the last Field output as the render root`` () =
 [<Fact>]
 let ``compose preserves visible field color indices`` () =
     let block =
-        { nativeBlock 0 "shape" "sphere" [ "radius", ArgScalar 1.5 ] with
+        { nativeBlock 0 "shape" "sphere" [ "radius", argScalar 1.5 ] with
             ColorIndex = 8 }
     let composed = NotebookCompose.compose (notebookOf [ block ])
     Assert.Equal<int list>([ 8 ], composed.VisibleFieldColorIndices)
@@ -421,7 +427,7 @@ let ``composeWith: user-defined block resolves and typechecks against user spec`
     let userScript =
         UserScript.analyze "let donut = fun (r: Scalar) -> r + 1 end"
     let nb =
-        notebookOf [ nativeBlock 0 "ring" "donut" [ "r", ArgScalar 0.5 ] ]
+        notebookOf [ nativeBlock 0 "ring" "donut" [ "r", argScalar 0.5 ] ]
     let composed = NotebookCompose.composeWith nb userScript
     // Block output should be the user spec's declared output (Field).
     Assert.Equal(Some Type.Field, Map.tryFind 0 composed.BlockOutputs)
@@ -435,7 +441,7 @@ let ``composeWith: user-defined block resolves and typechecks against user spec`
 [<Fact>]
 let ``composeWith: unknown spec still errors when no user spec covers it`` () =
     let nb =
-        notebookOf [ nativeBlock 0 "weird" "donut" [ "r", ArgScalar 0.5 ] ]
+        notebookOf [ nativeBlock 0 "weird" "donut" [ "r", argScalar 0.5 ] ]
     // No user script — donut is unknown.
     let composed = NotebookCompose.composeWith nb UserScript.empty
     match Typecheck.elaborate composed.TypeEnv composed.Ast with
@@ -449,7 +455,7 @@ let ``compileWith: user-defined block compiles to MathIR end to end`` () =
     let userScript =
         UserScript.analyze "let bubble = fun (r: Scalar) -> sphere r end"
     let nb =
-        notebookOf [ nativeBlock 0 "ring" "bubble" [ "r", ArgScalar 1.0 ] ]
+        notebookOf [ nativeBlock 0 "ring" "bubble" [ "r", argScalar 1.0 ] ]
     let result = NotebookCompose.compileWith nb userScript
     // The single visible Field block should compile to a non-empty IR.
     Assert.True(result.Ir.IsSome, "expected an IR")
@@ -466,8 +472,8 @@ let ``compileWith: default capsule script compiles end to end`` () =
     let nb =
         notebookOf
             [ nativeBlock 0 "pill" "capsule"
-                [ "radius", ArgScalar 0.5
-                  "length", ArgScalar 2.0 ] ]
+                [ "radius", argScalar 0.5
+                  "length", argScalar 2.0 ] ]
     let result = NotebookCompose.compileWith nb userScript
     Assert.True(result.Ir.IsSome, "expected an IR from capsule compile")
     Assert.True(

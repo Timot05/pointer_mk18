@@ -23,8 +23,15 @@ module Type =
     /// `Sketch Map.empty`; the bridge in `NotebookCompose` populates a
     /// concrete refinement when a notebook sketch block is seeded.
     type T =
+        // Numeric scalar. The surface syntax keeps the existing `Scalar`
+        // name because block parameters and UI defaults are built around it.
         | Scalar
+        | Bool
+        | String
+        | Unit
         | Field
+        | List of element: T
+        | Tuple of elements: T list
         | Sketch of fields: Map<string, T>
         // A closed sketch boundary. The refinement names its derivable
         // values — at minimum `signed_distance: Field`, plus per-
@@ -48,7 +55,14 @@ module Type =
     let rec format (t: T) : string =
         match t with
         | Scalar -> "Scalar"
+        | Bool -> "Bool"
+        | String -> "String"
+        | Unit -> "Unit"
         | Field -> "Field"
+        | List element -> sprintf "List<%s>" (format element)
+        | Tuple elements ->
+            let body = elements |> List.map format |> String.concat " * "
+            sprintf "(%s)" body
         | Sketch fields when Map.isEmpty fields -> "Sketch"
         | Sketch fields ->
             let body =

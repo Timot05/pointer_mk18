@@ -14,34 +14,33 @@ namespace Server.Lang
 module Notebook =
 
     open Token
+    open Ast
     open Value
 
     type BlockId = int
 
-    /// A value bound to one of a block's named inputs. Scalars become slot-
-    /// backed `VField`s in the eval env; refs resolve to the upstream block's
-    /// output. Sketch-shaped payloads (entities + constraints + plane) live
-    /// directly on the block since they aren't shareable across kinds.
-    type BlockArg =
-        | ArgScalar of float
-        | ArgRef of BlockId option
-
     /// Sketch payload. Sketch blocks are kind-special: their author-time
-    /// data structure (entities + constraints) doesn't fit the scalar/ref
-    /// arg shape. The driver picks them up via a separate code path; their
-    /// "input" surface in the UI is the sketch authoring panel, not a
-    /// list of typed-arg rows.
+    /// data structure (entities + constraints) doesn't fit the typed
+    /// expression arg shape. The driver picks them up via a separate
+    /// code path; their "input" surface in the UI is the sketch
+    /// authoring panel, not a list of typed-arg rows.
     type SketchData = {
         Sketch: Server.ActionSketch
         Plane:  Server.SketchPlane
     }
 
     /// What a block actually is at the data level. Native blocks are
-    /// (specName, args). Sketches carry their own structured payload.
-    /// Future user-defined blocks would carry their parsed AST + an arg
-    /// map of the same shape as native.
+    /// `(specName, args)` where each arg is a full DSL expression —
+    /// typically a scalar literal (`ENumber n`), a reference to an
+    /// upstream block (`EVar name`), or a path into a structured
+    /// value (`EPath [name; "loop_0"]`). Anything Ast.Expr can
+    /// represent is a valid arg; the compose pass splices it
+    /// verbatim into the program AST. Absence of a key means the
+    /// slot is unwired (compose-time fallback to
+    /// `AstBuilder.unwiredE`). Sketches carry their own structured
+    /// payload — see `SketchData`.
     type BlockBody =
-        | NativeBody of specName: string * args: Map<string, BlockArg>
+        | NativeBody of specName: string * args: Map<string, Expr>
         | SketchBody of SketchData
 
     /// What the viewer should do with this block's output. `VHidden` means

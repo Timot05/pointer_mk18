@@ -27,6 +27,7 @@
     <Compile Include="core\Lang\Token.fs" />
     <Compile Include="core\Lang\Type.fs" />
     <Compile Include="core\Lang\Ast.fs" />
+    <Compile Include="core\Lang\AstBuilder.fs" />
     <Compile Include="core\Lang\Tast.fs" />
     <Compile Include="core\Lang\AstQueries.fs" />
     <Compile Include="core\Lang\Lexer.fs" />

@@ -117,10 +117,17 @@ let private actionListSignature (doc: DocumentView) =
                 args
                 |> Map.toList
                 |> List.map (fun (k, v) ->
-                    match v with
-                    | Server.Lang.Notebook.ArgScalar n -> sprintf "%s=%g" k n
-                    | Server.Lang.Notebook.ArgRef None -> sprintf "%s=-" k
-                    | Server.Lang.Notebook.ArgRef (Some r) -> sprintf "%s=#%d" k r)
+                    let summary =
+                        match v.Node with
+                        | Server.Lang.Ast.ENumber n -> sprintf "%g" n
+                        | Server.Lang.Ast.EVar id -> sprintf "#%s" id.Name
+                        | Server.Lang.Ast.EPath segments ->
+                            segments
+                            |> List.map (fun s -> s.Name)
+                            |> String.concat "."
+                            |> sprintf "#%s"
+                        | _ -> "expr"
+                    sprintf "%s=%s" k summary)
                 |> String.concat ","
             sprintf "%s(%s)" name argDigest
         | Server.Lang.Notebook.SketchBody _ -> "sketch"

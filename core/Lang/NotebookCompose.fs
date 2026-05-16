@@ -61,51 +61,12 @@ module NotebookCompose =
     }
 
     // ── AST construction helpers ───────────────────────────────────────────
+    //
+    // The general-purpose Expr builders (`mkAt`, `varEAt`, `numEAt`, etc.)
+    // live in `AstBuilder` — opened below so existing references resolve
+    // without the `AstBuilder.` qualifier.
 
-    let private noSpan : Span = { Start = 0; Stop = 0 }
-
-    /// Synthesise a unique span per `BlockId` so typecheck errors can be
-    /// routed back. We allocate `Start = blockId, Stop = blockId` — the
-    /// span is meaningless as a source location but its `Start` field
-    /// makes it queryable through the `BlockSpans` map.
-    let private spanForBlock (id: BlockId) : Span =
-        { Start = id; Stop = id }
-
-    let private userAt (name: string) (sp: Span) : Ident =
-        { Name = name; IdentKind = User; Span = sp }
-
-    let private user (name: string) : Ident = userAt name noSpan
-
-    let private mkAt (sp: Span) node : Expr = { Node = node; Span = sp }
-    let private mk node : Expr = mkAt noSpan node
-    let private varE name : Expr = mk (EVar (user name))
-    let private varEAt sp name : Expr = mkAt sp (EVar (userAt name sp))
-    let private numEAt sp n : Expr = mkAt sp (ENumber n)
-    let private numE n : Expr = mk (ENumber n)
-
-    /// `EApply` chain — `applyChain f [a; b; c]` yields `((f a) b) c`.
-    let private applyChain (callee: Expr) (args: Expr list) : Expr =
-        args |> List.fold (fun acc arg -> mk (EApply(acc, arg))) callee
-
-    let private applyChainAt (sp: Span) (callee: Expr) (args: Expr list) : Expr =
-        args |> List.fold (fun acc arg -> mkAt sp (EApply(acc, arg))) callee
-
-    /// Sentinel name we plant into the AST when a ref input is unwired.
-    /// Resolves to `UndefinedVar` at typecheck — clean signal back to the
-    /// UI that this block has a missing input.
-    let [<Literal>] private UNWIRED_PLACEHOLDER = "<unwired>"
-
-    let private tryFindBlockArg (specName: string) (paramName: string) (args: Map<string, BlockArg>) : BlockArg option =
-        match Map.tryFind paramName args with
-        | Some arg -> Some arg
-        | None ->
-            // Legacy documents used `a` / `b` for boolean operands. New
-            // specs use target/tool, but existing blocks should keep wiring.
-            match specName, paramName with
-            | ("union" | "intersect" | "subtract"), "target" -> Map.tryFind "a" args
-            | ("union" | "intersect" | "subtract"), "tool" -> Map.tryFind "b" args
-            | ("union" | "intersect" | "subtract"), "radius" -> Some (ArgScalar 0.0)
-            | _ -> None
+    open AstBuilder
 
     // ── from-sketch lowering ───────────────────────────────────────────────
 
@@ -527,6 +488,24 @@ module NotebookCompose =
             |> List.map (fun b -> b.Id, b.Name)
             |> Map.ofList
 
+        // Reverse lookup — used by the from-sketch / revolve interceptors
+        // to resolve a "wired upstream sketch" arg back to its BlockId
+        // when the arg expression is a simple `EVar name`.
+        let blockIdByName =
+            notebook.Blocks
+            |> List.map (fun b -> b.Name, b.Id)
+            |> Map.ofList
+
+        // Extract the upstream BlockId an arg refers to, if it's a
+        // simple variable reference. Path refs (`EPath`) and richer
+        // expressions return `None` — the interceptor falls back to
+        // unwired, which surfaces a clean typecheck error against the
+        // spec's declared input shape.
+        let referencedBlockId (e: Expr) : BlockId option =
+            match e.Node with
+            | EVar id -> Map.tryFind id.Name blockIdByName
+            | _ -> None
+
         let blockSpans =
             notebook.Blocks
             |> List.map (fun b -> b.Id, spanForBlock b.Id)
@@ -592,17 +571,14 @@ module NotebookCompose =
                 // by name at eval time via env lookup, so the only thing the
                 // emitter needs is the typed parameter interface.
                 let emitGeneric (typed: TypeExtract.ExtractedSpec) =
+                    // Each arg slot stores an Ast.Expr directly. Absent
+                    // keys / no-fallback cases lower to the unwired sentinel
+                    // so the typechecker surfaces a clean `UndefinedVar`.
                     let argExprs =
                         typed.Params
                         |> List.map (fun p ->
-                            match tryFindBlockArg specName p.Name args with
-                            | Some (ArgScalar n) -> numEAt bsp n
-                            | Some (ArgRef (Some refId)) ->
-                                match Map.tryFind refId blockNames with
-                                | Some n -> varEAt bsp n
-                                | None -> varEAt bsp UNWIRED_PLACEHOLDER
-                            | Some (ArgRef None)
-                            | None -> varEAt bsp UNWIRED_PLACEHOLDER)
+                            Map.tryFind p.Name args
+                            |> Option.defaultValue (varEAt bsp UNWIRED_PLACEHOLDER))
                     let call = applyChainAt bsp (varEAt bsp specName) argExprs
                     stmts.Add(SLet([ userAt block.Name bsp ], call))
                     blockOutputs <- Map.add block.Id typed.Output blockOutputs
@@ -634,12 +610,12 @@ module NotebookCompose =
                     // contributes its `Sketch -> Field` type signature to
                     // the env so callers that mis-wire it still typecheck.
                     let body =
-                        match Map.tryFind "sketch" args with
-                        | Some (ArgRef (Some refId)) ->
+                        match Map.tryFind "sketch" args |> Option.bind referencedBlockId with
+                        | Some refId ->
                             match Map.tryFind refId sketchByBlockId with
                             | Some data -> buildFromSketchBody bsp data
                             | None -> varEAt bsp UNWIRED_PLACEHOLDER
-                        | _ -> varEAt bsp UNWIRED_PLACEHOLDER
+                        | None -> varEAt bsp UNWIRED_PLACEHOLDER
                     stmts.Add(SLet([ userAt block.Name bsp ], body))
 
                     let outTy = specOutputType spec
@@ -660,12 +636,12 @@ module NotebookCompose =
                     // coordinates rather than directly at world (x, y).
                     // See `buildRevolveBody` for the per-plane remap math.
                     let body =
-                        match Map.tryFind "sketch" args with
-                        | Some (ArgRef (Some refId)) ->
+                        match Map.tryFind "sketch" args |> Option.bind referencedBlockId with
+                        | Some refId ->
                             match Map.tryFind refId sketchByBlockId with
                             | Some data -> buildRevolveBody bsp data
                             | None -> varEAt bsp UNWIRED_PLACEHOLDER
-                        | _ -> varEAt bsp UNWIRED_PLACEHOLDER
+                        | None -> varEAt bsp UNWIRED_PLACEHOLDER
                     stmts.Add(SLet([ userAt block.Name bsp ], body))
 
                     let outTy = specOutputType spec

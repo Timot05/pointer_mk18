@@ -491,7 +491,7 @@ let ``apply: from-sketch (generic Sketch) accepts a refined sketch`` () =
     let nb =
         notebookOf [
             sketchBlockOf 0 "profile" squareSketch XY
-            nativeBlock 1 "field" "from-sketch" [ "sketch", ArgRef (Some 0) ]
+            nativeBlock 1 "field" "from-sketch" [ "sketch", AstBuilder.varE "profile" ]
         ]
     let composed = NotebookCompose.compose nb
     match Typecheck.elaborate composed.TypeEnv composed.Ast with
@@ -499,3 +499,28 @@ let ``apply: from-sketch (generic Sketch) accepts a refined sketch`` () =
     | Error es ->
         let msg = es |> List.map Typecheck.formatError |> String.concat "; "
         failwithf "expected ok, got: %s" msg
+
+[<Fact>]
+let ``block input: wire profile.loop_0 to a Field-typed param via EPath`` () =
+    // The payoff of the Expr-as-BlockArg refactor: a downstream block
+    // can wire its Field input straight to a sketch loop using
+    // `EPath ["profile"; "loop_0"]`. Auto-projection handles the
+    // Loop→Field projection at compose time.
+    //
+    // Here we wire `profile.loop_0` (a Loop, auto-projects to Field)
+    // into mirror-symmetric's `child` slot. The result is a Field
+    // whose root is a `RemapAxes` over the loop's signed_distance.
+    let nb =
+        notebookOf [
+            sketchBlockOf 0 "profile" squareSketch XY
+            nativeBlock 1 "mirrored" "mirror-symmetric"
+                [ "axis", AstBuilder.numE 0.0
+                  "root", AstBuilder.numE 0.0
+                  "child", AstBuilder.pathE [ "profile"; "loop_0" ] ]
+        ]
+    let result = composeAndEval nb
+    match Map.tryFind "mirrored" result.Bindings with
+    | Some (Value.VField root) ->
+        let rootNode = result.Ir.Nodes.[root.Id]
+        Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
+    | other -> failwithf "expected VField, got %A" other

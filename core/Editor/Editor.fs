@@ -182,8 +182,13 @@ type Message =
     | AddSketchBlock
     | SelectBlock of Server.Lang.Notebook.BlockId
     /// Replace a single named arg on a block (scalar drag-edit, or
-    /// rewiring a ref bubble).
-    | SetBlockArg of Server.Lang.Notebook.BlockId * paramName: string * Server.Lang.Notebook.BlockArg
+    /// rewiring a ref bubble). The arg is a full DSL expression —
+    /// `ENumber n` for scalars, `EVar name` / `EPath [name; ...]` for
+    /// wires, anything else for richer cases.
+    | SetBlockArg of Server.Lang.Notebook.BlockId * paramName: string * Server.Lang.Ast.Expr
+    /// Remove a block's arg entry (disconnect a wire / clear a scalar).
+    /// Absent keys behave as unwired at compose time.
+    | RemoveBlockArg of Server.Lang.Notebook.BlockId * paramName: string
     | ExpandBlock of Server.Lang.Notebook.BlockId
     | CollapseBlock of Server.Lang.Notebook.BlockId
     | RenameBlock of Server.Lang.Notebook.BlockId * string
@@ -1049,22 +1054,22 @@ module Editor =
                         | None ->
                             let spec = Server.Lang.BlockSpec.find specName
                             Server.Lang.BlockSpec.typedInterface spec, spec.ScalarDefaults
-                    // Seed every declared parameter with a default. Scalars
-                    // pull from the spec's default map (or 0.0); refs start
-                    // unwired.
+                    // Seed scalar params with their spec default (or 0.0)
+                    // as an `ENumber` literal. Ref params start unwired —
+                    // we omit them from the map; compose falls back to
+                    // the unwired sentinel which surfaces a clean
+                    // typecheck error.
                     let args =
                         typed.Params
-                        |> List.map (fun p ->
-                            let arg =
-                                match p.Type with
-                                | Server.Lang.Type.Scalar ->
-                                    let v =
-                                        match Map.tryFind p.Name scalarDefaults with
-                                        | Some d -> d
-                                        | None -> 0.0
-                                    Server.Lang.Notebook.ArgScalar v
-                                | _ -> Server.Lang.Notebook.ArgRef None
-                            p.Name, arg)
+                        |> List.choose (fun p ->
+                            match p.Type with
+                            | Server.Lang.Type.Scalar ->
+                                let v =
+                                    match Map.tryFind p.Name scalarDefaults with
+                                    | Some d -> d
+                                    | None -> 0.0
+                                Some (p.Name, Server.Lang.AstBuilder.numE v)
+                            | _ -> None)
                         |> Map.ofList
                     let id = state.Doc.NextBlockId
                     let block : Server.Lang.Notebook.Block = {
@@ -1155,32 +1160,60 @@ module Editor =
                                     let nextArgs = Map.add paramName newArg args
                                     { b with Body = Server.Lang.Notebook.NativeBody(specName, nextArgs) }
                                 | _ -> b)
-                    // If the new arg is a ref to a downstream block, hoist
-                    // that block to sit just before the target so the
-                    // notebook stays a DAG without forcing the user to
-                    // think about declaration order.
+                    // If the new arg references a downstream block by name
+                    // (simple `EVar` or `EPath` head), hoist that block to
+                    // sit just before the target so the notebook stays a
+                    // DAG without forcing the user to think about
+                    // declaration order. Richer Exprs (arithmetic, etc.)
+                    // are skipped for hoisting.
+                    let referencedName : string option =
+                        match newArg.Node with
+                        | Server.Lang.Ast.EVar id -> Some id.Name
+                        | Server.Lang.Ast.EPath (head :: _) -> Some head.Name
+                        | _ -> None
                     let blocks =
-                        match newArg with
-                        | Server.Lang.Notebook.ArgRef (Some refId) ->
+                        match referencedName with
+                        | Some name ->
                             let idxOf bid =
                                 updated
                                 |> List.tryFindIndex (fun b -> b.Id = bid)
-                            match idxOf refId, idxOf id with
-                            | Some refIdx, Some tgtIdx when refIdx > tgtIdx ->
-                                // Pull `refId` out and reinsert just before `id`.
-                                let refBlock = updated.[refIdx]
-                                let withoutRef =
-                                    updated |> List.filter (fun b -> b.Id <> refId)
-                                let newTgtIdx =
-                                    withoutRef |> List.findIndex (fun b -> b.Id = id)
-                                let before, after = List.splitAt newTgtIdx withoutRef
-                                before @ [ refBlock ] @ after
-                            | _ -> updated
-                        | _ -> updated
+                            let refIdOpt =
+                                updated
+                                |> List.tryFind (fun b -> b.Name = name)
+                                |> Option.map (fun b -> b.Id)
+                            match refIdOpt with
+                            | Some refId ->
+                                match idxOf refId, idxOf id with
+                                | Some refIdx, Some tgtIdx when refIdx > tgtIdx ->
+                                    let refBlock = updated.[refIdx]
+                                    let withoutRef =
+                                        updated |> List.filter (fun b -> b.Id <> refId)
+                                    let newTgtIdx =
+                                        withoutRef |> List.findIndex (fun b -> b.Id = id)
+                                    let before, after = List.splitAt newTgtIdx withoutRef
+                                    before @ [ refBlock ] @ after
+                                | _ -> updated
+                            | None -> updated
+                        | None -> updated
                     // SetBlockArg commits a pick (or any other arg edit);
                     // either way, exit pick mode if we were in it.
                     { state with
                         Doc = { state.Doc with Blocks = blocks }
+                        EditingBlockRef = None }
+                    |> recompileNotebook
+                | RemoveBlockArg(id, paramName) ->
+                    let updated =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> id then b
+                            else
+                                match b.Body with
+                                | Server.Lang.Notebook.NativeBody(specName, args) ->
+                                    let nextArgs = Map.remove paramName args
+                                    { b with Body = Server.Lang.Notebook.NativeBody(specName, nextArgs) }
+                                | _ -> b)
+                    { state with
+                        Doc = { state.Doc with Blocks = updated }
                         EditingBlockRef = None }
                     |> recompileNotebook
                 | ExpandBlock id ->

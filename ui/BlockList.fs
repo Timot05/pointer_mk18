@@ -240,15 +240,30 @@ let private bodyKindLabel (body: Notebook.BlockBody) : string =
     | Notebook.NativeBody(name, _) -> name
     | Notebook.SketchBody _ -> "sketch"
 
-let private tryFindBlockArg (specName: string) (paramName: string) (args: Map<string, Notebook.BlockArg>) : Notebook.BlockArg option =
-    match Map.tryFind paramName args with
-    | Some arg -> Some arg
-    | None ->
-        match specName, paramName with
-        | ("union" | "intersect" | "subtract"), "target" -> Map.tryFind "a" args
-        | ("union" | "intersect" | "subtract"), "tool" -> Map.tryFind "b" args
-        | ("union" | "intersect" | "subtract"), "radius" -> Some (Notebook.ArgScalar 0.0)
-        | _ -> None
+// ── Expr-shape classifiers ─────────────────────────────────────────────────
+//
+// Block input args are stored as `Ast.Expr`. The UI dispatches on the
+// expression's shape: a `ENumber` renders as the scalar editor, a
+// simple `EVar`/`EPath` renders as a wire bubble, anything else renders
+// read-only as expression text.
+
+let private scalarOfExpr (e: Server.Lang.Ast.Expr) : float option =
+    match e.Node with
+    | Server.Lang.Ast.ENumber n -> Some n
+    | _ -> None
+
+/// `Some name` if the Expr is a wire reference we know how to render
+/// (a bare `EVar`, possibly with path segments). Returns `None` for the
+/// unwired sentinel so the bubble renders as empty.
+let private wireLabelOfExpr (e: Server.Lang.Ast.Expr) : string option =
+    match e.Node with
+    | Server.Lang.Ast.EVar id when id.Name = Server.Lang.AstBuilder.UNWIRED_PLACEHOLDER -> None
+    | Server.Lang.Ast.EVar id -> Some id.Name
+    | Server.Lang.Ast.EPath segments ->
+        match segments with
+        | [] -> None
+        | _ -> Some (segments |> List.map (fun s -> s.Name) |> String.concat " / ")
+    | _ -> None
 
 // ── Visibility badge (reuses `.visibility-badge`) ──────────────────────────
 
@@ -297,7 +312,7 @@ let private renderScalarEditor
             if not cancelled then
                 match System.Double.TryParse(input.value) with
                 | true, n ->
-                    dispatch (SetBlockArg(blockId, paramName, Notebook.ArgScalar n))
+                    dispatch (SetBlockArg(blockId, paramName, Server.Lang.AstBuilder.numE n))
                 | _ -> ()
     input.addEventListener (
         "keydown",
@@ -375,7 +390,7 @@ let private renderAxisDropdown
         fun _ ->
             match System.Int32.TryParse(select.value) with
             | true, n ->
-                dispatch (SetBlockArg(blockId, paramName, Notebook.ArgScalar (float n)))
+                dispatch (SetBlockArg(blockId, paramName, Server.Lang.AstBuilder.numE (float n)))
             | _ -> ())
     select :> HTMLElement
 
@@ -393,28 +408,27 @@ let private renderRefBubble
         (block: Notebook.Block)
         (paramName: string)
         (paramType: Type.T)
-        (currentRef: Notebook.BlockId option) : HTMLElement =
+        (currentLabel: string option) : HTMLElement =
     let bubble = Dom.el "div" "wire-bubble"
     bubble?draggable <- true
 
     let isPicking =
         doc.EditingBlockRef = Some(block.Id, paramName)
-    if currentRef.IsSome then bubble.classList.add "is-assigned"
+    if currentLabel.IsSome then bubble.classList.add "is-assigned"
     if isPicking then bubble.classList.add "is-picking"
 
-    // Body: name when wired, empty when not. The picking-state outline
+    // Body: label when wired, empty when not. The picking-state outline
     // comes from the parent bubble's CSS class.
     let label = Dom.el "span" "wire-bubble-label"
     label.textContent <-
-        match currentRef with
-        | Some id -> upstreamBlockName doc id
+        match currentLabel with
+        | Some name -> name
         | None -> ""
     bubble.appendChild (label :> Node) |> ignore
 
-    // × close — only rendered when wired. Clicking unwires; the
-    // bubble-level click below ignores the event so unwire is the only
-    // result.
-    if currentRef.IsSome then
+    // × close — only rendered when wired. Removes the arg entry (a
+    // missing key behaves as unwired at compose).
+    if currentLabel.IsSome then
         let close = Dom.elText "button" "wire-bubble-x" "×"
         close?``type`` <- "button"
         close.title <- "Disconnect"
@@ -422,7 +436,7 @@ let private renderRefBubble
             "click",
             fun ev ->
                 ev.stopPropagation ()
-                dispatch (SetBlockArg(block.Id, paramName, Notebook.ArgRef None)))
+                dispatch (RemoveBlockArg(block.Id, paramName)))
         bubble.appendChild (close :> Node) |> ignore
 
     bubble.addEventListener (
@@ -444,7 +458,7 @@ let private renderRefBubble
         "click",
         fun ev ->
             ev.stopPropagation ()
-            if currentRef.IsNone then
+            if currentLabel.IsNone then
                 dispatch (BeginPickBlockRef(block.Id, paramName)))
     bubble
 
@@ -455,7 +469,7 @@ let private renderInputRow
         (doc: DocumentView)
         (block: Notebook.Block)
         (param: TypeExtract.ExtractedParam)
-        (args: Map<string, Notebook.BlockArg>) : HTMLElement =
+        (args: Map<string, Server.Lang.Ast.Expr>) : HTMLElement =
     let row = Dom.el "div" "input-row"
     row.appendChild (Dom.elText "span" "input-row-label" param.Name :> Node) |> ignore
 
@@ -464,18 +478,20 @@ let private renderInputRow
             match block.Body with
             | Notebook.NativeBody(name, _) -> name
             | _ -> ""
+        let currentExpr = tryFindBlockArg specName param.Name args
         match param.Type with
         | Type.Scalar when (specName = "halfplane" || specName = "mirror-symmetric") && param.Name = "axis" ->
             let current =
-                match tryFindBlockArg specName param.Name args with
-                | Some (Notebook.ArgScalar n) -> int (round n)
-                | _ -> 0
+                currentExpr
+                |> Option.bind scalarOfExpr
+                |> Option.map (fun n -> int (round n))
+                |> Option.defaultValue 0
             renderAxisDropdown dispatch block.Id param.Name current
         | Type.Scalar ->
             let v =
-                match tryFindBlockArg specName param.Name args with
-                | Some (Notebook.ArgScalar n) -> n
-                | _ -> 0.0
+                currentExpr
+                |> Option.bind scalarOfExpr
+                |> Option.defaultValue 0.0
             renderScalarEditor dispatch block.Id param.Name v
         | Type.Field
         | Type.Sketch _
@@ -483,9 +499,8 @@ let private renderInputRow
         | Type.Primitive _
         | Type.Frame ->
             let r =
-                match tryFindBlockArg specName param.Name args with
-                | Some (Notebook.ArgRef ref) -> ref
-                | _ -> None
+                currentExpr
+                |> Option.bind wireLabelOfExpr
             renderRefBubble dispatch doc block param.Name param.Type r :> HTMLElement
         | Type.Fun _ ->
             // First-class functions can't be wired or typed in the row
@@ -751,8 +766,10 @@ let private renderRow
                     match System.Int32.TryParse parts.[0] with
                     | true, sourceId when sourceId <> block.Id ->
                         // No upstream check — SetBlockArg auto-reorders
-                        // the dragged source into upstream position.
-                        dispatch (SetBlockArg(sourceId, parts.[1], Notebook.ArgRef (Some block.Id)))
+                        // the dragged source into upstream position. We
+                        // store the wire as an `EVar block.Name`; the
+                        // reducer's name-based hoist handles ordering.
+                        dispatch (SetBlockArg(sourceId, parts.[1], Server.Lang.AstBuilder.varE block.Name))
                     | _ -> ()
             elif dataTransferHasBlock de then
                 ev.preventDefault ()
@@ -783,7 +800,7 @@ let private renderRow
             // otherwise leave pick state alone (user can still select).
             match pickTarget with
             | Some(srcId, paramName) ->
-                dispatch (SetBlockArg(srcId, paramName, Notebook.ArgRef (Some block.Id)))
+                dispatch (SetBlockArg(srcId, paramName, Server.Lang.AstBuilder.varE block.Name))
             | None ->
                 dispatch (SelectBlock block.Id))
 

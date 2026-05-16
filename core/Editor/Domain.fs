@@ -252,8 +252,8 @@ module Document =
                 Server.Lang.Notebook.NativeBody(
                     "wing-remap-preview",
                     Map.ofList
-                        [ "leading", Server.Lang.Notebook.ArgRef(Some 0)
-                          "trailing", Server.Lang.Notebook.ArgRef(Some 1) ])
+                        [ "leading", Server.Lang.AstBuilder.varE "leading"
+                          "trailing", Server.Lang.AstBuilder.varE "trailing" ])
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
             SlicePlane =
@@ -265,9 +265,9 @@ module Document =
                 Server.Lang.Notebook.NativeBody(
                     "mirror-symmetric",
                     Map.ofList
-                        [ "axis", Server.Lang.Notebook.ArgScalar 1.0
-                          "root", Server.Lang.Notebook.ArgScalar 0.0
-                          "child", Server.Lang.Notebook.ArgRef(Some 2) ])
+                        [ "axis", Server.Lang.AstBuilder.numE 1.0
+                          "root", Server.Lang.AstBuilder.numE 0.0
+                          "child", Server.Lang.AstBuilder.varE "half_wing" ])
             Visibility = Server.Lang.Notebook.VIsosurface
             ColorIndex = 0
             SlicePlane =

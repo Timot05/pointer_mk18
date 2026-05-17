@@ -139,9 +139,14 @@ module ViewerPipeline =
                 match b.Body with
                 | Server.Lang.Notebook.SketchBody data ->
                     let synthId = SketchAuthoring.blockSketchId b.Id
-                    let liveEntities = resolveSketchEntities state.Compiled.Slots effectiveParams synthId data.Sketch
+                    // Use the persisted Loops registry (stable
+                    // `loop_0`/`loop_1` IDs) rather than re-detecting:
+                    // the pick buffer matches each render loop against
+                    // a `PickLoop` entry by ID, and `BlockCompile` also
+                    // sources from the persisted registry. Detection
+                    // IDs are content-derived and don't match.
                     let loops =
-                        SketchLoops.detectLoops liveEntities
+                        data.Sketch.Loops
                         |> List.map (fun l -> { Id = l.Id; EntityIds = l.EntityIds })
                     Some
                         { SketchId = synthId

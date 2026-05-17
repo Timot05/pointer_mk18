@@ -35,10 +35,10 @@
     <Compile Include="core\Lang\Value.fs" />
     <Compile Include="core\Lang\Builtins.fs" />
     <Compile Include="core\Lang\Eval.fs" />
+    <Compile Include="core\Lang\Typecheck.fs" />
     <Compile Include="core\Lang\TypeExtract.fs" />
     <Compile Include="core\Lang\BlockSpec.fs" />
     <Compile Include="core\Lang\UserScript.fs" />
-    <Compile Include="core\Lang\Typecheck.fs" />
     <Compile Include="core\Lang\MathIrCodec.fs" />
     <Compile Include="core\Lang\MathIrWgsl.fs" />
     <Compile Include="core\Lang\Notebook.fs" />

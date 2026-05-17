@@ -423,27 +423,36 @@ module NotebookCompose =
     /// placeholder, which then bypasses the remap (target is just a
     /// var-ref to UNWIRED_PLACEHOLDER, which yields its own typecheck
     /// error path).
-    let buildRevolveBody
+    let rec buildRevolveBody
             (sp: Span)
             (sketchData: Notebook.SketchData) : Expr =
         let plane = planeMap sketchData.Plane
         let target = buildFromSketchBody sp sketchData
+        wrapForRevolve sp plane target
+
+    /// Wrap a 2D SDF expression (on `plane`) into a 3D field by remapping
+    /// world (x, y, z) → (radial, height) according to the revolve axis
+    /// for the plane. Pure, takes no sketch — used by the per-loop
+    /// revolve interceptor and the legacy whole-sketch path alike.
+    ///
+    ///   XY → 2D uses AxisX/AxisY; revolve around Y. AxisX ← sqrt(x²+z²).
+    ///   XZ → 2D uses AxisX/AxisZ; revolve around Z. AxisX ← sqrt(x²+y²).
+    ///   YZ → 2D uses AxisY/AxisZ; revolve around Z. AxisY ← sqrt(x²+y²).
+    ///
+    /// Unused-axis slots stay as identity remaps so the typechecker sees
+    /// Field everywhere (`ENumber 0.0` would type as Scalar and fail
+    /// `check env Type.Field`). The unused axis never appears inside
+    /// `target` so the actual substitution is dead.
+    and private wrapForRevolve (sp: Span) (plane: MathIr.Plane) (target: Expr) : Expr =
         let x = mkAt sp (EAxis AxisX)
         let y = mkAt sp (EAxis AxisY)
         let z = mkAt sp (EAxis AxisZ)
-        // Unused-axis slots stay as identity remaps (axis → itself) so the
-        // typechecker sees Field everywhere — `ENumber 0.0` would type as
-        // Scalar and fail `check env Type.Field`. The unused axis never
-        // appears inside `target` so the actual substitution is dead.
         match plane with
         | MathIr.Plane.XY ->
-            // 2D SDF uses AxisX, AxisY. Revolve around Y.
             mkAt sp (ERemapAxes(target, radialDistance sp x z, y, z))
         | MathIr.Plane.XZ ->
-            // 2D SDF uses AxisX, AxisZ. Revolve around Z.
             mkAt sp (ERemapAxes(target, radialDistance sp x y, y, z))
         | MathIr.Plane.YZ ->
-            // 2D SDF uses AxisY, AxisZ. Revolve around Z.
             mkAt sp (ERemapAxes(target, x, radialDistance sp x y, z))
         | _ -> target
 
@@ -478,6 +487,14 @@ module NotebookCompose =
         // and in the prepended user `Stmts`, so name resolution stays
         // consistent end-to-end.
         let mutable typeEnv : Typecheck.TypeEnv = Map.empty
+        // Spatial axes are pre-bound as Field-typed identifiers so user-
+        // spec bodies (and any user expression on a block input) can
+        // compose SDFs against them: `x * x + y * y + z * z - r * r`.
+        // The eval-side binding is set up in `buildValueEnv` so the
+        // identifier resolves to a `VField` wrapping the axis IR var.
+        // Lambda parameters named `x`/`y`/`z` shadow normally.
+        for name in [ "x"; "y"; "z" ] do
+            typeEnv <- Map.add name Type.Field typeEnv
         for spec in BlockSpec.all () do
             typeEnv <- Map.add spec.Name (specFunType spec) typeEnv
         for kv in userScript.Specs do
@@ -504,6 +521,16 @@ module NotebookCompose =
         let referencedBlockId (e: Expr) : BlockId option =
             match e.Node with
             | EVar id -> Map.tryFind id.Name blockIdByName
+            | _ -> None
+
+        // Resolve an `EPath [sketchName; loopId]` arg to (BlockId, loopId).
+        // Used by the revolve interceptor to fetch the input loop's
+        // parent sketch (and its plane) for the remap-axes wrap.
+        let referencedLoop (e: Expr) : (BlockId * string) option =
+            match e.Node with
+            | EPath [ head; loop ] ->
+                Map.tryFind head.Name blockIdByName
+                |> Option.map (fun id -> id, loop.Name)
             | _ -> None
 
         let blockSpans =
@@ -603,43 +630,37 @@ module NotebookCompose =
                     // typechecker reports it cleanly.
                     let call = applyChainAt bsp (varEAt bsp specName) []
                     stmts.Add(SLet([ userAt block.Name bsp ], call))
-                | Some spec when specName = "from-sketch" ->
-                    // Lower `from-sketch sketch` to an inlined `EFold(Min,
-                    // [primitives...])` AST built from the referenced
-                    // SketchBody. The spec itself never executes — it only
-                    // contributes its `Sketch -> Field` type signature to
-                    // the env so callers that mis-wire it still typecheck.
-                    let body =
-                        match Map.tryFind "sketch" args |> Option.bind referencedBlockId with
-                        | Some refId ->
-                            match Map.tryFind refId sketchByBlockId with
-                            | Some data -> buildFromSketchBody bsp data
-                            | None -> varEAt bsp UNWIRED_PLACEHOLDER
-                        | None -> varEAt bsp UNWIRED_PLACEHOLDER
-                    stmts.Add(SLet([ userAt block.Name bsp ], body))
-
-                    let outTy = specOutputType spec
-                    blockOutputs <- Map.add block.Id outTy blockOutputs
-                    let surfaceVisible =
-                        match block.Visibility with
-                        | VIsosurface           -> true
-                        | VHidden | VFieldLines -> false
-                    if outTy = Type.Field && surfaceVisible then
-                        visibleFieldNames.Add block.Name
-                        visibleFieldBlockIds.Add block.Id
-                        visibleFieldKinds.Add block.Visibility
-                        visibleFieldColorIndices.Add block.ColorIndex
                 | Some spec when specName = "revolve" ->
-                    // Lower `revolve sketch` to `ERemapAxes(2D_sdf, ...)`
-                    // — same pattern as from-sketch but the resulting
-                    // expression is the 2D SDF sampled at (radial, height)
-                    // coordinates rather than directly at world (x, y).
-                    // See `buildRevolveBody` for the per-plane remap math.
+                    // Lower `revolve <loop>` to `ERemapAxes(loop_2d_sdf, ...)`.
+                    // The loop arg must be a path into a sketch
+                    // (`profile.loop_0`) so we can resolve its parent
+                    // sketch and read the plane that determines the
+                    // remap math. Other Expr shapes fall back to
+                    // unwired — the spec's `Loop -> Field` signature
+                    // pairs with a `Loop` runtime value, but the
+                    // interceptor needs the *static* path to fetch the
+                    // plane (which isn't carried at the Loop level).
                     let body =
-                        match Map.tryFind "sketch" args |> Option.bind referencedBlockId with
-                        | Some refId ->
+                        match Map.tryFind "loop" args |> Option.bind referencedLoop with
+                        | Some (refId, loopId) ->
                             match Map.tryFind refId sketchByBlockId with
-                            | Some data -> buildRevolveBody bsp data
+                            | Some data ->
+                                match data.Sketch.Loops |> List.tryFind (fun l -> l.Id = loopId) with
+                                | Some loopRec ->
+                                    let plane = planeMap data.Plane
+                                    let entitiesById =
+                                        data.Sketch.Entities
+                                        |> List.map (fun e -> entityId e, e)
+                                        |> Map.ofList
+                                    let pts = pointCoordTable data.Sketch
+                                    let pseudo : Server.SketchLoop =
+                                        { Id = loopRec.Id
+                                          EntityIds = loopRec.EntityIds
+                                          SignedArea = 0.0 }
+                                    match buildLoopExpr bsp plane entitiesById pts pseudo with
+                                    | Some sdf2d -> wrapForRevolve bsp plane sdf2d
+                                    | None -> varEAt bsp UNWIRED_PLACEHOLDER
+                                | None -> varEAt bsp UNWIRED_PLACEHOLDER
                             | None -> varEAt bsp UNWIRED_PLACEHOLDER
                         | None -> varEAt bsp UNWIRED_PLACEHOLDER
                     stmts.Add(SLet([ userAt block.Name bsp ], body))
@@ -694,6 +715,14 @@ module NotebookCompose =
     /// Build the value env (closures for every primitive + sketch
     /// payloads) on a fresh MathIR and run the composed AST.
     let private buildValueEnv (notebook: Notebook) (ctx: EvalContext) : unit =
+        // Spatial axis variables — accessible to any user code (top-level
+        // expressions, user-spec bodies, block input expressions). The
+        // typeEnv-side binding lives in `composeWith` so these resolve
+        // as `Field` at typecheck time.
+        envBind ctx.Env "x" (VField (ctx.Ir.Var(MathIr.Axis.X)))
+        envBind ctx.Env "y" (VField (ctx.Ir.Var(MathIr.Axis.Y)))
+        envBind ctx.Env "z" (VField (ctx.Ir.Var(MathIr.Axis.Z)))
+
         // Each primitive's body evaluates to a `VClosure`. We never apply
         // it here — we just bind the closure under the spec's name so
         // `EVar specName` in the composed AST resolves to it later.
@@ -720,22 +749,37 @@ module NotebookCompose =
                     |> Map.ofList
                 let pts = pointCoordTable data.Sketch
                 let loopSpan = spanForBlock block.Id
-                // Per-loop VLoop value: carries its own `signed_distance`
-                // (whole-loop SDF) plus a VPrimitive per persisted
-                // PrimitiveRecord, keyed by the record's stable id
-                // (`line_0`, `arc_0`, `circle_0`). Failed lowerings are
-                // silently dropped from the loop's Fields map.
-                let buildPrimitiveFields (prims: Server.PrimitiveRecord list) : Map<string, Value> =
+                // Per-loop VLoop / per-primitive VPrimitive payloads.
+                // Each field is wrapped in `lazy` so its MathIR only
+                // gets built when the user's expression actually walks
+                // into that path. Unreferenced loops + primitives never
+                // produce IR nodes, which keeps interval pruning and
+                // raymarching fast — the kernel sees only what the
+                // notebook actually wires.
+                //
+                // Failed lowerings (degenerate geometry / Bezier loops
+                // we can't sign) materialize to `<unwired>` so DSL
+                // access surfaces as a clean typecheck error rather
+                // than a runtime crash; consumers that never force the
+                // thunk pay nothing.
+                let unwiredSentinel () : Value =
+                    VField (ctx.Ir.Var(MathIr.Axis.X))   // dummy; only reached on Force after a build failure
+                let evalLazy (expr: Expr) : Lazy<Value> =
+                    lazy (
+                        match Eval.evalExpr ctx expr with
+                        | Ok v -> v
+                        | Error _ -> unwiredSentinel ())
+
+                let buildPrimitiveFields (prims: Server.PrimitiveRecord list)
+                        : Map<string, Lazy<Value>> =
                     prims
                     |> List.choose (fun prim ->
                         buildPrimitiveDistanceExpr loopSpan plane pts entitiesById prim.EntityId
-                        |> Option.bind (fun expr ->
-                            match Eval.evalExpr ctx expr with
-                            | Ok v ->
-                                let primVal =
-                                    VPrimitive { Fields = Map.ofList [ "signed_distance", v ] }
-                                Some (prim.Id, primVal)
-                            | Error _ -> None))
+                        |> Option.map (fun expr ->
+                            let primFields : Map<string, Lazy<Value>> =
+                                Map.ofList [ "signed_distance", evalLazy expr ]
+                            let primVal = lazy (VPrimitive { Fields = primFields })
+                            prim.Id, primVal))
                     |> Map.ofList
 
                 let fields =
@@ -746,14 +790,14 @@ module NotebookCompose =
                               EntityIds = r.EntityIds
                               SignedArea = 0.0 }
                         buildLoopExpr loopSpan plane entitiesById pts pseudoLoop
-                        |> Option.bind (fun expr ->
-                            match Eval.evalExpr ctx expr with
-                            | Ok v ->
-                                let loopFields =
-                                    buildPrimitiveFields r.Primitives
-                                    |> Map.add "signed_distance" v
-                                Some (r.Id, VLoop { Fields = loopFields })
-                            | Error _ -> None))
+                        |> Option.map (fun loopExpr ->
+                            let loopThunk =
+                                lazy (
+                                    let loopFields =
+                                        buildPrimitiveFields r.Primitives
+                                        |> Map.add "signed_distance" (evalLazy loopExpr)
+                                    VLoop { Fields = loopFields })
+                            r.Id, loopThunk))
                     |> Map.ofList
                 envBind ctx.Env block.Name
                     (VSketch { Sketch = data.Sketch; Plane = data.Plane; Fields = fields })

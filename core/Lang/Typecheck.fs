@@ -80,23 +80,33 @@ module Typecheck =
     // type so the function's signature carries its structural
     // requirements (`Sketch { outer: Field, ... }`).
     //
-    // The stack handles shadowing: nested lambdas with the same parameter
-    // name each push their own cell; the outer cell becomes visible
-    // again when the inner lambda exits. Cleared at the top of every
-    // `elaborate` call — `Typecheck` has no concurrent callers in this
-    // codebase (single-threaded F# on .NET, single-threaded Fable on
-    // browser), so a module-level stack is safe and avoids threading a
-    // ctx record through every recursive call site.
+    // The stack handles shadowing: head-of-list is the innermost frame.
+    // Push = `prepend`, pop = `take tail`, lookup = `List.tryFind`. All
+    // single operations that work uniformly on .NET and Fable (Fable's
+    // BCL doesn't support `System.Threading.ThreadLocal` or the
+    // `Stack<>` enumerator).
+    //
+    // The single-threaded assumption is safe at runtime — Fable in the
+    // browser is single-threaded by construction. For .NET tests the
+    // assembly-level `Xunit.CollectionBehavior(DisableTestParallelization)`
+    // in `tests/AssemblyInfo.fs` serializes cross-class execution.
+    // Cleared at the top of every `elaborate` call so state from any
+    // earlier run can't leak in.
 
-    let private cellStack : System.Collections.Generic.Stack<string * Map<string, Type.T> ref> =
-        System.Collections.Generic.Stack()
+    let mutable private cellStack : (string * Map<string, Type.T> ref) list = []
 
     let private lookupCell (name: string) : (Map<string, Type.T> ref) option =
-        // Top-of-stack-first scan: most-recent binding wins under shadowing.
-        let mutable result = None
-        for (n, c) in cellStack do
-            if result.IsNone && n = name then result <- Some c
-        result
+        cellStack
+        |> List.tryFind (fun (n, _) -> n = name)
+        |> Option.map snd
+
+    let private pushCell (name: string) (cell: Map<string, Type.T> ref) =
+        cellStack <- (name, cell) :: cellStack
+
+    let private popCell () =
+        match cellStack with
+        | _ :: tail -> cellStack <- tail
+        | [] -> ()
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -118,7 +128,7 @@ module Typecheck =
 
     /// Lift the result of binary / unary numeric ops. If either operand is
     /// `Field`, the lifted result is `Field` (matches `Eval`'s
-    /// number↔field arithmetic semantics). Both `Scalar` → `Scalar`.
+    /// number↔field arithmetic semantics). Both numeric `Scalar` → `Scalar`.
     /// Anything else is invalid. Loops with a `signed_distance: Field`
     /// member are accepted as Fields (the runtime auto-projects).
     let private liftNumeric (a: Type.T) (b: Type.T) : Type.T option =
@@ -140,18 +150,16 @@ module Typecheck =
     let rec infer (env: TypeEnv) (expr: Expr) : Result<Tast.TExpr, TypeError list> =
         match expr.Node with
         | EUnit ->
-            // Unit is rare in our DSL; treat as `Scalar` for now (it never
-            // shows up in spec bodies). We can introduce `TUnit` later.
-            Ok (Tast.mkTExpr Tast.TEUnit Type.Scalar expr.Span)
+            Ok (Tast.mkTExpr Tast.TEUnit Type.Unit expr.Span)
 
         | ENumber n ->
             Ok (Tast.mkTExpr (Tast.TENumber n) Type.Scalar expr.Span)
 
         | EBool b ->
-            Ok (Tast.mkTExpr (Tast.TEBool b) Type.Scalar expr.Span)
+            Ok (Tast.mkTExpr (Tast.TEBool b) Type.Bool expr.Span)
 
         | EString s ->
-            Ok (Tast.mkTExpr (Tast.TEString s) Type.Scalar expr.Span)
+            Ok (Tast.mkTExpr (Tast.TEString s) Type.String expr.Span)
 
         | EAxis axis ->
             Ok (Tast.mkTExpr (Tast.TEAxis axis) Type.Field expr.Span)
@@ -172,10 +180,10 @@ module Typecheck =
                 | Type.Sketch m -> true, m
                 | _ -> false, Map.empty
             let cell = if isSketchParam then Some (ref initialFields) else None
-            cell |> Option.iter (fun c -> cellStack.Push(p.Name, c))
+            cell |> Option.iter (fun c -> pushCell p.Name c)
             let env' = bind env p.Name t
             let bodyResult = infer env' body
-            cell |> Option.iter (fun _ -> cellStack.Pop() |> ignore)
+            cell |> Option.iter (fun _ -> popCell ())
             bodyResult |> Result.map (fun tBody ->
                 let resolvedParam =
                     match cell with
@@ -206,9 +214,9 @@ module Typecheck =
 
         | ERemapAxes(target, x, y, z) ->
             let r1 = check env Type.Field target
-            let r2 = check env Type.Field x
-            let r3 = check env Type.Field y
-            let r4 = check env Type.Field z
+            let r2 = checkScalarOrField env x
+            let r3 = checkScalarOrField env y
+            let r4 = checkScalarOrField env z
             collect4 r1 r2 r3 r4 |> Result.map (fun (t, ax, ay, az) ->
                 Tast.mkTExpr (Tast.TERemapAxes(t, ax, ay, az)) Type.Field expr.Span)
 
@@ -243,16 +251,20 @@ module Typecheck =
             inferBlock env stmts expr.Span
 
         | EList items ->
-            // Lists aren't typed precisely yet — treat as Scalar for now.
-            // Proper list types can land alongside polymorphism.
             collectList (List.map (infer env) items)
             |> Result.map (fun ts ->
-                Tast.mkTExpr (Tast.TEList ts) Type.Scalar expr.Span)
+                let itemTy =
+                    match ts with
+                    | [] -> Type.Unit
+                    | first :: rest ->
+                        if rest |> List.forall (fun t -> t.Type = first.Type) then first.Type
+                        else Type.Tuple (ts |> List.map (fun t -> t.Type))
+                Tast.mkTExpr (Tast.TEList ts) (Type.List itemTy) expr.Span)
 
         | ETuple items ->
             collectList (List.map (infer env) items)
             |> Result.map (fun ts ->
-                Tast.mkTExpr (Tast.TETuple ts) Type.Scalar expr.Span)
+                Tast.mkTExpr (Tast.TETuple ts) (Type.Tuple (ts |> List.map (fun t -> t.Type))) expr.Span)
 
         | EPath idents ->
             // Dotted access: `head.seg1.seg2...`. Walk segments through
@@ -347,10 +359,10 @@ module Typecheck =
                     | Type.Sketch m -> true, m
                     | _ -> false, Map.empty
                 let cell = if isSketchParam then Some (ref initialFields) else None
-                cell |> Option.iter (fun c -> cellStack.Push(p.Name, c))
+                cell |> Option.iter (fun c -> pushCell p.Name c)
                 let env' = bind env p.Name a
                 let bodyResult = check env' b body
-                cell |> Option.iter (fun _ -> cellStack.Pop() |> ignore)
+                cell |> Option.iter (fun _ -> popCell ())
                 bodyResult |> Result.map (fun tBody ->
                     let resolvedParam =
                         match cell with
@@ -383,14 +395,13 @@ module Typecheck =
 
     // ── Helpers used by infer ──────────────────────────────────────────────
 
-    /// Accept Scalar or Field for any child position that lifts to a
+    /// Accept numeric Scalar or Field for any child position that lifts to a
     /// MathIR expression (numbers → const nodes; fields pass through).
     /// Mirrors `Eval.liftToExpr`.
     and private checkScalarOrField (env: TypeEnv) (e: Expr) : Result<Tast.TExpr, TypeError list> =
         infer env e |> Result.bind (fun te ->
-            match te.Type with
-            | Type.Scalar | Type.Field -> Ok te
-            | other -> Error [ TypeMismatch(Type.Field, other, e.Span) ])
+            if te.Type = Type.Scalar || Type.isSubtypeOf te.Type Type.Field then Ok te
+            else Error [ TypeMismatch(Type.Field, te.Type, e.Span) ])
 
     /// Check each child as Scalar-or-Field and return them in source order.
     and private checkPrimitive
@@ -460,7 +471,7 @@ module Typecheck =
                     err <- err @ [ InvalidOperand("legacy statement in typechecker", span) ]
         if not err.IsEmpty then Error err
         else
-            let blockTy = lastTy |> Option.defaultValue Type.Scalar
+            let blockTy = lastTy |> Option.defaultValue Type.Unit
             Ok (Tast.mkTExpr (Tast.TEBlock accStmts) blockTy span)
 
     and private collect2
@@ -510,5 +521,5 @@ module Typecheck =
     /// state from any earlier `elaborate` call (including ones that
     /// errored partway through) doesn't leak into this run.
     let elaborate (env: TypeEnv) (expr: Expr) : Result<Tast.TExpr, TypeError list> =
-        cellStack.Clear()
+        cellStack <- []
         infer env expr

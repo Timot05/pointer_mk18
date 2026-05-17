@@ -4,9 +4,12 @@ namespace Server.Lang
 // Notebook.fs — typed-block notebook data model.
 //
 // Each block is a *function*: a curried lambda (described by a `BlockSpec`)
-// with declared inputs and a single output. Block instances pair a spec name
-// with the values bound to each input — scalars (drag-edited via a slot),
-// refs (wired to upstream blocks), or structured payloads like sketches.
+// with declared inputs and a single output. A block instance pairs a spec
+// name with a map from input name to `Ast.Expr`. The compose pass
+// (NotebookCompose.fs) splices those expressions verbatim into the program
+// AST, so any DSL form — a scalar literal, an upstream block reference,
+// a path into a structured value (`profile.loop_0`), or a richer
+// expression — is valid as a block input.
 //
 // The active driver lives in NotebookCompose.fs.
 // ---------------------------------------------------------------------------

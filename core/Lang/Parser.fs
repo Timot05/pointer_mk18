@@ -410,11 +410,14 @@ module Parser =
         let tok = current p
         match tok.Kind with
         | Ident "Scalar" -> advance p |> ignore; Ok Type.Scalar
+        | Ident "Bool"   -> advance p |> ignore; Ok Type.Bool
+        | Ident "String" -> advance p |> ignore; Ok Type.String
+        | Ident "Unit"   -> advance p |> ignore; Ok Type.Unit
         | Ident "Field"  -> advance p |> ignore; Ok Type.Field
         | Ident "Sketch" -> advance p |> ignore; Ok (Type.Sketch Map.empty)
         | Ident "Frame"  -> advance p |> ignore; Ok Type.Frame
         | Ident name -> err tok (sprintf "unknown type '%s'" name)
-        | _ -> err tok "expected type name (Scalar | Field | Sketch | Frame)"
+        | _ -> err tok "expected type name (Scalar | Bool | String | Unit | Field | Sketch | Frame)"
 
     /// Parse a single lambda / let parameter. Accepted forms:
     ///   bareIdent              →  (ident, None)

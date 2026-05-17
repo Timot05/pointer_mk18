@@ -114,8 +114,14 @@ module BlockCompile =
                                   cw))
                 | REArc(_, _, _, ArcThreePoint _) -> None)
 
+        // Pickables use the *persisted* loop registry, not freshly-detected
+        // loops. `detectLoops` produces content-derived IDs like
+        // `loop:l1,l2,l3,l4` that change whenever an entity id changes;
+        // `sketch.Loops` carries the stable `loop_0` / `loop_1` IDs the
+        // compose bridge also uses, so a viewport pick → `EPath` round-
+        // trips through the typechecker.
         let loopPickables =
-            SketchLoops.detectLoops sketch.Entities
+            sketch.Loops
             |> List.map (fun loop ->
                 PickLoop(nextId(), sketchId, loop.Id, loop.EntityIds))
 

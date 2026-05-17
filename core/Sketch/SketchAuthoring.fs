@@ -66,7 +66,7 @@ module SketchAuthoring =
     let blockSketchId (bid: Server.Lang.Notebook.BlockId) : string =
         sprintf "@block_%d" bid
 
-    let private tryParseBlockId (sketchId: string) : Server.Lang.Notebook.BlockId option =
+    let tryParseBlockId (sketchId: string) : Server.Lang.Notebook.BlockId option =
         if sketchId.StartsWith "@block_" then
             let rest = sketchId.Substring 7
             match System.Int32.TryParse rest with

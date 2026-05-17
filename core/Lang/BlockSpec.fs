@@ -105,9 +105,9 @@ module BlockSpec =
           ScalarDefaults = Map.ofList [ "radius", 1.0 ] }
 
     /// `halfplane axis offset` — axis-aligned halfspace.
-    /// `axis` is a discrete choice (0=X, 1=Y, 2=Z) stored as an `ArgScalar`
-    /// and rendered in the UI as a dropdown (see `BlockList.renderInputRow`).
-    /// SDF: `<axis> - offset`.
+    /// `axis` is a discrete choice (0=X, 1=Y, 2=Z) stored as a numeric
+    /// Expr literal and rendered in the UI as a dropdown (see
+    /// `BlockList.renderInputRow`). SDF: `<axis> - offset`.
     let private halfplaneSpec : BlockSpec =
         let axis = varE "axis"
         let offset = varE "offset"
@@ -183,8 +183,8 @@ module BlockSpec =
     /// `mirror-symmetric axis root child` — evaluate the positive/root
     /// side of `child` on both sides of the plane perpendicular to the
     /// chosen axis at `root`. `axis` is a discrete choice (0=X, 1=Y,
-    /// 2=Z) stored as an `ArgScalar` and rendered as a dropdown by the
-    /// BlockList.
+    /// 2=Z) stored as a numeric Expr literal and rendered as a dropdown
+    /// by the BlockList.
     let private mirrorSymmetricSpec : BlockSpec =
         let axis = varE "axis"
         let root = varE "root"
@@ -271,33 +271,43 @@ module BlockSpec =
                     body
           ScalarDefaults = Map.ofList [ "thickness", 0.05 ] }
 
-    /// `from-sketch sketch` — lower a 2D sketch to a 3D field. The body
-    /// here is a placeholder; `NotebookCompose.compose` intercepts blocks
-    /// with this spec name and emits an inlined `EFold(Min, [...primitive
-    /// constructors])` AST built directly from the upstream SketchBody.
-    /// The spec only needs to contribute its `Sketch -> Field` type
-    /// signature to the env so mis-wired callers still get a clean error.
-    /// An empty fold typechecks as `Field` and never runs.
+    /// `from-sketch loop` — project a sketch loop to its 3D signed-
+    /// distance field. The parameter is a `Loop` whose refinement
+    /// requires `signed_distance: Field`; the body is just
+    /// `loop.signed_distance`, so this is effectively a typed identity
+    /// that lifts a 2D boundary into a Field for downstream blocks.
+    ///
+    /// Users wire individual loops via paths: a sketch block named
+    /// `profile` exposes `profile.loop_0`, `profile.loop_1`, ... — any
+    /// of which can be the `loop` arg here. Compose handles the path
+    /// resolution via the generic spec path; no interceptor is needed.
     let private fromSketchSpec : BlockSpec =
-        let body = mk (EFold(MathIr.FoldOp.Min, []))
+        let loopWithSd =
+            Type.Loop (Map.ofList [ "signed_distance", Type.Field ])
+        let body = mk (EPath [ user "loop"; user "signed_distance" ])
         { Name = "from-sketch"
-          Body = lambda [ "sketch", Type.Sketch Map.empty ] body
+          Body = lambda [ "loop", loopWithSd ] body
           ScalarDefaults = Map.empty }
 
-    /// `revolve sketch` — sweep a closed 2D profile around a hardcoded
-    /// axis in its plane. Body is a typed placeholder; `NotebookCompose`
-    /// intercepts blocks with this spec name and wraps the from-sketch
-    /// 2D signed-distance in `ERemapAxes` so world coords feed the 2D
-    /// SDF as (radial, height). Revolve axis per plane:
+    /// `revolve loop` — sweep a closed 2D loop around a hardcoded axis
+    /// in its plane. Body is a typed placeholder; `NotebookCompose`
+    /// intercepts blocks with this spec name and wraps the loop's
+    /// signed-distance in `ERemapAxes` so world coords feed the 2D SDF
+    /// as (radial, height). Revolve axis per plane:
     ///   XY → Y axis (radial = sqrt(x² + z²), height = y)
     ///   XZ → Z axis (radial = sqrt(x² + y²), height = z)
     ///   YZ → Z axis (radial = sqrt(x² + y²), height = z)
-    /// Closed profiles only — open profiles revolve into thin shells
-    /// whose unsigned distance doesn't raymarch well.
+    ///
+    /// The interceptor needs the loop's parent sketch to determine the
+    /// revolve plane — that's why this stays a special-case in compose
+    /// rather than becoming a plain `Loop -> Field` spec like
+    /// `from-sketch`. The Plane type isn't surfaced to the DSL yet.
     let private revolveSpec : BlockSpec =
+        let loopWithSd =
+            Type.Loop (Map.ofList [ "signed_distance", Type.Field ])
         let body = mk (EFold(MathIr.FoldOp.Min, []))
         { Name = "revolve"
-          Body = lambda [ "sketch", Type.Sketch Map.empty ] body
+          Body = lambda [ "loop", loopWithSd ] body
           ScalarDefaults = Map.empty }
 
     /// `wing-remap-preview leading trailing` — experimental field that
@@ -345,6 +355,12 @@ module BlockSpec =
     let all () : BlockSpec list =
         orderedNames |> Seq.map (fun n -> mutableTable.[n]) |> List.ofSeq
 
+    let private intrinsicTypeEnv : Typecheck.TypeEnv =
+        Map.ofList [
+            "wing_remap_preview",
+            Type.curried [ Type.Sketch Map.empty; Type.Sketch Map.empty ] Type.Field
+        ]
+
     /// Convenience: typed input list + output type for a spec.
     let typedInterface (s: BlockSpec) : TypeExtract.ExtractedSpec =
-        TypeExtract.extract s.Body
+        TypeExtract.extractWith intrinsicTypeEnv s.Body

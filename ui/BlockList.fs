@@ -328,8 +328,9 @@ let private renderScalarEditor
 // ── Axis dropdown (X / Y / Z), reuses `.input-row-edit` ────────────────────
 //
 // `halfplane` is the only block today with a discrete-choice param. Stored
-// as an `ArgScalar` (0=X, 1=Y, 2=Z) so the existing data model carries it
-// — no new `BlockArg` case needed.
+// as a numeric Expr (`ENumber 0` / `1` / `2` for X / Y / Z) — no special
+// AST node needed; the scalar editor renders it as a dropdown instead of
+// a free-form number input.
 
 /// Plane dropdown for sketch blocks. Dispatches `SetSketchPlane` so the
 /// reducer can recompile both the notebook IR and the viewer-side sketch
@@ -478,7 +479,7 @@ let private renderInputRow
             match block.Body with
             | Notebook.NativeBody(name, _) -> name
             | _ -> ""
-        let currentExpr = tryFindBlockArg specName param.Name args
+        let currentExpr = Map.tryFind param.Name args
         match param.Type with
         | Type.Scalar when (specName = "halfplane" || specName = "mirror-symmetric") && param.Name = "axis" ->
             let current =
@@ -530,10 +531,27 @@ let private expectedRefType
         |> List.tryFind (fun p -> p.Name = paramName)
         |> Option.map (fun p -> p.Type))
 
+/// Loops on `candidate` whose member type satisfies `expected`. Used
+/// by the pick flow: if the user is wiring into a `Loop {...}` /
+/// `Field` slot and clicks a sketch block, these are the loops the
+/// picker offers. Empty for non-sketch candidates.
+let private matchingLoopIds
+        (doc: DocumentView)
+        (candidate: Notebook.BlockId)
+        (expected: Type.T) : string list =
+    match Map.tryFind candidate doc.BlockOutputs with
+    | Some (Type.Sketch fields) ->
+        fields
+        |> Map.toList
+        |> List.choose (fun (id, ty) ->
+            if Type.isSubtypeOf ty expected then Some id else None)
+    | _ -> []
+
 /// Is `candidate` a valid commit target for the current pick? Type
-/// compatible and not the source itself. DAG ordering isn't enforced
-/// here — `SetBlockArg` auto-reorders so the source ends up upstream
-/// of its targets, so any type-compatible non-self block works.
+/// compatible (direct or via a sketch loop) and not the source itself.
+/// DAG ordering isn't enforced here — `SetBlockArg` auto-reorders so
+/// the source ends up upstream of its targets, so any type-compatible
+/// non-self block works.
 let private isValidPickTarget
         (doc: DocumentView)
         (sourceBlockId: Notebook.BlockId)
@@ -541,10 +559,14 @@ let private isValidPickTarget
         (candidate: Notebook.BlockId) : bool =
     if candidate = sourceBlockId then false
     else
-        match expectedRefType doc sourceBlockId paramName,
-              Map.tryFind candidate doc.BlockOutputs with
-        | Some expected, Some actual -> expected = actual
-        | _ -> false
+        match expectedRefType doc sourceBlockId paramName with
+        | None -> false
+        | Some expected ->
+            let directOk =
+                match Map.tryFind candidate doc.BlockOutputs with
+                | Some actual -> Type.isSubtypeOf actual expected
+                | None -> false
+            directOk || not (List.isEmpty (matchingLoopIds doc candidate expected))
 
 let private renderRow
         (dispatch: Message -> unit)
@@ -798,6 +820,11 @@ let private renderRow
         fun _ ->
             // In pick mode: commit if this row is a valid target;
             // otherwise leave pick state alone (user can still select).
+            // For sketch rows whose loops are the actual target (Loop/
+            // Field-typed param), the row click commits the whole-block
+            // ref — the user picks a specific loop by clicking it in
+            // the 3D viewport, which routes through `ViewerPick` in
+            // `Editor.fs` and commits an `EPath`.
             match pickTarget with
             | Some(srcId, paramName) ->
                 dispatch (SetBlockArg(srcId, paramName, Server.Lang.AstBuilder.varE block.Name))

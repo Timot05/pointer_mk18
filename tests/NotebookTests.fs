@@ -22,9 +22,13 @@ let private argScalar (n: float) : Ast.Expr = AstBuilder.numE n
 let private argRef (name: string) : Ast.Expr = AstBuilder.varE name
 
 let private sketchBlockOf id name (sketch: ActionSketch) (plane: SketchPlane) : Block =
+    // Run loop reconciliation so the sketch carries a populated Loops
+    // registry — every real edit in the editor routes through normalize,
+    // so test fixtures should too.
+    let normalized = SketchLoops.normalize sketch
     { Id = id
       Name = name
-      Body = SketchBody { Sketch = sketch; Plane = plane }
+      Body = SketchBody { Sketch = normalized; Plane = plane }
       Visibility = VIsosurface
       ColorIndex = 0
       SlicePlane = defaultSlicePlane }
@@ -184,62 +188,20 @@ let ``wing remap preview consumes two sketch refs and emits remapped profile`` (
     | other -> failwithf "expected VField, got %A" other
 
 // ─── Sketch primitives (subtree nodes) ────────────────────────────────────
-
-[<Fact>]
-let ``from-sketch over two lines roots a Fold(Min, [LineSegment; LineSegment])`` () =
-    let sk =
-        { Entities =
-            [ REPoint("a0", 0.0, 0.0)
-              REPoint("a1", 1.0, 0.0)
-              REPoint("b0", 0.0, 1.0)
-              REPoint("b1", 1.0, 1.0)
-              RELine("la", "a0", "a1")
-              RELine("lb", "b0", "b1") ]
-          Constraints = []; Loops = [] }
-    let nb =
-        notebookOf [
-            sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "field" "from-sketch" [ "sketch", argRef "sk" ]
-        ]
-    let _, result = evaluateOk nb
-    match bindingOf "field" result with
-    | Value.VField root ->
-        let rootNode = result.Ir.Nodes.[root.Id]
-        Assert.Equal(MathIr.NodeKind.Fold, rootNode.Kind)
-        Assert.Equal(int MathIr.FoldOp.Min, rootNode.Op)
-        Assert.Equal(2, rootNode.B)
-        // Each child should be a LineSegment node.
-        for k in 0 .. rootNode.B - 1 do
-            let childId = result.Ir.NodeRefs.[rootNode.A + k]
-            let childNode = result.Ir.Nodes.[childId]
-            Assert.Equal(MathIr.NodeKind.LineSegment, childNode.Kind)
-    | other -> failwithf "expected VField, got %A" other
-
-[<Fact>]
-let ``from-sketch over a single line returns the LineSegment node directly`` () =
-    let sk =
-        { Entities =
-            [ REPoint("p0", 0.0, 0.0)
-              REPoint("p1", 1.0, 0.0)
-              RELine("l", "p0", "p1") ]
-          Constraints = []; Loops = [] }
-    let nb =
-        notebookOf [
-            sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "field" "from-sketch" [ "sketch", argRef "sk" ]
-        ]
-    let _, result = evaluateOk nb
-    match bindingOf "field" result with
-    | Value.VField root ->
-        Assert.Equal(MathIr.NodeKind.LineSegment, result.Ir.Nodes.[root.Id].Kind)
-    | other -> failwithf "expected VField, got %A" other
+//
+// `from-sketch` now takes a Loop (path-resolved), not a whole sketch.
+// Loops are detected by `SketchLoops.normalize`, so the test sketches
+// here use `sketchBlockOf` (which normalizes) and wire the resulting
+// `loop_0` member into the block via `AstBuilder.pathE [sketchName;
+// "loop_0"]`. Orphan-primitive sketches (parallel lines, single line)
+// don't form a loop and so don't have a typed handle to wire — that
+// behavior was retired alongside the compose interceptor.
 
 [<Fact>]
 let ``from-sketch over a triangle wraps the Fold(Min, ...) in a sign flip (Mul)`` () =
-    // Three line segments forming a closed loop share endpoint ids; the
-    // loop detector picks this up and from-sketch lowers as
-    //   signed = unsigned * (-compare(|fold(Sum, windings)|, π))
-    // The root MathIR node should be a Binary.Mul.
+    // Three line segments forming a closed loop. The bridge builds the
+    // loop's signed_distance as `unsigned * (-compare(|sum windings|, π))`;
+    // from-sketch is identity on that signed_distance.
     let sk =
         { Entities =
             [ REPoint("a", 0.0, 0.0)
@@ -252,7 +214,7 @@ let ``from-sketch over a triangle wraps the Fold(Min, ...) in a sign flip (Mul)`
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "field" "from-sketch" [ "sketch", argRef "sk" ]
+            nativeBlock 1 "field" "from-sketch" [ "loop", AstBuilder.pathE [ "sk"; "loop_0" ] ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "field" result with
@@ -260,7 +222,6 @@ let ``from-sketch over a triangle wraps the Fold(Min, ...) in a sign flip (Mul)`
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
         Assert.Equal(int MathIr.Binary.Mul, rootNode.Op)
-        // Left operand is the unsigned fold-min of 3 line segments.
         let unsignedNode = result.Ir.Nodes.[rootNode.A]
         Assert.Equal(MathIr.NodeKind.Fold, unsignedNode.Kind)
         Assert.Equal(int MathIr.FoldOp.Min, unsignedNode.Op)
@@ -271,7 +232,6 @@ let ``from-sketch over a triangle wraps the Fold(Min, ...) in a sign flip (Mul)`
 let ``from-sketch over a single circle lowers to analytic signed disk distance`` () =
     // A lone circle is its own closed loop; the lowering emits
     //   sqrt((x-cx)² + (y-cy)²) - r
-    // The root is a Binary.Sub of (Unary.Sqrt of ...) - (Const r).
     let sk =
         { Entities =
             [ REPoint("c", 0.0, 0.0)
@@ -280,7 +240,7 @@ let ``from-sketch over a single circle lowers to analytic signed disk distance``
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "field" "from-sketch" [ "sketch", argRef "sk" ]
+            nativeBlock 1 "field" "from-sketch" [ "loop", AstBuilder.pathE [ "sk"; "loop_0" ] ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "field" result with
@@ -288,18 +248,15 @@ let ``from-sketch over a single circle lowers to analytic signed disk distance``
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
         Assert.Equal(int MathIr.Binary.Sub, rootNode.Op)
-        // Left operand is sqrt(...)
         let sqrtNode = result.Ir.Nodes.[rootNode.A]
         Assert.Equal(MathIr.NodeKind.UnaryK, sqrtNode.Kind)
         Assert.Equal(int MathIr.Unary.Sqrt, sqrtNode.Op)
     | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]
-let ``revolve over a circle sketch wraps the 2D SDF in RemapAxes`` () =
-    // A circle on the XY plane revolved around Y produces a torus-like
-    // 3D field. The root of the revolved expression should be a
-    // RemapAxes node whose target is the from-sketch 2D signed disk
-    // distance. The RemapAxes' newX is `sqrt(x² + z²)` (radial).
+let ``revolve over a circle loop wraps the 2D SDF in RemapAxes`` () =
+    // Circle on XY plane revolved around Y → torus-like 3D field. The
+    // root is a RemapAxes; its newX is `sqrt(x² + z²)` (radial).
     let sk =
         { Entities =
             [ REPoint("c", 2.0, 0.0)
@@ -308,21 +265,19 @@ let ``revolve over a circle sketch wraps the 2D SDF in RemapAxes`` () =
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "torus" "revolve" [ "sketch", argRef "sk" ]
+            nativeBlock 1 "torus" "revolve" [ "loop", AstBuilder.pathE [ "sk"; "loop_0" ] ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "torus" result with
     | Value.VField root ->
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
-        // newX (=B) is sqrt(x² + z²) — a Unary.Sqrt over a Binary.Add of squares.
         let newXNode = result.Ir.Nodes.[rootNode.B]
         Assert.Equal(MathIr.NodeKind.UnaryK, newXNode.Kind)
         Assert.Equal(int MathIr.Unary.Sqrt, newXNode.Op)
         let sumNode = result.Ir.Nodes.[newXNode.A]
         Assert.Equal(MathIr.NodeKind.BinaryK, sumNode.Kind)
         Assert.Equal(int MathIr.Binary.Add, sumNode.Op)
-        // newY (=C) is the world Y axis var node.
         let newYNode = result.Ir.Nodes.[rootNode.C]
         Assert.Equal(MathIr.NodeKind.Var, newYNode.Kind)
         Assert.Equal(int MathIr.Axis.Y, newYNode.Op)
@@ -338,15 +293,15 @@ let ``revolve block output is typed as Field`` () =
     let nb =
         notebookOf [
             sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "tor" "revolve" [ "sketch", argRef "sk" ]
+            nativeBlock 1 "tor" "revolve" [ "loop", AstBuilder.pathE [ "sk"; "loop_0" ] ]
         ]
     let composed = composeChecked nb
     Assert.Equal(Some Type.Field, Map.tryFind 1 composed.BlockOutputs)
 
 [<Fact>]
-let ``revolve with no sketch wired records a block error`` () =
+let ``revolve with no loop wired records a block error`` () =
     let nb =
-        // "sketch" omitted = unwired (compose falls back to UNWIRED_PLACEHOLDER)
+        // "loop" omitted = unwired (compose falls back to UNWIRED_PLACEHOLDER)
         notebookOf [ nativeBlock 0 "tor" "revolve" [] ]
     let result = NotebookCompose.compile nb
     Assert.True(
@@ -413,11 +368,13 @@ let ``compose preserves visible field color indices`` () =
 
 [<Fact>]
 let ``composeWith: user spec seeds typeEnv with curried function type`` () =
+    // `x` is the pre-bound Field-typed axis identifier (see
+    // `NotebookCompose.composeWith` / `UserScript.nativeTypeEnv`), so the
+    // body lifts to `Field` and the spec gets `Scalar -> Field`.
     let userScript =
-        UserScript.analyze "let donut = fun (r: Scalar) -> r + 1 end"
+        UserScript.analyze "let donut = fun (r: Scalar) -> r + x end"
     let nb = notebookOf []
     let composed = NotebookCompose.composeWith nb userScript
-    // donut : Scalar -> Field
     match Map.tryFind "donut" composed.TypeEnv with
     | Some (Type.Fun(Type.Scalar, Type.Field)) -> ()
     | other -> failwithf "expected Scalar -> Field, got %A" other
@@ -425,7 +382,7 @@ let ``composeWith: user spec seeds typeEnv with curried function type`` () =
 [<Fact>]
 let ``composeWith: user-defined block resolves and typechecks against user spec`` () =
     let userScript =
-        UserScript.analyze "let donut = fun (r: Scalar) -> r + 1 end"
+        UserScript.analyze "let donut = fun (r: Scalar) -> r + x end"
     let nb =
         notebookOf [ nativeBlock 0 "ring" "donut" [ "r", argScalar 0.5 ] ]
     let composed = NotebookCompose.composeWith nb userScript

@@ -213,10 +213,12 @@ let ``eval: VSketch.Fields contains a VLoop per persisted loop`` () =
     match Map.find "profile" result.Bindings with
     | Value.VSketch sv ->
         Assert.True(Map.containsKey "loop_0" sv.Fields)
-        match Map.find "loop_0" sv.Fields with
+        // Loop entries are `Lazy<Value>` — force to materialize the
+        // MathIR for this loop and inspect the result.
+        match (Map.find "loop_0" sv.Fields).Value with
         | Value.VLoop lv ->
             // The loop carries its derived signed_distance field.
-            match Map.tryFind "signed_distance" lv.Fields with
+            match Map.tryFind "signed_distance" lv.Fields |> Option.map (fun t -> t.Value) with
             | Some (Value.VField _) -> ()
             | other -> failwithf "expected VField under .signed_distance, got %A" other
         | other -> failwithf "expected VLoop, got %A" other
@@ -382,11 +384,11 @@ let ``eval: loop_0.line_0 evaluates to a VPrimitive with signed_distance VField`
     let result = composeAndEval nb
     match Map.find "profile" result.Bindings with
     | Value.VSketch sv ->
-        match Map.find "loop_0" sv.Fields with
+        match (Map.find "loop_0" sv.Fields).Value with
         | Value.VLoop lv ->
-            match Map.tryFind "line_0" lv.Fields with
+            match Map.tryFind "line_0" lv.Fields |> Option.map (fun t -> t.Value) with
             | Some (Value.VPrimitive pv) ->
-                match Map.tryFind "signed_distance" pv.Fields with
+                match Map.tryFind "signed_distance" pv.Fields |> Option.map (fun t -> t.Value) with
                 | Some (Value.VField _) -> ()
                 | other -> failwithf "expected VField under .signed_distance, got %A" other
             | other -> failwithf "expected VPrimitive at line_0, got %A" other
@@ -485,13 +487,15 @@ let ``apply: function with empty refinement accepts any sketch`` () =
         failwithf "expected ok, got: %s" msg
 
 [<Fact>]
-let ``apply: from-sketch (generic Sketch) accepts a refined sketch`` () =
-    // Regression: existing specs typed as `Sketch Map.empty -> Field`
-    // must still accept a refined sketch — covered by width subtyping.
+let ``apply: from-sketch (Loop input) accepts a refined loop via path`` () =
+    // `from-sketch : Loop {signed_distance: Field} -> Field`. A
+    // path-bearing `EPath ["profile"; "loop_0"]` resolves to the
+    // sketch's loop_0 Loop value, which is width-subtype-compatible
+    // with the spec's required loop refinement.
     let nb =
         notebookOf [
             sketchBlockOf 0 "profile" squareSketch XY
-            nativeBlock 1 "field" "from-sketch" [ "sketch", AstBuilder.varE "profile" ]
+            nativeBlock 1 "field" "from-sketch" [ "loop", AstBuilder.pathE [ "profile"; "loop_0" ] ]
         ]
     let composed = NotebookCompose.compose nb
     match Typecheck.elaborate composed.TypeEnv composed.Ast with

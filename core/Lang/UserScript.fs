@@ -16,10 +16,8 @@ namespace Server.Lang
 // not surfaced as draggable blocks — there's no way to render their input
 // editors without a known parameter type.
 //
-// The body is *not* typechecked here (UserScript sits before Typecheck.fs in
-// the project order so the registry of user-spec types is available when
-// `Typecheck.elaborate` later runs over the composed program). Body errors
-// surface during compose / typecheck against the full program env.
+// Each surfaced spec is typechecked here so the BlockList and notebook
+// composer see its real output type rather than a shape-based guess.
 // ---------------------------------------------------------------------------
 
 module UserScript =
@@ -83,16 +81,18 @@ module UserScript =
                 Ok (List.rev acc, e)
         walk lambdaExpr []
 
-    /// Heuristic output type for the BlockList's output indicator. We don't
-    /// run the typechecker here (it lives later in the compilation order),
-    /// so this mirrors `TypeExtract.outputOf`: literal numbers → Scalar,
-    /// anything else → Field. Correct for the dominant case (SDF-shaped
-    /// user functions); off for pure-numeric helpers, which the user is
-    /// unlikely to instantiate as a block anyway.
-    let private guessOutput (body: Expr) : Type.T =
-        match body.Node with
-        | ENumber _ -> Type.Scalar
-        | _ -> Type.Field
+    let private nativeTypeEnv () : Typecheck.TypeEnv =
+        let mutable env : Typecheck.TypeEnv = Map.empty
+        // Spatial axes — Field-typed identifiers user-spec bodies can
+        // use to compose SDFs (`x*x + y*y + z*z - r*r`). Mirrored on
+        // the eval side by `NotebookCompose.buildValueEnv`.
+        for name in [ "x"; "y"; "z" ] do
+            env <- Map.add name Type.Field env
+        for spec in BlockSpec.all () do
+            let typed = BlockSpec.typedInterface spec
+            let inputs = typed.Params |> List.map (fun p -> p.Type)
+            env <- Map.add spec.Name (Type.curried inputs typed.Output) env
+        env
 
     /// Parse + extract. The contract is "best-effort": parse errors return
     /// `empty + ParseError`; analysis errors on individual specs don't fail
@@ -105,6 +105,7 @@ module UserScript =
         | Ok stmts ->
             let mutable specs : Map<string, UserSpec> = Map.empty
             let mutable errs : (string * string) list = []
+            let mutable typeEnv = nativeTypeEnv ()
             for stmt in stmts do
                 match stmt with
                 | SLet([ name ], value) ->
@@ -112,14 +113,37 @@ module UserScript =
                     | ELambda _ ->
                         match collectAnnotatedParams value with
                         | Ok (parameters, body) ->
-                            specs <-
-                                Map.add name.Name {
-                                    Name = name.Name
-                                    Body = value
-                                    Params = parameters
-                                    Output = guessOutput body
-                                    Span = stmtSpan stmt
-                                } specs
+                            ignore body
+                            match Typecheck.elaborate typeEnv value with
+                            | Ok typed ->
+                                let inputs, output = Type.unfold typed.Type
+                                if List.length inputs <> List.length parameters then
+                                    errs <-
+                                        (name.Name,
+                                         sprintf
+                                            "internal type error: expected %d parameter type(s), got %d"
+                                            (List.length parameters)
+                                            (List.length inputs))
+                                        :: errs
+                                else
+                                    let resolvedParams =
+                                        List.zip parameters inputs
+                                        |> List.map (fun (p, ty) -> { p with Type = ty })
+                                    specs <-
+                                        Map.add name.Name {
+                                            Name = name.Name
+                                            Body = value
+                                            Params = resolvedParams
+                                            Output = output
+                                            Span = stmtSpan stmt
+                                        } specs
+                                    typeEnv <- Map.add name.Name typed.Type typeEnv
+                            | Error typeErrors ->
+                                let msg =
+                                    typeErrors
+                                    |> List.map Typecheck.formatError
+                                    |> String.concat "; "
+                                errs <- (name.Name, msg) :: errs
                         | Error missingName ->
                             errs <-
                                 (name.Name,

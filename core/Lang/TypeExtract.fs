@@ -11,8 +11,8 @@ namespace Server.Lang
 // internal bug.
 //
 // This module is a small convenience layer used by the BlockList UI to
-// render the right editor per input. The richer `Typecheck.fs` will
-// eventually subsume it once user-source blocks land.
+// render the right editor per input. It delegates output typing to the
+// typechecker so block interfaces stay aligned with real elaboration.
 // ---------------------------------------------------------------------------
 
 module TypeExtract =
@@ -26,29 +26,37 @@ module TypeExtract =
         Output: Type.T
     }
 
-    /// Best-effort guess of an expression's resulting type. For our
-    /// hand-built specs the body is always Field-shaped; this only gets
-    /// finer once we consult the typechecker.
-    let rec private outputOf (e: Expr) : Type.T =
-        match e.Node with
-        | EAxis _
-        | ERemapAxes _ -> Type.Field
-        | EUnary _
-        | EBinary _ -> Type.Field
-        | EApply _ -> Type.Field
-        | ENumber _ -> Type.Scalar
-        | _ -> Type.Field
-
-    let extract (lambdaExpr: Expr) : ExtractedSpec =
-        let rec walk (e: Expr) (acc: ExtractedParam list) =
+    let private paramNames (lambdaExpr: Expr) : string list =
+        let rec walk (e: Expr) (acc: string list) =
             match e.Node with
             | ELambda(param, Some paramType, body) ->
-                walk body ({ Name = param.Name; Type = paramType } :: acc)
+                ignore paramType
+                walk body (param.Name :: acc)
             | ELambda(param, None, _) ->
                 // Native specs annotate every parameter. Hitting None
                 // means a spec was defined wrong — surface immediately.
                 failwithf "TypeExtract: lambda parameter '%s' has no type annotation" param.Name
             | _ ->
-                List.rev acc, e
-        let parameters, body = walk lambdaExpr []
-        { Params = parameters; Output = outputOf body }
+                List.rev acc
+        walk lambdaExpr []
+
+    let extractWith (env: Typecheck.TypeEnv) (lambdaExpr: Expr) : ExtractedSpec =
+        let names = paramNames lambdaExpr
+        match Typecheck.elaborate env lambdaExpr with
+        | Error errs ->
+            let msg = errs |> List.map Typecheck.formatError |> String.concat "; "
+            failwithf "TypeExtract: spec body failed to typecheck: %s" msg
+        | Ok typed ->
+            let inputs, output = Type.unfold typed.Type
+            if List.length inputs <> List.length names then
+                failwithf
+                    "TypeExtract: lambda parameter count mismatch (%d names, %d types)"
+                    (List.length names)
+                    (List.length inputs)
+            let parameters =
+                List.zip names inputs
+                |> List.map (fun (name, ty) -> { Name = name; Type = ty })
+            { Params = parameters; Output = output }
+
+    let extract (lambdaExpr: Expr) : ExtractedSpec =
+        extractWith Map.empty lambdaExpr

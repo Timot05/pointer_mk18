@@ -43,10 +43,14 @@ module Value =
     /// persisted Loops registry; consulted by `Eval.evalExpr` when an
     /// `EPath` walks into a VSketch. Generic sketches built by ad-hoc
     /// paths leave it as `Map.empty`.
+    ///
+    /// Each loop is a `Lazy<Value>` so a sketch with many loops doesn't
+    /// pre-build MathIR for the ones the notebook never wires. See
+    /// `LoopValue` for the per-loop laziness story.
     type SketchValue = {
         Sketch: Server.ActionSketch
         Plane:  Server.SketchPlane
-        Fields: Map<string, Value>
+        Fields: Map<string, Lazy<Value>>
     }
 
     /// A closed sketch loop. Its `Fields` map exposes the loop's derived
@@ -55,15 +59,22 @@ module Value =
     /// `signed_distance` field at every VField-consuming site (binary
     /// ops, fold, etc.), matching the `Loop { signed_distance: Field }
     /// <: Field` subtyping rule in `Type.isSubtypeOf`.
+    ///
+    /// Each field is a `Lazy<Value>` — the bridge captures the MathIR
+    /// construction in a thunk and only materializes when the user's
+    /// expression actually walks into that member. Unreferenced loops
+    /// / primitives never produce MathIR nodes, keeping the IR shipped
+    /// to the kernel tight.
     and LoopValue = {
-        Fields: Map<string, Value>
+        Fields: Map<string, Lazy<Value>>
     }
 
     /// A single sketch primitive (line/arc/circle). Same shape as
     /// LoopValue — its `Fields` map names whatever the bridge populated,
-    /// including `signed_distance: VField` for auto-projection.
+    /// including `signed_distance: VField` for auto-projection. Field
+    /// values are `Lazy<Value>` for the same reason as LoopValue.
     and PrimitiveValue = {
-        Fields: Map<string, Value>
+        Fields: Map<string, Lazy<Value>>
     }
 
     and CurveValue = { PrimitiveId: int; Plane: MathIr.Plane }
@@ -188,16 +199,26 @@ module Value =
     /// `(Loop | Primitive) { signed_distance: Field } <: Field`.
     /// Every VField-consuming site calls this so loops and primitives
     /// stand in for fields wherever fields are expected.
+    ///
+    /// Forces the field's `Lazy<Value>` — first access for a given
+    /// loop/primitive materializes the MathIR; subsequent accesses
+    /// hit the cached result.
     let projectToFieldValue (v: Value) : Value option =
         match v with
         | VLoop lv ->
             match Map.tryFind "signed_distance" lv.Fields with
-            | Some (VField _ as f) -> Some f
-            | _ -> None
+            | Some thunk ->
+                match thunk.Value with
+                | VField _ as f -> Some f
+                | _ -> None
+            | None -> None
         | VPrimitive pv ->
             match Map.tryFind "signed_distance" pv.Fields with
-            | Some (VField _ as f) -> Some f
-            | _ -> None
+            | Some thunk ->
+                match thunk.Value with
+                | VField _ as f -> Some f
+                | _ -> None
+            | None -> None
         | _ -> None
 
     let fieldOfValue (span: Span) (v: Value) : Result<MathIr.Expr, EvalError> =

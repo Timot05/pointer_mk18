@@ -386,7 +386,16 @@ module Editor =
         | _ -> false
 
     let isValidSelectionTarget (state: EditorState) target =
+        // Pick mode (wiring a block ref via viewport click) overrides
+        // the normal "sketch targets only inside sketch-edit mode" gate
+        // for loops: a user wiring a `Loop`-typed input must be able to
+        // click any loop in any sketch in the scene, not just the
+        // actively-edited one.
+        let pickModeAllowsLoop =
+            state.EditingBlockRef.IsSome
+            && (match target with TargetLoop _ -> true | _ -> false)
         match target with
+        | _ when pickModeAllowsLoop -> true
         | TargetFrameOrigin _ -> belongsToActiveSketch state target
         | _ when isSketchTarget target -> belongsToActiveSketch state target
         | _ -> state.Compiled.Pickables |> List.exists (Pickable.sameTarget target)
@@ -864,7 +873,43 @@ module Editor =
                             |> Option.map (fun (target, _score, _action) -> target) }
                     |> normalizeState
                 | ViewerPick(intent, candidates) ->
-                    match reduceSelectionCandidates state candidates with
+                    let resolved = reduceSelectionCandidates state candidates
+                    // Pick mode (wiring a block-input ref): if the user
+                    // clicks a sketch loop in the viewport while
+                    // `EditingBlockRef` is set, commit an
+                    // `EPath [sketchName; loopId]` to the slot and
+                    // exit pick mode. Sketch ActionId → BlockId via
+                    // `SketchAuthoring.tryParseBlockId`.
+                    let pickCommit =
+                        match state.EditingBlockRef, resolved with
+                        | Some(srcId, paramName), Some(TargetLoop(sketchActionId, loopId), _, _) ->
+                            SketchAuthoring.tryParseBlockId sketchActionId
+                            |> Option.bind (fun bid ->
+                                state.Doc.Blocks
+                                |> List.tryFind (fun b -> b.Id = bid)
+                                |> Option.map (fun b -> srcId, paramName, b.Name, loopId))
+                        | _ -> None
+                    match pickCommit with
+                    | Some(srcId, paramName, sketchName, loopId) ->
+                        let path =
+                            Server.Lang.AstBuilder.pathE [ sketchName; loopId ]
+                        let nextBlocks =
+                            state.Doc.Blocks
+                            |> List.map (fun b ->
+                                if b.Id <> srcId then b
+                                else
+                                    match b.Body with
+                                    | Server.Lang.Notebook.NativeBody(specName, args) ->
+                                        let nextArgs = Map.add paramName path args
+                                        { b with Body = Server.Lang.Notebook.NativeBody(specName, nextArgs) }
+                                    | _ -> b)
+                        { state with
+                            Doc = { state.Doc with Blocks = nextBlocks }
+                            EditingBlockRef = None
+                            HoveredTarget = None }
+                        |> recompileNotebook
+                    | None ->
+                    match resolved with
                     | Some(target, _score, _actionId) ->
                         { state with
                             HoveredTarget = Some target

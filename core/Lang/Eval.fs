@@ -146,10 +146,11 @@ module Eval =
                             | None -> cur <- evalError seg.Span (sprintf "record has no field '%s'" seg.Name)
                         | Ok (VSketch sv) ->
                             // Sketches expose their persisted loops as members
-                            // keyed by `LoopRecord.Id`. Populated by the
-                            // compose bridge. Lookup mirrors the VRecord arm.
+                            // keyed by `LoopRecord.Id`. Each is a
+                            // `Lazy<Value>` populated by the compose
+                            // bridge — forced here on first access.
                             match Map.tryFind seg.Name sv.Fields with
-                            | Some v -> cur <- Ok v
+                            | Some thunk -> cur <- Ok thunk.Value
                             | None ->
                                 let available =
                                     sv.Fields
@@ -161,10 +162,13 @@ module Eval =
                         | Ok (VLoop lv) ->
                             // A loop's members (`signed_distance`,
                             // per-primitive `line_N` / `arc_N` /
-                            // `circle_N`, future `area`/...). Same
-                            // lookup pattern as VSketch.
+                            // `circle_N`, future `area`/...). Each
+                            // member is a `Lazy<Value>` populated by
+                            // the bridge — forcing here materializes
+                            // its MathIR on first access (and only on
+                            // first access).
                             match Map.tryFind seg.Name lv.Fields with
-                            | Some v -> cur <- Ok v
+                            | Some thunk -> cur <- Ok thunk.Value
                             | None ->
                                 let available =
                                     lv.Fields
@@ -177,7 +181,7 @@ module Eval =
                             // A primitive's members (`signed_distance`
                             // today; future `length`/`radius`/...).
                             match Map.tryFind seg.Name pv.Fields with
-                            | Some v -> cur <- Ok v
+                            | Some thunk -> cur <- Ok thunk.Value
                             | None ->
                                 let available =
                                     pv.Fields

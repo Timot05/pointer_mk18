@@ -32,6 +32,22 @@ module Notebook =
         Plane:  Server.SketchPlane
     }
 
+    /// Reference-image plane payload. Image blocks are purely visual:
+    /// they render a flat textured quad in 3D space (the image fetched
+    /// from `Url`) and contribute no SDF / no field output. Useful as
+    /// a CAD-blueprint overlay — drop a 3-view drawing in place and
+    /// sketch over it. The texture lives in the viewer's per-block
+    /// texture cache; this record stores only the data needed to
+    /// position the quad.
+    type ImageData = {
+        Url:     string
+        Plane:   Server.SketchPlane
+        Origin:  Server.Vec3
+        Width:   float
+        Height:  float
+        Opacity: float
+    }
+
     /// What a block actually is at the data level. Native blocks are
     /// `(specName, args)` where each arg is a full DSL expression —
     /// typically a scalar literal (`ENumber n`), a reference to an
@@ -41,10 +57,12 @@ module Notebook =
     /// verbatim into the program AST. Absence of a key means the
     /// slot is unwired (compose-time fallback to
     /// `AstBuilder.unwiredE`). Sketches carry their own structured
-    /// payload — see `SketchData`.
+    /// payload — see `SketchData`. Image blocks carry an
+    /// `ImageData` for URL + transform; they emit no field.
     type BlockBody =
         | NativeBody of specName: string * args: Map<string, Expr>
         | SketchBody of SketchData
+        | ImageBody  of ImageData
 
     /// What the viewer should do with this block's output. `VHidden` means
     /// the block contributes to downstream wires but isn't rendered itself;

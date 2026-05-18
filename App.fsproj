@@ -107,6 +107,12 @@
          and the MathIR→WGSL emitter. -->
     <Compile Include="viewer\FieldSlice.fs" />
 
+    <!-- Reference-image plane overlay: per-block textured quad
+         showing an image fetched from a URL. Visual-only, no SDF
+         contribution. Depends on Scene + the camera bind-group
+         layout. -->
+    <Compile Include="viewer\ImagePlane.fs" />
+
     <Compile Include="viewer\TranslateGizmo.fs" />
     <Compile Include="viewer\RotateGizmo.fs" />
     <Compile Include="viewer\HalfPlaneGizmo.fs" />

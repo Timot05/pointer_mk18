@@ -95,6 +95,11 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 // `VFieldLines`, so it's free when not in use.
                 let fieldSlice = FieldSlice.create scene
 
+                // Reference-image plane renderer. Synchronously sets
+                // up the pipeline + placeholder texture; per-block
+                // image fetches happen lazily on first `update`.
+                let imagePlane = ImagePlane.create scene
+
                 // Adaptive render-resolution scale. Dropped to
                 // `LOW_RES_SCALE` while the camera's moving so the heavy
                 // raymarch fragment runs on a quarter as many pixels; the
@@ -280,7 +285,7 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
 
                         setRenderScale desiredScale
 
-                        Render.renderFrame scene toolCursor.Value background.Value fieldSlice
+                        Render.renderFrame scene toolCursor.Value background.Value fieldSlice imagePlane
                         // Keep the compute-pick geometry buffers in sync
                         // with whatever Render just drew, using the same
                         // `viewState` source. Sketch order inside the

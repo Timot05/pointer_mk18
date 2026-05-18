@@ -181,6 +181,22 @@ type Message =
     | AddNativeBlock of specName: string
     /// Add an empty Sketch block (XY plane, no entities).
     | AddSketchBlock
+    /// Add a reference-image block (XY plane, empty URL, 5×5 world
+    /// units, fully opaque). The user fills in the URL via the
+    /// block-panel editor; the viewer fetches and caches the texture
+    /// asynchronously.
+    | AddImageBlock
+    /// Replace the URL on an image block. Empty string clears the
+    /// texture; non-empty string triggers a fetch in the viewer.
+    | SetBlockImageUrl of Server.Lang.Notebook.BlockId * string
+    /// Replace the sketch-plane (XY/XZ/YZ) on an image block.
+    | SetBlockImagePlane of Server.Lang.Notebook.BlockId * Server.SketchPlane
+    /// Replace the world-coord origin on an image block.
+    | SetBlockImageOrigin of Server.Lang.Notebook.BlockId * Server.Vec3
+    /// Replace the (width, height) world-unit size on an image block.
+    | SetBlockImageSize of Server.Lang.Notebook.BlockId * width: float * height: float
+    /// Replace the opacity (0..1) on an image block.
+    | SetBlockImageOpacity of Server.Lang.Notebook.BlockId * float
     | SelectBlock of Server.Lang.Notebook.BlockId
     /// Replace a single named arg on a block (scalar drag-edit, or
     /// rewiring a ref bubble). The arg is a full DSL expression —
@@ -1203,6 +1219,85 @@ module Editor =
                                 SelectedBlockId = Some id
                         }
                         SketchEditMode = true }
+                    |> recompileNotebook
+                | AddImageBlock ->
+                    let id = state.Doc.NextBlockId
+                    let block : Server.Lang.Notebook.Block = {
+                        Id = id
+                        Name = sprintf "image_%d" id
+                        Body = Server.Lang.Notebook.ImageBody {
+                            Url = ""
+                            Plane = SketchPlane.defaults
+                            Origin = { X = 0.0; Y = 0.0; Z = 0.0 }
+                            Width = 5.0
+                            Height = 5.0
+                            Opacity = 1.0
+                        }
+                        Visibility = Server.Lang.Notebook.VIsosurface
+                        ColorIndex = 0
+                        SlicePlane = Server.Lang.Notebook.defaultSlicePlane
+                    }
+                    { state with
+                        Doc = {
+                            state.Doc with
+                                Blocks = state.Doc.Blocks @ [ block ]
+                                NextBlockId = id + 1
+                                SelectedBlockId = Some id } }
+                    |> recompileNotebook
+                | SetBlockImageUrl(blockId, url) ->
+                    let updated =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> blockId then b else
+                                match b.Body with
+                                | Server.Lang.Notebook.ImageBody data ->
+                                    { b with Body = Server.Lang.Notebook.ImageBody { data with Url = url } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = updated } }
+                    |> recompileNotebook
+                | SetBlockImagePlane(blockId, plane) ->
+                    let updated =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> blockId then b else
+                                match b.Body with
+                                | Server.Lang.Notebook.ImageBody data ->
+                                    { b with Body = Server.Lang.Notebook.ImageBody { data with Plane = plane } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = updated } }
+                    |> recompileNotebook
+                | SetBlockImageOrigin(blockId, origin) ->
+                    let updated =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> blockId then b else
+                                match b.Body with
+                                | Server.Lang.Notebook.ImageBody data ->
+                                    { b with Body = Server.Lang.Notebook.ImageBody { data with Origin = origin } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = updated } }
+                    |> recompileNotebook
+                | SetBlockImageSize(blockId, w, h) ->
+                    let updated =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> blockId then b else
+                                match b.Body with
+                                | Server.Lang.Notebook.ImageBody data ->
+                                    { b with Body = Server.Lang.Notebook.ImageBody { data with Width = w; Height = h } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = updated } }
+                    |> recompileNotebook
+                | SetBlockImageOpacity(blockId, op) ->
+                    let updated =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> blockId then b else
+                                match b.Body with
+                                | Server.Lang.Notebook.ImageBody data ->
+                                    { b with Body = Server.Lang.Notebook.ImageBody { data with Opacity = op } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = updated } }
                     |> recompileNotebook
                 | SelectBlock id ->
                     let block = state.Doc.Blocks |> List.tryFind (fun b -> b.Id = id)

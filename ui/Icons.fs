@@ -29,6 +29,7 @@ let private layers          : obj = importDefault "@carbon/icons/es/layers/16"
 let private view            : obj = importDefault "@carbon/icons/es/view/16"
 let private logoGithub      : obj = importDefault "@carbon/icons/es/logo--github/16"
 let private rotateClockwise : obj = importDefault "@carbon/icons/es/rotate--clockwise/16"
+let private image           : obj = importDefault "@carbon/icons/es/image/16"
 
 [<Emit("Object.entries($0)")>]
 let private entries (o: obj) : (string * obj)[] = jsNative
@@ -76,6 +77,7 @@ let forSpecName (name: string) : Element =
 let forBody (body: Notebook.BlockBody) : Element =
     match body with
     | Notebook.SketchBody _ -> buildSvg pen
+    | Notebook.ImageBody _  -> buildSvg image
     | Notebook.NativeBody(name, _) -> forSpecName name
 
 let fallback () : Element =

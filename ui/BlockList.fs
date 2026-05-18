@@ -239,6 +239,7 @@ let private bodyKindLabel (body: Notebook.BlockBody) : string =
     match body with
     | Notebook.NativeBody(name, _) -> name
     | Notebook.SketchBody _ -> "sketch"
+    | Notebook.ImageBody _ -> "image"
 
 // ── Expr-shape classifiers ─────────────────────────────────────────────────
 //
@@ -369,6 +370,124 @@ let private renderSketchPlaneRow
     row.appendChild (Dom.elText "span" "input-row-label" "plane" :> Node) |> ignore
     row.appendChild (renderSketchPlaneDropdown dispatch block.Id plane :> Node) |> ignore
     row
+
+// ── Image block (reference plane) rows ─────────────────────────────────────
+
+let private renderImagePlaneDropdown
+        (dispatch: Message -> unit)
+        (blockId: Notebook.BlockId)
+        (current: SketchPlane) : HTMLElement =
+    let select = document.createElement "select" :?> HTMLSelectElement
+    select.className <- "input-row-edit"
+    let addOption (label: string) (value: string) (plane: SketchPlane) =
+        let opt = document.createElement "option" :?> HTMLOptionElement
+        opt.value <- value
+        opt.text <- label
+        if plane = current then opt.selected <- true
+        select.appendChild (opt :> Node) |> ignore
+    addOption "XY" "XY" XY
+    addOption "XZ" "XZ" XZ
+    addOption "YZ" "YZ" YZ
+    select.addEventListener (
+        "change",
+        fun _ ->
+            let plane =
+                match select.value with
+                | "XZ" -> XZ
+                | "YZ" -> YZ
+                | _ -> XY
+            dispatch (SetBlockImagePlane(blockId, plane)))
+    select :> HTMLElement
+
+let private renderImageTextRow
+        (dispatch: Message -> unit)
+        (block: Notebook.Block)
+        (labelText: string)
+        (current: string)
+        (onCommit: string -> Message) : HTMLElement =
+    let row = Dom.el "div" "input-row"
+    row.appendChild (Dom.elText "span" "input-row-label" labelText :> Node) |> ignore
+    let input = document.createElement "input" :?> HTMLInputElement
+    input.``type`` <- "text"
+    input.className <- "input-row-edit"
+    input.value <- current
+    input.placeholder <- "https://example.com/image.png"
+    let commit () =
+        if input.value <> current then
+            dispatch (onCommit input.value)
+    input.addEventListener ("change", fun _ -> commit ())
+    input.addEventListener ("blur", fun _ -> commit ())
+    input.addEventListener (
+        "keydown",
+        fun e ->
+            let ke = e :?> KeyboardEvent
+            if ke.key = "Enter" then
+                e.preventDefault ()
+                commit ()
+                input.blur ())
+    row.appendChild (input :> Node) |> ignore
+    row
+
+let private renderImageNumberRow
+        (dispatch: Message -> unit)
+        (labelText: string)
+        (current: float)
+        (onCommit: float -> Message) : HTMLElement =
+    let row = Dom.el "div" "input-row"
+    row.appendChild (Dom.elText "span" "input-row-label" labelText :> Node) |> ignore
+    let input = document.createElement "input" :?> HTMLInputElement
+    input.``type`` <- "number"
+    input.className <- "input-row-edit"
+    input?step <- "0.1"
+    input.value <- sprintf "%g" current
+    let commit () =
+        match System.Double.TryParse(input.value) with
+        | true, n when n <> current -> dispatch (onCommit n)
+        | _ -> ()
+    input.addEventListener ("change", fun _ -> commit ())
+    input.addEventListener ("blur", fun _ -> commit ())
+    input.addEventListener (
+        "keydown",
+        fun e ->
+            let ke = e :?> KeyboardEvent
+            if ke.key = "Enter" then
+                e.preventDefault ()
+                commit ()
+                input.blur ())
+    row.appendChild (input :> Node) |> ignore
+    row
+
+let private renderImageBlockRows
+        (dispatch: Message -> unit)
+        (block: Notebook.Block)
+        (data: Notebook.ImageData) : HTMLElement list =
+    let urlRow =
+        renderImageTextRow dispatch block "url" data.Url
+            (fun v -> SetBlockImageUrl(block.Id, v))
+    let planeRow =
+        let row = Dom.el "div" "input-row"
+        row.appendChild (Dom.elText "span" "input-row-label" "plane" :> Node) |> ignore
+        row.appendChild (renderImagePlaneDropdown dispatch block.Id data.Plane :> Node) |> ignore
+        row
+    let originX =
+        renderImageNumberRow dispatch "origin x" data.Origin.X
+            (fun v -> SetBlockImageOrigin(block.Id, { data.Origin with X = v }))
+    let originY =
+        renderImageNumberRow dispatch "origin y" data.Origin.Y
+            (fun v -> SetBlockImageOrigin(block.Id, { data.Origin with Y = v }))
+    let originZ =
+        renderImageNumberRow dispatch "origin z" data.Origin.Z
+            (fun v -> SetBlockImageOrigin(block.Id, { data.Origin with Z = v }))
+    let widthRow =
+        renderImageNumberRow dispatch "width" data.Width
+            (fun v -> SetBlockImageSize(block.Id, v, data.Height))
+    let heightRow =
+        renderImageNumberRow dispatch "height" data.Height
+            (fun v -> SetBlockImageSize(block.Id, data.Width, v))
+    let opacityRow =
+        renderImageNumberRow dispatch "opacity" data.Opacity
+            (fun v -> SetBlockImageOpacity(block.Id, max 0.0 (min 1.0 v)))
+    [ urlRow; planeRow; originX; originY; originZ; widthRow; heightRow; opacityRow ]
 
 let private renderAxisDropdown
         (dispatch: Message -> unit)
@@ -618,8 +737,13 @@ let private renderRow
         match block.Body with
         | Notebook.SketchBody _ -> true
         | _ -> false
+    let isImageBody =
+        match block.Body with
+        | Notebook.ImageBody _ -> true
+        | _ -> false
     let hasInputs =
         isSketchBody
+        || isImageBody
         || typedSpec |> Option.exists (fun ts -> not ts.Params.IsEmpty)
     let isExpanded =
         hasInputs && Set.contains block.Id doc.ExpandedBlockIds
@@ -840,7 +964,7 @@ let private allPaletteEntries () : (string * Message) list =
     let nativeEntries =
         BlockSpec.allNames ()
         |> List.map (fun n -> n, AddNativeBlock n)
-    userEntries @ nativeEntries @ [ "sketch", AddSketchBlock ]
+    userEntries @ nativeEntries @ [ "sketch", AddSketchBlock; "image", AddImageBlock ]
 
 let mutable private paletteOpen = false
 
@@ -1011,6 +1135,10 @@ let render (dispatch: Message -> unit) (doc: DocumentView) : HTMLElement =
                 // XZ / YZ) is a per-block choice. Expose it as a dropdown
                 // when the row is expanded.
                 list.appendChild (renderSketchPlaneRow dispatch block data.Plane :> Node) |> ignore
+            | _, Notebook.ImageBody data ->
+                // Reference-image plane: URL, plane, origin, size, opacity.
+                for r in renderImageBlockRows dispatch block data do
+                    list.appendChild (r :> Node) |> ignore
             | _ -> ()
     panel.appendChild (list :> Node) |> ignore
 

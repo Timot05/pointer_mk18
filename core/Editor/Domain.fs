@@ -389,7 +389,127 @@ module Document =
             ColorIndex = 1
             SlicePlane =
                 { Server.Lang.Notebook.defaultSlicePlane with
-                    Origin = { X = 1.5; Y = 0.0; Z = 0.0 } } } ]
+                    Origin = { X = 1.5; Y = 0.0; Z = 0.0 } } }
+          // Horizontal stabilizer (tailplane). A small swept-back wing
+          // at the rear of the fuselage spanning ±2 in Y after the
+          // mirror. Splines run from the root at Y=0 to the tip at
+          // Y=2; chord is 0.5 at the root and tapers to 0.35 at the
+          // tip. Sits on the fuselage centerline (Z=0).
+          { Id = 8
+            Name = "h_stab_guides"
+            Body = Server.Lang.Notebook.SketchBody
+                { Sketch =
+                    { Entities =
+                        [ REPoint("hl_root", 4.3, 0.0)
+                          REPoint("hl_cp0",  4.35, 0.7)
+                          REPoint("hl_cp1",  4.4,  1.4)
+                          REPoint("hl_tip",  4.5, 2.0)
+                          REPoint("ht_root", 4.8, 0.0)
+                          REPoint("ht_cp0",  4.82, 0.7)
+                          REPoint("ht_cp1",  4.83, 1.4)
+                          REPoint("ht_tip",  4.85, 2.0)
+                          REBezierCubic("leading",  "hl_root", "hl_cp0", "hl_cp1", "hl_tip")
+                          REBezierCubic("trailing", "ht_root", "ht_cp0", "ht_cp1", "ht_tip") ]
+                      Constraints = []
+                      Loops = [] }
+                  Plane = XY }
+            Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 0
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
+          { Id = 9
+            Name = "half_h_stab"
+            Body =
+                Server.Lang.Notebook.NativeBody(
+                    "wing-remap-preview",
+                    Map.ofList
+                        [ "leading",  Server.Lang.AstBuilder.pathE [ "h_stab_guides"; "spline_0" ]
+                          "trailing", Server.Lang.AstBuilder.pathE [ "h_stab_guides"; "spline_1" ] ])
+            Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 0
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
+          { Id = 10
+            Name = "full_h_stab"
+            Body =
+                Server.Lang.Notebook.NativeBody(
+                    "mirror_symmetric",
+                    Map.ofList
+                        [ "axis", Server.Lang.AstBuilder.numE 1.0
+                          "root", Server.Lang.AstBuilder.numE 0.0
+                          "child", Server.Lang.AstBuilder.varE "half_h_stab" ])
+            Visibility = Server.Lang.Notebook.VIsosurface
+            ColorIndex = 2
+            SlicePlane =
+                { Server.Lang.Notebook.defaultSlicePlane with
+                    Origin = { X = 4.6; Y = 1.0; Z = 0.0 } } }
+          // Vertical stabilizer (fin). Same trick as the H-stab but
+          // built in the wing's natural Y-spanning orientation, then
+          // routed through `swap_yz` so the span direction maps to
+          // world Z (the fin extends upward from the fuselage). Not
+          // mirrored — a single fin sitting at Y=0. Splines run from
+          // the root at Y=0 (which becomes Z=0 after the swap) to the
+          // tip at Y=1.5 (Z=1.5 in world).
+          { Id = 11
+            Name = "v_stab_guides"
+            Body = Server.Lang.Notebook.SketchBody
+                { Sketch =
+                    { Entities =
+                        [ REPoint("vl_root", 4.3, 0.0)
+                          REPoint("vl_cp0",  4.4,  0.5)
+                          REPoint("vl_cp1",  4.5,  1.0)
+                          REPoint("vl_tip",  4.65, 1.5)
+                          REPoint("vt_root", 5.0, 0.0)
+                          REPoint("vt_cp0",  5.0,  0.5)
+                          REPoint("vt_cp1",  4.95, 1.0)
+                          REPoint("vt_tip",  4.85, 1.5)
+                          REBezierCubic("leading",  "vl_root", "vl_cp0", "vl_cp1", "vl_tip")
+                          REBezierCubic("trailing", "vt_root", "vt_cp0", "vt_cp1", "vt_tip") ]
+                      Constraints = []
+                      Loops = [] }
+                  Plane = XY }
+            Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 0
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
+          { Id = 12
+            Name = "half_v_stab"
+            Body =
+                Server.Lang.Notebook.NativeBody(
+                    "wing-remap-preview",
+                    Map.ofList
+                        [ "leading",  Server.Lang.AstBuilder.pathE [ "v_stab_guides"; "spline_0" ]
+                          "trailing", Server.Lang.AstBuilder.pathE [ "v_stab_guides"; "spline_1" ] ])
+            Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 0
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
+          { Id = 13
+            Name = "v_stab"
+            Body =
+                Server.Lang.Notebook.NativeBody(
+                    "swap_yz",
+                    Map.ofList
+                        [ "child", Server.Lang.AstBuilder.varE "half_v_stab" ])
+            Visibility = Server.Lang.Notebook.VIsosurface
+            ColorIndex = 2
+            SlicePlane =
+                { Server.Lang.Notebook.defaultSlicePlane with
+                    Origin = { X = 4.6; Y = 0.0; Z = 0.75 } } }
+          // Reference image: a flat textured quad on the XY plane at
+          // the world origin, behind the aircraft. Useful as a
+          // blueprint backdrop while modelling. CORS-restricted hosts
+          // will leave the quad invisible; pick a CORS-friendly URL
+          // if the load fails.
+          { Id = 14
+            Name = "reference"
+            Body = Server.Lang.Notebook.ImageBody {
+                Url = "https://scontent.fqls2-1.fna.fbcdn.net/v/t1.6435-9/94920049_2996164733810306_2295814526865506304_n.jpg?_nc_cat=104&ccb=1-7&_nc_sid=33274f&_nc_ohc=mJC7oFeGda8Q7kNvwGV-01L&_nc_oc=Adp7YjkkTvNxv7gnipTbWLOg-3MQ2CZFKHkkTmck1yqhKZXlO_BclhgXPd62hXc8C6cr6Y4Z88QIphnrEZuTg9Q0&_nc_zt=23&_nc_ht=scontent.fqls2-1.fna&_nc_gid=InZp20pyczogFinRIpYftw&_nc_ss=7b289&oh=00_Af6CNuAcYfNGld6yp9y7Z9SgswZfsBX0Z4geD-lpTAbGaw&oe=6A32ECB5"
+                Plane = XY
+                Origin = { X = 0.0; Y = 0.0; Z = 0.0 }
+                Width = 10.0
+                Height = 10.0
+                Opacity = 1.0
+            }
+            Visibility = Server.Lang.Notebook.VIsosurface
+            ColorIndex = 0
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane } ]
 
     /// Demo content the script editor shows on a fresh document.
     /// Defines the standard library of SDF primitives (sphere, box,
@@ -613,6 +733,15 @@ let mirror_symmetric = fun (axis: Scalar) (root: Scalar) (child: Field) ->
     remap_axes child cx cy cz
 end
 
+// Swap world Y and Z when sampling `child` — turns a Y-spanning
+// field (e.g. a `wing-remap-preview` wing) into a Z-spanning field
+// (e.g. a vertical stabilizer / fin). The child's chord (X) stays
+// horizontal; what was its span direction now extends upward, and
+// what was its thickness direction now extends sideways.
+let swap_yz = fun (child: Field) ->
+    remap_axes child x z y
+end
+
 // Sweep a closed 2D sketch loop along the axis perpendicular to its
 // plane, clamping to [bottom, top]. Picks the perpendicular axis from
 // the loop's `perpendicular_axis` member (0=X / 1=Y / 2=Z), which the
@@ -666,6 +795,6 @@ end
     let emptyDocument () : Document =
         { Name = "untitled"
           Blocks = defaultBlocks
-          NextBlockId = 8
+          NextBlockId = 15
           SelectedBlockId = Some 3
           ScriptSourceText = defaultScriptSource }

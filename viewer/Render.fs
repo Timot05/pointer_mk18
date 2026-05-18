@@ -83,7 +83,8 @@ let renderFrame
         (scene: Scene.Scene)
         (toolCursor: (ActionId * float * float) option)
         (background: Kernel.Background.Background option)
-        (fieldSlice: FieldSlice.FieldSlice) =
+        (fieldSlice: FieldSlice.FieldSlice)
+        (imagePlane: ImagePlane.ImagePlaneRenderer) =
     let w : int = scene.Canvas?width
     let h : int = scene.Canvas?height
 
@@ -121,6 +122,13 @@ let renderFrame
         Kernel.Background.update bg
         Kernel.Background.draw bg colorPass
     | None -> ()
+
+    // Reference-image plane overlay. Per-block textured quads showing
+    // an image fetched from a URL. Visual-only; doesn't contribute to
+    // the SDF. Drawn after the background so the SDF can occlude the
+    // image where bodies pass in front of it.
+    ImagePlane.update imagePlane state.Doc
+    ImagePlane.draw imagePlane colorPass state.Doc
 
     // Field-slice overlay. Iso-contour quads for any block whose
     // visibility is `VFieldLines`. Drawn after the background so its

@@ -622,6 +622,11 @@ module NotebookCompose =
             | SketchBody _ ->
                 // Sketches are pre-bound — nothing to add to the AST.
                 ()
+            | ImageBody _ ->
+                // Reference-image planes are viewer-only — they render
+                // as a textured quad but emit no field and never feed
+                // any downstream wire.
+                ()
             | NativeBody(specName, args) ->
                 let bsp = spanForBlock block.Id
                 // Emit a single block as `let block_X = applyChain (varE specName) [args...]`

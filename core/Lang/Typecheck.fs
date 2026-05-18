@@ -148,7 +148,17 @@ module Typecheck =
             | _ ->
                 Type.Primitive (Map.ofList [ "signed_distance", Type.Field ])
         | RKPrimitive ->
-            Type.Field
+            match memberName with
+            | "signed_distance" -> Type.Field
+            // Geometric scalars surfaced by `NotebookCompose.composeWith`
+            // for line / circle / arc entities. Match the variant-
+            // specific refinement built there so widening these access
+            // patterns through the cell-grow path doesn't conflict with
+            // the actual Primitive type assigned to the value.
+            | "x0" | "y0" | "x1" | "y1"   // line endpoints
+            | "cx" | "cy" | "r"           // circle params
+                -> Type.Scalar
+            | _ -> Type.Field
 
     // ── Helpers ────────────────────────────────────────────────────────────
 

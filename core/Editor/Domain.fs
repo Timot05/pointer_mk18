@@ -306,21 +306,43 @@ module Document =
             SlicePlane =
                 { Server.Lang.Notebook.defaultSlicePlane with
                     Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } }
-          // Loft demo: square cross-section at z=0 morphing into a
-          // circle at z=3. Positioned off to the right (x ~ 5) so it
-          // doesn't overlap with the wing.
+          // Guided loft demo: square cross-section at Y=0 morphing
+          // into a circle at Y=3, with two guide lines that taper the
+          // chord from width 2 at the root to width 1 at the tip.
+          // Cross-sections live in the XZ plane (their X is the chord
+          // axis, Z is thickness); guides live in the XY plane (their
+          // Y is the span axis matching world Y). Positioned to the
+          // left of the wing (X negative) to keep the two demo bodies
+          // from overlapping.
           { Id = 4
             Name = "loft_square"
             Body = Server.Lang.Notebook.SketchBody
-                { Sketch = squareSketch 5.0 0.0 1.0
-                  Plane = XY }
+                { Sketch = squareSketch 0.0 0.0 1.0
+                  Plane = XZ }
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
             SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
           { Id = 5
             Name = "loft_circle"
             Body = Server.Lang.Notebook.SketchBody
-                { Sketch = circleSketch 5.0 0.0 1.0
+                { Sketch = circleSketch 0.0 0.0 1.0
+                  Plane = XZ }
+            Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 0
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
+          { Id = 7
+            Name = "loft_guides"
+            Body = Server.Lang.Notebook.SketchBody
+                { Sketch =
+                    { Entities =
+                        [ REPoint("l_root", -3.0, 0.0)
+                          REPoint("l_tip",  -2.5, 3.0)
+                          REPoint("r_root", -1.0, 0.0)
+                          REPoint("r_tip",  -1.5, 3.0)
+                          RELine("g_left",  "l_root", "l_tip")
+                          RELine("g_right", "r_root", "r_tip") ]
+                      Constraints = []
+                      Loops = [] }
                   Plane = XY }
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
@@ -329,17 +351,19 @@ module Document =
             Name = "loft_demo"
             Body =
                 Server.Lang.Notebook.NativeBody(
-                    "loft",
+                    "wing_loft",
                     Map.ofList
                         [ "a", Server.Lang.AstBuilder.pathE [ "loft_square"; "loop_0" ]
                           "b", Server.Lang.AstBuilder.pathE [ "loft_circle"; "loop_0" ]
-                          "start_pos", Server.Lang.AstBuilder.numE 0.0
+                          "g_left", Server.Lang.AstBuilder.pathE [ "loft_guides"; "line_0" ]
+                          "g_right", Server.Lang.AstBuilder.pathE [ "loft_guides"; "line_1" ]
+                          "start", Server.Lang.AstBuilder.numE 0.0
                           "end_pos", Server.Lang.AstBuilder.numE 3.0 ])
             Visibility = Server.Lang.Notebook.VIsosurface
             ColorIndex = 1
             SlicePlane =
                 { Server.Lang.Notebook.defaultSlicePlane with
-                    Origin = { X = 5.0; Y = 0.0; Z = 1.5 } } } ]
+                    Origin = { X = -2.0; Y = 1.5; Z = 0.0 } } } ]
 
     /// Demo content the script editor shows on a fresh document.
     /// Defines the standard library of SDF primitives (sphere, box,
@@ -421,6 +445,41 @@ end
 
 let shell = fun (thickness: Scalar) (child: Field) ->
     max child (0 - (child + thickness))
+end
+
+// Multi-guide loft (wing-style). Sweeps a cross-section between
+// loop `a` (at span position `start`) and loop `b` (at `end_pos`),
+// while constraining the chord direction with two guide lines —
+// `g_left` and `g_right`. Conventions match `wing-remap-preview`:
+//   cross-sections in the XZ plane (their local axes are X = chord,
+//     Z = thickness)
+//   guides in the XY plane (their local Y is the span = world Y)
+//   span direction = Y
+//   chord direction = X
+// `chord = (2x - left_x - right_x) / (right_x - left_x)` runs from
+// -1 on `g_left` to +1 on `g_right`, with mid-chord at 0. The
+// cross-sections' X coords get remapped to this chord parameter,
+// so the cross-section's left/right edges always coincide with
+// the guides regardless of how the guides flare or taper along Y.
+// The two cross-sections then linearly interpolate by `t = (y -
+// start) / (end_pos - start)`, and a slab clamp closes the body
+// at the two span endpoints.
+//
+// The line-at-y arithmetic is inlined rather than factored into a
+// helper because the typecheck's refinement-cell mechanism only
+// grows through direct path access — calling a helper that
+// requires the refined Primitive would fail to propagate the
+// required `x0/y0/x1/y1` members from this site.
+let wing_loft = fun (a: Loop) (b: Loop) (g_left: Primitive) (g_right: Primitive) (start: Scalar) (end_pos: Scalar) ->
+    let t = (y - start) / (end_pos - start + 0.000001)
+    let left_x = g_left.x0 + (y - g_left.y0) * (g_left.x1 - g_left.x0) / (g_left.y1 - g_left.y0 + 0.000001)
+    let right_x = g_right.x0 + (y - g_right.y0) * (g_right.x1 - g_right.x0) / (g_right.y1 - g_right.y0 + 0.000001)
+    let chord = (2 * x - left_x - right_x) / (right_x - left_x + 0.000001)
+    let a_remap = remap_axes a.signed_distance chord y z
+    let b_remap = remap_axes b.signed_distance chord y z
+    let blend = (1 - t) * a_remap + t * b_remap
+    let slab = max (y - end_pos) (start - y)
+    max blend slab
 end
 
 // Linearly loft between two parallel-plane sketch loops. `a` is the
@@ -540,6 +599,6 @@ end
     let emptyDocument () : Document =
         { Name = "untitled"
           Blocks = defaultBlocks
-          NextBlockId = 7
+          NextBlockId = 8
           SelectedBlockId = Some 3
           ScriptSourceText = defaultScriptSource }

@@ -24,6 +24,7 @@ type RenderEntity =
     | RELine of id: string * startId: string * endId: string
     | RECircle of id: string * center: string * radius: float
     | REArc of id: string * startId: string * endId: string * data: ArcData
+    | REBezierCubic of id: string * p0: string * p1: string * p2: string * p3: string
 
 /// 2D coordinate for label positioning on dimensional constraints.
 type LabelPos = { X: float; Y: float }

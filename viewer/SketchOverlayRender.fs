@@ -24,6 +24,7 @@ let private isEntityActive
         | "line", TargetLine(sid, eid) -> sid = sketchId && eid = entityId
         | "circle", TargetCircle(sid, eid) -> sid = sketchId && eid = entityId
         | "arc", TargetArc(sid, eid) -> sid = sketchId && eid = entityId
+        | "spline", TargetSpline(sid, eid) -> sid = sketchId && eid = entityId
         | _ -> false
     (match hovered with Some h -> matches h | None -> false)
     || List.exists matches selected
@@ -97,6 +98,40 @@ let private pushArc
             let next = (cx + radius * cos ang, cy + radius * sin ang)
             pushSegment out prev next color
             prev <- next
+
+/// Number of line segments used to tessellate a full cubic Bezier curve.
+let private CUBIC_SEGMENTS = 32
+
+/// Tessellate a cubic Bezier into line segments. Reused by the committed
+/// curve render, the in-progress tool preview, and the pick buffer so all
+/// three render the same polyline.
+let private cubicPoints
+    ((p0x, p0y): float * float)
+    ((p1x, p1y): float * float)
+    ((p2x, p2y): float * float)
+    ((p3x, p3y): float * float)
+    (segments: int) : (float * float) list =
+    [ 0 .. segments ]
+    |> List.map (fun i ->
+        let t = float i / float segments
+        let u = 1.0 - t
+        let b0 = u * u * u
+        let b1 = 3.0 * u * u * t
+        let b2 = 3.0 * u * t * t
+        let b3 = t * t * t
+        let x = b0 * p0x + b1 * p1x + b2 * p2x + b3 * p3x
+        let y = b0 * p0y + b1 * p1y + b2 * p2y + b3 * p3y
+        (x, y))
+
+/// Tessellate a cubic Bezier into line segments and push each segment.
+let private pushCubic
+    (out: ResizeArray<float32>)
+    (p0: float * float) (p1: float * float) (p2: float * float) (p3: float * float)
+    (color: float32[]) =
+    let pts = cubicPoints p0 p1 p2 p3 CUBIC_SEGMENTS
+    pts
+    |> List.pairwise
+    |> List.iter (fun (a, b) -> pushSegment out a b color)
 
 /// Slot-backed 2D point lookup. Reads (x, y) for a sketch point from the
 /// sketch's `sketch.entity.{id}.{x|y}` slot values, falling back to the
@@ -678,6 +713,18 @@ let buildToolPreviewLineBuffer
             pushArc out startPt (projX, projY) center clockwise PREVIEW_LINE
     | "arc", [ p0 ], Some c ->
         pushSegment out p0 c PREVIEW_LINE
+    | "bezier", [ p0; p1; p2 ], Some c ->
+        // All four control points placed — preview the full tessellated curve.
+        cubicPoints p0 p1 p2 c CUBIC_SEGMENTS
+        |> List.pairwise
+        |> List.iter (fun (a, b) -> pushSegment out a b PREVIEW_LINE)
+    | "bezier", placed, Some c when not placed.IsEmpty ->
+        // 1..3 control points placed — preview the control polygon up to
+        // the live cursor.
+        let pts = placed @ [ c ]
+        pts
+        |> List.pairwise
+        |> List.iter (fun (a, b) -> pushSegment out a b PREVIEW_LINE)
     | _ -> ()
 
     out.ToArray()
@@ -887,6 +934,7 @@ let buildSketchPickLineBuffer
             | PickLine(pid, sid, eid, _, _) when sid = sketchId -> Some ("line:" + eid, pid)
             | PickCircle(pid, sid, eid, _, _) when sid = sketchId -> Some ("circle:" + eid, pid)
             | PickArc(pid, sid, eid, _, _, _, _) when sid = sketchId -> Some ("arc:" + eid, pid)
+            | PickSpline(pid, sid, eid, _, _, _, _) when sid = sketchId -> Some ("spline:" + eid, pid)
             | _ -> None)
         |> Map.ofList
     let lookup key = Map.tryFind key idByKey
@@ -917,7 +965,19 @@ let buildSketchPickLineBuffer
                 Map.tryFind centerId points with
             | Some pid, Some s, Some e, Some c -> pushPickArc out s e c cw pid
             | _ -> ()
-        | REArc(_, _, _, ArcThreePoint _) -> ())
+        | REArc(_, _, _, ArcThreePoint _) -> ()
+        | REBezierCubic(id, p0, p1, p2, p3) ->
+            match
+                lookup ("spline:" + id),
+                Map.tryFind p0 points,
+                Map.tryFind p1 points,
+                Map.tryFind p2 points,
+                Map.tryFind p3 points with
+            | Some pid, Some a, Some b, Some c, Some d ->
+                cubicPoints a b c d CUBIC_SEGMENTS
+                |> List.pairwise
+                |> List.iter (fun (s, e) -> pushPickSegment out s e pid)
+            | _ -> ())
 
     out.ToArray()
 
@@ -1120,7 +1180,8 @@ let buildSketchLoopPickBuffer
             | REPoint(id, _, _) -> id, e
             | RELine(id, _, _) -> id, e
             | RECircle(id, _, _) -> id, e
-            | REArc(id, _, _, _) -> id, e)
+            | REArc(id, _, _, _) -> id, e
+            | REBezierCubic(id, _, _, _, _) -> id, e)
         |> Map.ofList
     let points = resolvePointMap slotLookup paramValues sketchId sketch.Entities
 
@@ -1165,7 +1226,8 @@ let buildSketchLoopFillBuffer
             | REPoint(id, _, _) -> id, e
             | RELine(id, _, _) -> id, e
             | RECircle(id, _, _) -> id, e
-            | REArc(id, _, _, _) -> id, e)
+            | REArc(id, _, _, _) -> id, e
+            | REBezierCubic(id, _, _, _, _) -> id, e)
         |> Map.ofList
     let points = resolvePointMap slotLookup paramValues sketchId sketch.Entities
 
@@ -1325,7 +1387,13 @@ let buildSketchLineBuffer
             | _ -> ()
         | REArc(_, _, _, ArcThreePoint _) ->
             // Authoring-only; skip.
-            ())
+            ()
+        | REBezierCubic(id, p0, p1, p2, p3) ->
+            match Map.tryFind p0 points, Map.tryFind p1 points,
+                  Map.tryFind p2 points, Map.tryFind p3 points with
+            | Some a, Some b, Some c, Some d ->
+                pushCubic out a b c d (colourFor "spline" id)
+            | _ -> ())
 
     out.ToArray()
 

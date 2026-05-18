@@ -196,6 +196,7 @@ module NotebookCompose =
         | Server.RELine(id, _, _) -> id
         | Server.RECircle(id, _, _) -> id
         | Server.REArc(id, _, _, _) -> id
+        | Server.REBezierCubic(id, _, _, _, _) -> id
 
     /// Build the AST winding-angle contribution for a single line segment,
     /// seen from the kernel's `(x, y)` sample position in `plane`.
@@ -262,6 +263,18 @@ module NotebookCompose =
             tryArcGeometry pointCoords ent
             |> Option.map (fun ((sx, sy), (ex, ey), (cx, cy), cw) ->
                 mkAt sp (EArcCenter(plane, numEAt sp sx, numEAt sp sy, numEAt sp ex, numEAt sp ey, numEAt sp cx, numEAt sp cy, cw)))
+        | Some (Server.REBezierCubic(_, p0, p1, p2, p3)) ->
+            let pt id = Map.tryFind id pointCoords
+            match pt p0, pt p1, pt p2, pt p3 with
+            | Some (p0x, p0y), Some (p1x, p1y), Some (p2x, p2y), Some (p3x, p3y) ->
+                Some
+                    (mkAt sp
+                        (EBezierCubic(plane,
+                                      numEAt sp p0x, numEAt sp p0y,
+                                      numEAt sp p1x, numEAt sp p1y,
+                                      numEAt sp p2x, numEAt sp p2y,
+                                      numEAt sp p3x, numEAt sp p3y)))
+            | _ -> None
         | _ -> None
 
     /// Build a per-loop AST expression. Returns `None` if the loop is
@@ -533,6 +546,17 @@ module NotebookCompose =
                             |> Map.add "cx" Type.Scalar
                             |> Map.add "cy" Type.Scalar
                             |> Map.add "r" Type.Scalar)
+                    | Some (Server.REBezierCubic _) ->
+                        Type.Primitive (
+                            base_
+                            |> Map.add "x0" Type.Scalar
+                            |> Map.add "y0" Type.Scalar
+                            |> Map.add "x1" Type.Scalar
+                            |> Map.add "y1" Type.Scalar
+                            |> Map.add "cx0" Type.Scalar
+                            |> Map.add "cy0" Type.Scalar
+                            |> Map.add "cx1" Type.Scalar
+                            |> Map.add "cy1" Type.Scalar)
                     | _ -> Type.Primitive base_
                 // Loops carry their parent sketch's perpendicular axis
                 // as a `Scalar` member so user-script bodies can pick
@@ -567,7 +591,8 @@ module NotebookCompose =
                     |> List.choose (function
                         | Server.RELine(id, _, _)
                         | Server.RECircle(id, _, _)
-                        | Server.REArc(id, _, _, _) -> Some id
+                        | Server.REArc(id, _, _, _)
+                        | Server.REBezierCubic(id, _, _, _, _) -> Some id
                         | _ -> None)
                 let topLevelPrimRecords =
                     Server.SketchLoops.reconcilePrimitives [] entitiesById allCurveEntityIds
@@ -795,6 +820,20 @@ module NotebookCompose =
                                   "cy", lazy (VNumber cy)
                                   "r", lazy (VNumber r) ]
                         | None -> Map.empty
+                    | Some (Server.REBezierCubic(_, p0, p1, p2, p3)) ->
+                        match Map.tryFind p0 pts, Map.tryFind p1 pts,
+                              Map.tryFind p2 pts, Map.tryFind p3 pts with
+                        | Some (p0x, p0y), Some (p1x, p1y), Some (p2x, p2y), Some (p3x, p3y) ->
+                            Map.ofList
+                                [ "x0", lazy (VNumber p0x)
+                                  "y0", lazy (VNumber p0y)
+                                  "x1", lazy (VNumber p3x)
+                                  "y1", lazy (VNumber p3y)
+                                  "cx0", lazy (VNumber p1x)
+                                  "cy0", lazy (VNumber p1y)
+                                  "cx1", lazy (VNumber p2x)
+                                  "cy1", lazy (VNumber p2y) ]
+                        | _ -> Map.empty
                     | _ -> Map.empty
 
                 let buildPrimitiveFields (prims: Server.PrimitiveRecord list)
@@ -850,7 +889,8 @@ module NotebookCompose =
                     |> List.choose (function
                         | Server.RELine(id, _, _)
                         | Server.RECircle(id, _, _)
-                        | Server.REArc(id, _, _, _) -> Some id
+                        | Server.REArc(id, _, _, _)
+                        | Server.REBezierCubic(id, _, _, _, _) -> Some id
                         | _ -> None)
                 let topLevelPrimsRt =
                     Server.SketchLoops.reconcilePrimitives [] entitiesById allCurveEntityIdsRt

@@ -172,7 +172,7 @@ module ViewerPipeline =
         let pickModeAllowsSketchTarget target =
             state.EditingBlockRef.IsSome
             && (match target with
-                | TargetLoop _ | TargetLine _ | TargetCircle _ | TargetArc _ -> true
+                | TargetLoop _ | TargetLine _ | TargetCircle _ | TargetArc _ | TargetSpline _ -> true
                 | _ -> false)
 
         let highlightedTargetAllowed target =

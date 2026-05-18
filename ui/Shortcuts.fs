@@ -25,7 +25,8 @@ let private toolShortcuts : (string * SketchToolKind) list =
       "u", ArcTool ]
 
 let private toolShiftShortcuts : (string * SketchToolKind) list =
-    [ "g", RoundedRectangleTool ]
+    [ "g", RoundedRectangleTool
+      "b", BezierTool ]
 
 let private geometricShortcuts : (string * GeometricConstraintKind) list =
     [ "i", CoincidentConstraint

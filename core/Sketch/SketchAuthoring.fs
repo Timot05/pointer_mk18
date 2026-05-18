@@ -118,7 +118,8 @@ module SketchAuthoring =
         | REPoint(id, _, _)
         | RELine(id, _, _)
         | RECircle(id, _, _)
-        | REArc(id, _, _, _) -> id
+        | REArc(id, _, _, _)
+        | REBezierCubic(id, _, _, _, _) -> id
 
     let private entityMap (sketch: ActionSketch) =
         sketch.Entities
@@ -133,6 +134,7 @@ module SketchAuthoring =
         | RECircle(_, centerId, _) -> centerId = entityId
         | REArc(_, startId, endId, ArcCenter(centerId, _)) -> startId = entityId || endId = entityId || centerId = entityId
         | REArc(_, startId, endId, ArcThreePoint _) -> startId = entityId || endId = entityId
+        | REBezierCubic(_, p0, p1, p2, p3) -> p0 = entityId || p1 = entityId || p2 = entityId || p3 = entityId
         | _ -> false
 
     let private entityReferencedPointIds =
@@ -141,6 +143,7 @@ module SketchAuthoring =
         | RECircle(_, centerId, _) -> [ centerId ]
         | REArc(_, startId, endId, ArcCenter(centerId, _)) -> [ startId; endId; centerId ]
         | REArc(_, startId, endId, ArcThreePoint _) -> [ startId; endId ]
+        | REBezierCubic(_, p0, p1, p2, p3) -> [ p0; p1; p2; p3 ]
         | REPoint _ -> []
 
     let private normalizePair a b = if a < b then (a, b) else (b, a)
@@ -855,6 +858,7 @@ module SketchAuthoring =
         | "roundedRectangle"
         | "circle" -> 2
         | "arc" -> 3
+        | "bezier" -> 4
         | _ -> 0
 
     let private nextEntityId (sketch: ActionSketch) prefix =
@@ -864,7 +868,8 @@ module SketchAuthoring =
                 | REPoint(id, _, _)
                 | RELine(id, _, _)
                 | RECircle(id, _, _)
-                | REArc(id, _, _, _) -> id)
+                | REArc(id, _, _, _)
+                | REBezierCubic(id, _, _, _, _) -> id)
             |> Set.ofList
         let rec loop i =
             let id = $"{prefix}{i}"
@@ -1078,5 +1083,16 @@ module SketchAuthoring =
                 let clockwise = cross (sub resolvedStartPoint resolvedCenterPoint) (sub endPoint resolvedCenterPoint) < 0.0
                 Some
                     { Sketch = { next with Entities = next.Entities @ [ REArc(arcId, startId, endId, ArcCenter(centerId, clockwise)) ] }
+                      ContinueFrom = None }
+        | "bezier", [ p0; p1; p2; p3 ], r0 :: r1 :: r2 :: r3 :: _ ->
+            let next, p0Id, _ = reuseOrAddPoint sketch  r0 p0
+            let next, p1Id, _ = reuseOrAddPoint next   r1 p1
+            let next, p2Id, _ = reuseOrAddPoint next   r2 p2
+            let next, p3Id, _ = reuseOrAddPoint next   r3 p3
+            if p0Id = p3Id then None
+            else
+                let bId = nextEntityId next "b"
+                Some
+                    { Sketch = { next with Entities = next.Entities @ [ REBezierCubic(bId, p0Id, p1Id, p2Id, p3Id) ] }
                       ContinueFrom = None }
         | _ -> None

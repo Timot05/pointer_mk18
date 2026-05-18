@@ -258,8 +258,22 @@ module MathIrWgsl =
                             let r  = emitNode ir.NodeRefs.[start + 2]
                             let q = planePointExpr plane
                             sprintf "circle_curve_distance(%s, vec2<f32>(%s, %s), %s)" q cx cy r
+                        | NodeKind.BezierCubic ->
+                            // Children: p0x, p0y, p1x, p1y, p2x, p2y, p3x, p3y.
+                            let plane : Plane = enum (node.Op / 2)
+                            let start = node.A
+                            let p0x = emitNode ir.NodeRefs.[start + 0]
+                            let p0y = emitNode ir.NodeRefs.[start + 1]
+                            let p1x = emitNode ir.NodeRefs.[start + 2]
+                            let p1y = emitNode ir.NodeRefs.[start + 3]
+                            let p2x = emitNode ir.NodeRefs.[start + 4]
+                            let p2y = emitNode ir.NodeRefs.[start + 5]
+                            let p3x = emitNode ir.NodeRefs.[start + 6]
+                            let p3y = emitNode ir.NodeRefs.[start + 7]
+                            let q = planePointExpr plane
+                            sprintf "bezier_cubic_distance(%s, vec2<f32>(%s, %s), vec2<f32>(%s, %s), vec2<f32>(%s, %s), vec2<f32>(%s, %s))"
+                                q p0x p0y p1x p1y p2x p2y p3x p3y
                         | NodeKind.BezierQuadratic
-                        | NodeKind.BezierCubic
                         | NodeKind.ArcCenter ->
                             // Not yet implemented in WGSL — keep the same
                             // out-of-range sentinel the legacy intrinsic
@@ -312,6 +326,38 @@ module MathIrWgsl =
         // Mirrors `circleCurveDist` in math_eval.zig.
         sb.AppendLine "fn circle_curve_distance(q: vec2<f32>, c: vec2<f32>, r: f32) -> f32 {" |> ignore
         sb.AppendLine "  return abs(length(q - c) - r);" |> ignore
+        sb.AppendLine "}" |> ignore
+        // Unsigned distance from a 2D point `q` to a cubic Bézier curve
+        // defined by control points p0..p3. Iterative Newton on the
+        // parameter t — mirrors `cubicCurveDist` in math_eval.zig.
+        sb.AppendLine "fn bezier_cubic_distance(q: vec2<f32>, p0: vec2<f32>, p1: vec2<f32>, p2: vec2<f32>, p3: vec2<f32>) -> f32 {" |> ignore
+        sb.AppendLine "  var best: f32 = min(length(p0 - q), length(p3 - q));" |> ignore
+        sb.AppendLine "  for (var seed: i32 = 0; seed < 9; seed = seed + 1) {" |> ignore
+        sb.AppendLine "    var t: f32 = f32(seed) * 0.125;" |> ignore
+        sb.AppendLine "    for (var i: i32 = 0; i < 12; i = i + 1) {" |> ignore
+        sb.AppendLine "      let u: f32 = 1.0 - t;" |> ignore
+        sb.AppendLine "      let b0: f32 = u * u * u;" |> ignore
+        sb.AppendLine "      let b1: f32 = 3.0 * u * u * t;" |> ignore
+        sb.AppendLine "      let b2: f32 = 3.0 * u * t * t;" |> ignore
+        sb.AppendLine "      let b3: f32 = t * t * t;" |> ignore
+        sb.AppendLine "      let c: vec2<f32> = b0 * p0 + b1 * p1 + b2 * p2 + b3 * p3;" |> ignore
+        sb.AppendLine "      let d1: vec2<f32> = 3.0 * u * u * (p1 - p0) + 6.0 * u * t * (p2 - p1) + 3.0 * t * t * (p3 - p2);" |> ignore
+        sb.AppendLine "      let d2: vec2<f32> = 6.0 * u * (p2 - 2.0 * p1 + p0) + 6.0 * t * (p3 - 2.0 * p2 + p1);" |> ignore
+        sb.AppendLine "      let v: vec2<f32> = c - q;" |> ignore
+        sb.AppendLine "      let g: f32 = dot(v, d1);" |> ignore
+        sb.AppendLine "      let gp: f32 = dot(d1, d1) + dot(v, d2);" |> ignore
+        sb.AppendLine "      let den: f32 = select(gp, sign(gp) * 1.0e-9, abs(gp) < 1.0e-9);" |> ignore
+        sb.AppendLine "      t = clamp(t - g / den, 0.0, 1.0);" |> ignore
+        sb.AppendLine "    }" |> ignore
+        sb.AppendLine "    let u: f32 = 1.0 - t;" |> ignore
+        sb.AppendLine "    let b0: f32 = u * u * u;" |> ignore
+        sb.AppendLine "    let b1: f32 = 3.0 * u * u * t;" |> ignore
+        sb.AppendLine "    let b2: f32 = 3.0 * u * t * t;" |> ignore
+        sb.AppendLine "    let b3: f32 = t * t * t;" |> ignore
+        sb.AppendLine "    let c: vec2<f32> = b0 * p0 + b1 * p1 + b2 * p2 + b3 * p3;" |> ignore
+        sb.AppendLine "    best = min(best, length(c - q));" |> ignore
+        sb.AppendLine "  }" |> ignore
+        sb.AppendLine "  return best;" |> ignore
         sb.AppendLine "}" |> ignore
         for src in funcSources do sb.Append src |> ignore
         for (entryName, root) in entries do

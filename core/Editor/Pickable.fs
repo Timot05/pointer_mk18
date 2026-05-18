@@ -34,6 +34,10 @@ type Pickable =
     | PickLine of pickId: PickId * sketchId: ActionId * entityId: string * startP: SlotPt2 * endP: SlotPt2
     | PickCircle of pickId: PickId * sketchId: ActionId * entityId: string * center: SlotPt2 * radiusSlot: Slot
     | PickArc of pickId: PickId * sketchId: ActionId * entityId: string * startP: SlotPt2 * endP: SlotPt2 * center: SlotPt2 * clockwise: bool
+    // Cubic Bezier. Carries the four control points' slot pairs so the
+    // GPU pick pass can tessellate the curve in lock-step with the SDF
+    // pipeline (same control-point coords).
+    | PickSpline of pickId: PickId * sketchId: ActionId * entityId: string * p0: SlotPt2 * p1: SlotPt2 * p2: SlotPt2 * p3: SlotPt2
     // Loops — referenced by ordered entity ids.
     | PickLoop of pickId: PickId * sketchId: ActionId * loopId: string * entityIds: string list
     // Dimensions — label anchor lives in existing labelPosition slots.
@@ -50,6 +54,7 @@ type SelectionTarget =
     | TargetLine of sketchId: ActionId * entityId: string
     | TargetCircle of sketchId: ActionId * entityId: string
     | TargetArc of sketchId: ActionId * entityId: string
+    | TargetSpline of sketchId: ActionId * entityId: string
     | TargetLoop of sketchId: ActionId * loopId: string
     | TargetDimension of sketchId: ActionId * constraintIndex: int
     | TargetFrameOrigin of frameId: ActionId
@@ -74,6 +79,7 @@ module Pickable =
         | PickLine(id, _, _, _, _) -> id
         | PickCircle(id, _, _, _, _) -> id
         | PickArc(id, _, _, _, _, _, _) -> id
+        | PickSpline(id, _, _, _, _, _, _) -> id
         | PickLoop(id, _, _, _) -> id
         | PickDimension(id, _, _, _) -> id
         | PickFrameOrigin(id, _) -> id
@@ -88,6 +94,7 @@ module Pickable =
         | PickLine(_, sketchId, _, _, _) -> sketchId
         | PickCircle(_, sketchId, _, _, _) -> sketchId
         | PickArc(_, sketchId, _, _, _, _, _) -> sketchId
+        | PickSpline(_, sketchId, _, _, _, _, _) -> sketchId
         | PickLoop(_, sketchId, _, _) -> sketchId
         | PickDimension(_, sketchId, _, _) -> sketchId
         | PickFrameOrigin(_, frameId) -> frameId
@@ -100,6 +107,7 @@ module Pickable =
         | PickLine(_, sketchId, entityId, _, _) -> TargetLine(sketchId, entityId)
         | PickCircle(_, sketchId, entityId, _, _) -> TargetCircle(sketchId, entityId)
         | PickArc(_, sketchId, entityId, _, _, _, _) -> TargetArc(sketchId, entityId)
+        | PickSpline(_, sketchId, entityId, _, _, _, _) -> TargetSpline(sketchId, entityId)
         | PickLoop(_, sketchId, loopId, _) -> TargetLoop(sketchId, loopId)
         | PickDimension(_, sketchId, constraintIndex, _) -> TargetDimension(sketchId, constraintIndex)
         | PickFrameOrigin(_, frameId) -> TargetFrameOrigin(frameId)
@@ -121,7 +129,8 @@ module Pickable =
         | TargetPoint _ -> 1
         | TargetLine _
         | TargetCircle _
-        | TargetArc _ -> 2
+        | TargetArc _
+        | TargetSpline _ -> 2
         | TargetDimension _ -> 3
         | TargetFrameOrigin _
         | TargetFrameAxis _ -> 4

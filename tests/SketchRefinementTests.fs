@@ -530,3 +530,64 @@ let ``block input: wire profile.loop_0 to a Field-typed param via EPath`` () =
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
     | other -> failwithf "expected VField, got %A" other
+
+// ─── Cubic Bezier (spline) ─────────────────────────────────────────────────
+
+let private splineSketch : ActionSketch =
+    { Entities =
+        [ REPoint("p0", 0.0, 0.0)
+          REPoint("p1", 1.0, 4.0)
+          REPoint("p2", 5.0, 4.0)
+          REPoint("p3", 6.0, 0.0)
+          REBezierCubic("b0", "p0", "p1", "p2", "p3") ]
+      Constraints = []; Loops = [] }
+
+[<Fact>]
+let ``spline: REBezierCubic exposes spline_0 with eight scalar geometry fields`` () =
+    let nb = notebookOf [ sketchBlockOf 0 "profile" splineSketch XY ]
+    let composed = NotebookCompose.compose nb
+    match Map.tryFind "profile" composed.TypeEnv with
+    | Some (Type.Sketch fields) ->
+        Assert.True(Map.containsKey "spline_0" fields,
+                    sprintf "expected `spline_0` member, available: %A" (Map.toList fields |> List.map fst))
+        match Map.find "spline_0" fields with
+        | Type.Primitive primFields ->
+            Assert.Equal(Type.Field, Map.find "signed_distance" primFields)
+            for k in [ "x0"; "y0"; "x1"; "y1"; "cx0"; "cy0"; "cx1"; "cy1" ] do
+                Assert.True(Map.containsKey k primFields,
+                            sprintf "missing %s; have %A" k (Map.toList primFields |> List.map fst))
+                Assert.Equal(Type.Scalar, Map.find k primFields)
+        | other -> failwithf "expected Type.Primitive, got %s" (Type.format other)
+    | other -> failwithf "expected Type.Sketch, got %A" other
+
+[<Fact>]
+let ``spline: profile.spline_0.cx0 typechecks as Scalar`` () =
+    let env =
+        let nb = notebookOf [ sketchBlockOf 0 "profile" splineSketch XY ]
+        NotebookCompose.compose nb |> fun c -> c.TypeEnv
+    match Typecheck.elaborate env (path [ "profile"; "spline_0"; "cx0" ]) with
+    | Ok te -> Assert.Equal(Type.Scalar, te.Type)
+    | Error es ->
+        let msg = es |> List.map Typecheck.formatError |> String.concat "; "
+        failwithf "expected ok, got: %s" msg
+
+[<Fact>]
+let ``spline: profile.spline_0.signed_distance evaluates to VField over a BezierCubic node`` () =
+    let nb = notebookOf [ sketchBlockOf 0 "profile" splineSketch XY ]
+    let result = composeAndEval nb
+    match Map.find "profile" result.Bindings with
+    | Value.VSketch sv ->
+        match Map.tryFind "spline_0" sv.Fields |> Option.map (fun t -> t.Value) with
+        | Some (Value.VPrimitive pv) ->
+            match Map.tryFind "signed_distance" pv.Fields |> Option.map (fun t -> t.Value) with
+            | Some (Value.VField root) ->
+                let rootNode = result.Ir.Nodes.[root.Id]
+                Assert.Equal(MathIr.NodeKind.BezierCubic, rootNode.Kind)
+            | other -> failwithf "expected VField under .signed_distance, got %A" other
+        | other -> failwithf "expected VPrimitive at spline_0, got %A" other
+    | other -> failwithf "expected VSketch, got %A" other
+
+[<Fact>]
+let ``spline: sketch with one spline produces zero loops`` () =
+    let normalized = SketchLoops.normalize splineSketch
+    Assert.Equal(0, List.length normalized.Loops)

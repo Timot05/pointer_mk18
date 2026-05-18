@@ -213,7 +213,15 @@ module SketchLoops =
                 | _ -> ()
 
             | REArc(_, _, _, ArcThreePoint _) -> ()
-            | _ -> ()
+            // v1: splines do not participate in loop detection. A
+            // "rounded rectangle" composed from lines + splines would
+            // not become a closed loop; users can still expose splines
+            // as top-level `Primitive`s on the sketch refinement and
+            // feed them into `wing_loft`-style scripts.
+            | REBezierCubic _ -> ()
+            // Points / circles: handled separately (circles via
+            // `circleLoops` above; points carry no edge contribution).
+            | REPoint _ | RECircle _ -> ()
 
         if edges.Count = 0 then
             circleLoops
@@ -388,6 +396,7 @@ module SketchLoops =
         | RELine _   -> Some "line"
         | REArc _    -> Some "arc"
         | RECircle _ -> Some "circle"
+        | REBezierCubic _ -> Some "spline"
         | REPoint _  -> None
 
     /// Parse `<prefix>_<n>` back to its integer index; returns `None`
@@ -465,6 +474,7 @@ module SketchLoops =
                     | RELine(id, _, _) -> id
                     | RECircle(id, _, _) -> id
                     | REArc(id, _, _, _) -> id
+                    | REBezierCubic(id, _, _, _, _) -> id
                 id, e)
             |> Map.ofList
         let withPrimitives =

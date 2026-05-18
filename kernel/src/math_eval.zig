@@ -184,10 +184,11 @@ pub fn evalPoint(ir: *const MathIR, root: Expr, slots: []const f64, p: Vec3) f64
         .line_segment => evalLineSegmentPoint(ir, node, slots, p),
         .circle => evalCirclePoint(ir, node, slots, p),
         .bezier_quadratic => evalBezierQuadraticPoint(ir, node, slots, p),
-        // BezierCubic / ArcCenter: unimplemented in the legacy primitive
-        // evaluator (returns NaN there). Keep the same behaviour for now;
-        // a real implementation can drop in alongside the others.
-        .bezier_cubic, .arc_center => math.nan(f64),
+        .bezier_cubic => evalBezierCubicPoint(ir, node, slots, p),
+        // ArcCenter: unimplemented in the legacy primitive evaluator
+        // (returns NaN). Keep the same behaviour for now; a real
+        // implementation can drop in alongside the others.
+        .arc_center => math.nan(f64),
     };
 }
 
@@ -263,6 +264,51 @@ fn quadraticCurveDist(p: Vec2, p0: Vec2, p1: Vec2, p2: Vec2) f64 {
     return best;
 }
 
+fn bezierCubicPoint(t: f64, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2) Vec2 {
+    const u = 1.0 - t;
+    const b0 = u * u * u;
+    const b1 = 3.0 * u * u * t;
+    const b2 = 3.0 * u * t * t;
+    const b3 = t * t * t;
+    return v2Add(v2Add(v2Scale(p0, b0), v2Scale(p1, b1)),
+                 v2Add(v2Scale(p2, b2), v2Scale(p3, b3)));
+}
+
+fn bezierCubicD1(t: f64, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2) Vec2 {
+    const u = 1.0 - t;
+    // B'(t) = 3(1-t)^2 (P1-P0) + 6(1-t)t (P2-P1) + 3t^2 (P3-P2)
+    return v2Add(v2Add(v2Scale(v2Sub(p1, p0), 3.0 * u * u),
+                       v2Scale(v2Sub(p2, p1), 6.0 * u * t)),
+                 v2Scale(v2Sub(p3, p2), 3.0 * t * t));
+}
+
+fn bezierCubicD2(t: f64, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2) Vec2 {
+    const u = 1.0 - t;
+    // B''(t) = 6(1-t) (P2 - 2P1 + P0) + 6t (P3 - 2P2 + P1)
+    return v2Add(v2Scale(v2Add(v2Sub(p2, v2Scale(p1, 2.0)), p0), 6.0 * u),
+                 v2Scale(v2Add(v2Sub(p3, v2Scale(p2, 2.0)), p1), 6.0 * t));
+}
+
+fn cubicCurveDist(p: Vec2, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2) f64 {
+    var best = min(v2Len(v2Sub(p0, p)), v2Len(v2Sub(p3, p)));
+    var seed_i: usize = 0;
+    while (seed_i < 9) : (seed_i += 1) {
+        var t = @as(f64, @floatFromInt(seed_i)) * 0.125;
+        var i: usize = 0;
+        while (i < 12) : (i += 1) {
+            const c = bezierCubicPoint(t, p0, p1, p2, p3);
+            const d1 = bezierCubicD1(t, p0, p1, p2, p3);
+            const d2 = bezierCubicD2(t, p0, p1, p2, p3);
+            const v = v2Sub(c, p);
+            const g = v2Dot(v, d1);
+            const gp = v2Dot(d1, d1) + v2Dot(v, d2);
+            t = clamp(0.0, 1.0, t - g / safeDenominator(gp, 1.0e-9));
+        }
+        best = min(best, v2Len(v2Sub(bezierCubicPoint(t, p0, p1, p2, p3), p)));
+    }
+    return best;
+}
+
 // ── Primitive-as-node evaluators ─────────────────────────────────────────
 //
 // `LineSegment`/`Circle`/etc. NodeKinds carry their geometry as child node
@@ -298,6 +344,15 @@ pub fn evalBezierQuadraticPoint(ir: *const MathIR, node: Node, slots: []const f6
     const p1 = v2(primitiveChild(ir, node, 2, slots, p), primitiveChild(ir, node, 3, slots, p));
     const p2 = v2(primitiveChild(ir, node, 4, slots, p), primitiveChild(ir, node, 5, slots, p));
     return quadraticCurveDist(q, p0, p1, p2);
+}
+
+pub fn evalBezierCubicPoint(ir: *const MathIR, node: Node, slots: []const f64, p: Vec3) f64 {
+    const q = planePoint(p, primitivePlane(node));
+    const p0 = v2(primitiveChild(ir, node, 0, slots, p), primitiveChild(ir, node, 1, slots, p));
+    const p1 = v2(primitiveChild(ir, node, 2, slots, p), primitiveChild(ir, node, 3, slots, p));
+    const p2 = v2(primitiveChild(ir, node, 4, slots, p), primitiveChild(ir, node, 5, slots, p));
+    const p3 = v2(primitiveChild(ir, node, 6, slots, p), primitiveChild(ir, node, 7, slots, p));
+    return cubicCurveDist(q, p0, p1, p2, p3);
 }
 
 const AxisHit = struct {

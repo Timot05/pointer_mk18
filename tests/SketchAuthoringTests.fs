@@ -327,6 +327,7 @@ let ``requiredToolPoints matches the supported sketch tools`` () =
     Assert.Equal(2, SketchAuthoring.requiredToolPoints "roundedRectangle")
     Assert.Equal(2, SketchAuthoring.requiredToolPoints "circle")
     Assert.Equal(3, SketchAuthoring.requiredToolPoints "arc")
+    Assert.Equal(4, SketchAuthoring.requiredToolPoints "bezier")
     Assert.Equal(0, SketchAuthoring.requiredToolPoints "none")
 
 [<Fact>]
@@ -578,3 +579,41 @@ let ``Distance draft with clicked point and hovered frame origin yields frame di
         | other -> failwithf "Expected FrameDistance, got %A" other
     | None ->
         failwith "Expected pending frame distance placement"
+
+[<Fact>]
+let ``Bezier tool creates one cubic spline with four points`` () =
+    let sketch = ActionSketch.empty
+    let result =
+        SketchAuthoring.applyToolClick
+            "bezier"
+            [ { X = 0.0; Y = 0.0 }
+              { X = 1.0; Y = 4.0 }
+              { X = 5.0; Y = 4.0 }
+              { X = 6.0; Y = 0.0 } ]
+            []
+            sketch
+            None
+        |> Option.defaultWith (fun () -> failwith "Expected bezier to be created")
+
+    let pointCount =
+        result.Sketch.Entities
+        |> List.filter (function | REPoint _ -> true | _ -> false)
+        |> List.length
+    let splineCount =
+        result.Sketch.Entities
+        |> List.filter (function | REBezierCubic _ -> true | _ -> false)
+        |> List.length
+
+    Assert.Equal(4, pointCount)
+    Assert.Equal(1, splineCount)
+
+    match List.last result.Sketch.Entities with
+    | REBezierCubic(_, p0, p1, p2, p3) ->
+        let pts =
+            result.Sketch.Entities
+            |> List.choose (function REPoint(id, x, y) -> Some(id, x, y) | _ -> None)
+            |> Map.ofList
+        Assert.Equal(4, Map.count (Map.ofList [ p0, (); p1, (); p2, (); p3, () ]))
+        Assert.True(Map.containsKey p0 pts)
+        Assert.True(Map.containsKey p3 pts)
+    | other -> failwithf "Expected REBezierCubic last, got %A" other

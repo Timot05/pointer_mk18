@@ -251,19 +251,38 @@ module Document =
               Loops = [] }
         SketchLoops.normalize raw
 
-    /// Both wing guide curves bundled into one sketch. Two lines:
-    /// `line_0` is the leading edge, `line_1` is the trailing edge.
-    /// Top-level primitives are exposed on the sketch refinement, so
-    /// downstream blocks can wire `wing_guides.line_0` / `.line_1`
-    /// directly without splitting them into separate sketch blocks.
+    let private rectangleSketch cx cy halfX halfY : ActionSketch =
+        let raw : ActionSketch =
+            { Entities =
+                [ REPoint("p0", cx - halfX, cy - halfY)
+                  REPoint("p1", cx + halfX, cy - halfY)
+                  REPoint("p2", cx + halfX, cy + halfY)
+                  REPoint("p3", cx - halfX, cy + halfY)
+                  RELine("l0", "p0", "p1")
+                  RELine("l1", "p1", "p2")
+                  RELine("l2", "p2", "p3")
+                  RELine("l3", "p3", "p0") ]
+              Constraints = []
+              Loops = [] }
+        SketchLoops.normalize raw
+
+    /// Both wing guide curves bundled into one sketch. Two cubic Bezier
+    /// splines: `spline_0` is the leading edge, `spline_1` is the
+    /// trailing edge. Control points bow each edge outward at mid-span
+    /// to produce a Spitfire-style elliptical planform — the chord
+    /// peaks around y ≈ 2 and tapers smoothly to the tip.
     let private wingGuidesSketch : ActionSketch =
         { Entities =
             [ REPoint("le_root", 0.0, 0.0)
+              REPoint("le_cp0", -0.5, 1.5)
+              REPoint("le_cp1", -0.25, 3.5)
               REPoint("le_tip", 0.25, 5.0)
               REPoint("te_root", 2.0, 0.0)
+              REPoint("te_cp0", 2.5, 1.5)
+              REPoint("te_cp1", 2.25, 3.5)
               REPoint("te_tip", 1.25, 5.0)
-              RELine("leading", "le_root", "le_tip")
-              RELine("trailing", "te_root", "te_tip") ]
+              REBezierCubic("leading", "le_root", "le_cp0", "le_cp1", "le_tip")
+              REBezierCubic("trailing", "te_root", "te_cp0", "te_cp1", "te_tip") ]
           Constraints = []
           Loops = [] }
 
@@ -285,8 +304,8 @@ module Document =
                 Server.Lang.Notebook.NativeBody(
                     "wing-remap-preview",
                     Map.ofList
-                        [ "leading", Server.Lang.AstBuilder.pathE [ "wing_guides"; "line_0" ]
-                          "trailing", Server.Lang.AstBuilder.pathE [ "wing_guides"; "line_1" ] ])
+                        [ "leading", Server.Lang.AstBuilder.pathE [ "wing_guides"; "spline_0" ]
+                          "trailing", Server.Lang.AstBuilder.pathE [ "wing_guides"; "spline_1" ] ])
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
             SlicePlane =
@@ -306,41 +325,48 @@ module Document =
             SlicePlane =
                 { Server.Lang.Notebook.defaultSlicePlane with
                     Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } }
-          // Guided loft demo: square cross-section at Y=0 morphing
-          // into a circle at Y=3, with two guide lines that taper the
-          // chord from width 2 at the root to width 1 at the tip.
-          // Cross-sections live in the XZ plane (their X is the chord
-          // axis, Z is thickness); guides live in the XY plane (their
-          // Y is the span axis matching world Y). Positioned to the
-          // left of the wing (X negative) to keep the two demo bodies
-          // from overlapping.
+          // Aircraft fuselage: a body lofted along the world X axis
+          // (nose at X=-3, tail at X=6) so it runs perpendicular to
+          // the wing span (which lives along Y), sitting on the
+          // wing's mirror plane (Y=0). Cross-sections are rectangles
+          // in the YZ plane sized to match the spline separation at
+          // X=start (±0.25 in world Y), so their natural width IS the
+          // body's width at the nose. The splines then stretch the
+          // body outward at mid-cabin and back inward at the tail.
           { Id = 4
-            Name = "loft_square"
+            Name = "body_nose"
             Body = Server.Lang.Notebook.SketchBody
-                { Sketch = squareSketch 0.0 0.0 1.0
-                  Plane = XZ }
+                { Sketch = rectangleSketch 0.0 0.0 0.25 0.30
+                  Plane = YZ }
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
             SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
           { Id = 5
-            Name = "loft_circle"
+            Name = "body_tail"
             Body = Server.Lang.Notebook.SketchBody
-                { Sketch = circleSketch 0.0 0.0 1.0
-                  Plane = XZ }
+                { Sketch = rectangleSketch 0.0 0.0 0.25 0.20
+                  Plane = YZ }
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
             SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
           { Id = 7
-            Name = "loft_guides"
+            Name = "body_guides"
             Body = Server.Lang.Notebook.SketchBody
                 { Sketch =
                     { Entities =
-                        [ REPoint("l_root", -3.0, 0.0)
-                          REPoint("l_tip",  -2.5, 3.0)
-                          REPoint("r_root", -1.0, 0.0)
-                          REPoint("r_tip",  -1.5, 3.0)
-                          RELine("g_left",  "l_root", "l_tip")
-                          RELine("g_right", "r_root", "r_tip") ]
+                        [ // Top (positive-Y) silhouette: nose 0.25 →
+                          // bulge to 0.8 around mid-body → tail 0.15.
+                          REPoint("t_nose", -3.0,  0.25)
+                          REPoint("t_cp0",  -1.0,  0.85)
+                          REPoint("t_cp1",   3.5,  0.85)
+                          REPoint("t_tail",  6.0,  0.15)
+                          // Bottom (negative-Y) silhouette: mirror of the top.
+                          REPoint("b_nose", -3.0, -0.25)
+                          REPoint("b_cp0",  -1.0, -0.85)
+                          REPoint("b_cp1",   3.5, -0.85)
+                          REPoint("b_tail",  6.0, -0.15)
+                          REBezierCubic("g_top", "t_nose", "t_cp0", "t_cp1", "t_tail")
+                          REBezierCubic("g_bot", "b_nose", "b_cp0", "b_cp1", "b_tail") ]
                       Constraints = []
                       Loops = [] }
                   Plane = XY }
@@ -348,22 +374,22 @@ module Document =
             ColorIndex = 0
             SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
           { Id = 6
-            Name = "loft_demo"
+            Name = "fuselage"
             Body =
                 Server.Lang.Notebook.NativeBody(
-                    "wing_loft",
+                    "body_loft",
                     Map.ofList
-                        [ "a", Server.Lang.AstBuilder.pathE [ "loft_square"; "loop_0" ]
-                          "b", Server.Lang.AstBuilder.pathE [ "loft_circle"; "loop_0" ]
-                          "g_left", Server.Lang.AstBuilder.pathE [ "loft_guides"; "line_0" ]
-                          "g_right", Server.Lang.AstBuilder.pathE [ "loft_guides"; "line_1" ]
-                          "start", Server.Lang.AstBuilder.numE 0.0
-                          "end_pos", Server.Lang.AstBuilder.numE 3.0 ])
+                        [ "a", Server.Lang.AstBuilder.pathE [ "body_nose"; "loop_0" ]
+                          "b", Server.Lang.AstBuilder.pathE [ "body_tail"; "loop_0" ]
+                          "g_top", Server.Lang.AstBuilder.pathE [ "body_guides"; "spline_0" ]
+                          "g_bot", Server.Lang.AstBuilder.pathE [ "body_guides"; "spline_1" ]
+                          "start", Server.Lang.AstBuilder.numE -3.0
+                          "end_pos", Server.Lang.AstBuilder.numE 6.0 ])
             Visibility = Server.Lang.Notebook.VIsosurface
             ColorIndex = 1
             SlicePlane =
                 { Server.Lang.Notebook.defaultSlicePlane with
-                    Origin = { X = -2.0; Y = 1.5; Z = 0.0 } } } ]
+                    Origin = { X = 1.5; Y = 0.0; Z = 0.0 } } } ]
 
     /// Demo content the script editor shows on a fresh document.
     /// Defines the standard library of SDF primitives (sphere, box,
@@ -449,36 +475,77 @@ end
 
 // Multi-guide loft (wing-style). Sweeps a cross-section between
 // loop `a` (at span position `start`) and loop `b` (at `end_pos`),
-// while constraining the chord direction with two guide lines —
-// `g_left` and `g_right`. Conventions match `wing-remap-preview`:
+// while constraining the chord direction with two cubic Bezier
+// guide splines — `g_left` and `g_right`. Conventions match
+// `wing-remap-preview`:
 //   cross-sections in the XZ plane (their local axes are X = chord,
 //     Z = thickness)
 //   guides in the XY plane (their local Y is the span = world Y)
 //   span direction = Y
 //   chord direction = X
-// `chord = (2x - left_x - right_x) / (right_x - left_x)` runs from
-// -1 on `g_left` to +1 on `g_right`, with mid-chord at 0. The
-// cross-sections' X coords get remapped to this chord parameter,
-// so the cross-section's left/right edges always coincide with
-// the guides regardless of how the guides flare or taper along Y.
-// The two cross-sections then linearly interpolate by `t = (y -
-// start) / (end_pos - start)`, and a slab clamp closes the body
-// at the two span endpoints.
 //
-// The line-at-y arithmetic is inlined rather than factored into a
+// Width convention: at `start`, the cross-section sits at its
+// natural absolute X extent — its world-X edges coincide with the
+// spline endpoints `g_left.x0` and `g_right.x0`. As the span axis
+// progresses, the splines expand or contract the cross-section by
+// the ratio `S(y) / S(start)`, where `S(y)` is the current
+// spline separation. So a cross-section that's 2-wide at the root
+// (matching guide X separation 2 at `start`) stretches to 1.7 wide
+// where the guides separate by 1.7, and so on.
+//
+// The cubic-at-y arithmetic is inlined rather than factored into a
 // helper because the typecheck's refinement-cell mechanism only
 // grows through direct path access — calling a helper that
 // requires the refined Primitive would fail to propagate the
-// required `x0/y0/x1/y1` members from this site.
+// required `x0/y0/x1/y1/cx0/cy0/cx1/cy1` members from this site.
 let wing_loft = fun (a: Loop) (b: Loop) (g_left: Primitive) (g_right: Primitive) (start: Scalar) (end_pos: Scalar) ->
     let t = (y - start) / (end_pos - start + 0.000001)
-    let left_x = g_left.x0 + (y - g_left.y0) * (g_left.x1 - g_left.x0) / (g_left.y1 - g_left.y0 + 0.000001)
-    let right_x = g_right.x0 + (y - g_right.y0) * (g_right.x1 - g_right.x0) / (g_right.y1 - g_right.y0 + 0.000001)
-    let chord = (2 * x - left_x - right_x) / (right_x - left_x + 0.000001)
+    let t_l = (y - g_left.y0) / (g_left.y1 - g_left.y0 + 0.000001)
+    let u_l = 1 - t_l
+    let left_x = u_l*u_l*u_l * g_left.x0 + 3*u_l*u_l*t_l * g_left.cx0 + 3*u_l*t_l*t_l * g_left.cx1 + t_l*t_l*t_l * g_left.x1
+    let t_r = (y - g_right.y0) / (g_right.y1 - g_right.y0 + 0.000001)
+    let u_r = 1 - t_r
+    let right_x = u_r*u_r*u_r * g_right.x0 + 3*u_r*u_r*t_r * g_right.cx0 + 3*u_r*t_r*t_r * g_right.cx1 + t_r*t_r*t_r * g_right.x1
+    let s_start = g_right.x0 - g_left.x0
+    let center = (right_x + left_x) / 2
+    let chord = (x - center) * s_start / (right_x - left_x + 0.000001)
     let a_remap = remap_axes a.signed_distance chord y z
     let b_remap = remap_axes b.signed_distance chord y z
     let blend = (1 - t) * a_remap + t * b_remap
     let slab = max (y - end_pos) (start - y)
+    max blend slab
+end
+
+// Aircraft-fuselage loft — `wing_loft` rotated 90° so the body axis is
+// world X (nose → tail) instead of world Y. Cross-sections `a` and `b`
+// live in the YZ plane (their local X = world Y = body width, their
+// local Y = world Z = body height). Guides `g_top` / `g_bot` live in
+// the XY plane: their local X = world X = body length, their local Y =
+// world Y = body half-width.
+//
+// Width convention: at `start`, the cross-section sits at its
+// natural absolute Y extent — its world-Y edges coincide with the
+// spline endpoints `g_top.y0` and `g_bot.y0`. As X moves nose-to-
+// tail the splines stretch or shrink the cross-section by the
+// ratio `S(x) / S(start)`. So if the splines are at ±0.25 at the
+// nose, the cross-section is naturally 0.5 wide; the body expands
+// to 1.7 wide where the guides bow out to ±0.85, and contracts to
+// 0.3 wide where the guides taper to ±0.15.
+let body_loft = fun (a: Loop) (b: Loop) (g_top: Primitive) (g_bot: Primitive) (start: Scalar) (end_pos: Scalar) ->
+    let t = (x - start) / (end_pos - start + 0.000001)
+    let t_t = (x - g_top.x0) / (g_top.x1 - g_top.x0 + 0.000001)
+    let u_t = 1 - t_t
+    let top_y = u_t*u_t*u_t * g_top.y0 + 3*u_t*u_t*t_t * g_top.cy0 + 3*u_t*t_t*t_t * g_top.cy1 + t_t*t_t*t_t * g_top.y1
+    let t_b = (x - g_bot.x0) / (g_bot.x1 - g_bot.x0 + 0.000001)
+    let u_b = 1 - t_b
+    let bot_y = u_b*u_b*u_b * g_bot.y0 + 3*u_b*u_b*t_b * g_bot.cy0 + 3*u_b*t_b*t_b * g_bot.cy1 + t_b*t_b*t_b * g_bot.y1
+    let s_start = g_top.y0 - g_bot.y0
+    let center = (top_y + bot_y) / 2
+    let chord = (y - center) * s_start / (top_y - bot_y + 0.000001)
+    let a_remap = remap_axes a.signed_distance x chord z
+    let b_remap = remap_axes b.signed_distance x chord z
+    let blend = (1 - t) * a_remap + t * b_remap
+    let slab = max (x - end_pos) (start - x)
     max blend slab
 end
 

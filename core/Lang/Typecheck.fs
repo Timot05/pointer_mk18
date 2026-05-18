@@ -155,8 +155,9 @@ module Typecheck =
             // specific refinement built there so widening these access
             // patterns through the cell-grow path doesn't conflict with
             // the actual Primitive type assigned to the value.
-            | "x0" | "y0" | "x1" | "y1"   // line endpoints
+            | "x0" | "y0" | "x1" | "y1"   // line endpoints + spline endpoints
             | "cx" | "cy" | "r"           // circle params
+            | "cx0" | "cy0" | "cx1" | "cy1"   // spline control points
                 -> Type.Scalar
             | _ -> Type.Field
 

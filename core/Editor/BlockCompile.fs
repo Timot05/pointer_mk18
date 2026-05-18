@@ -51,6 +51,7 @@ module BlockCompile =
                 a (sprintf "sketch.entity.%s.throughX" eid) through.X
                 a (sprintf "sketch.entity.%s.throughY" eid) through.Y
             | REArc _ -> ()
+            | REBezierCubic _ -> ()
 
         let labelXY i (lp: LabelPos option) =
             let pos = lp |> Option.defaultValue { X = 0.0; Y = 0.0 }
@@ -112,7 +113,13 @@ module BlockCompile =
                                   ptSlot b sketchId endId,
                                   ptSlot b sketchId centerId,
                                   cw))
-                | REArc(_, _, _, ArcThreePoint _) -> None)
+                | REArc(_, _, _, ArcThreePoint _) -> None
+                | REBezierCubic(eid, p0, p1, p2, p3) ->
+                    Some (PickSpline(nextId(), sketchId, eid,
+                                     ptSlot b sketchId p0,
+                                     ptSlot b sketchId p1,
+                                     ptSlot b sketchId p2,
+                                     ptSlot b sketchId p3)))
 
         // Pickables use the *persisted* loop registry, not freshly-detected
         // loops. `detectLoops` produces content-derived IDs like

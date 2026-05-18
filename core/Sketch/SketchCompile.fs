@@ -197,6 +197,7 @@ module SketchCompile =
                 tables.ArcThrough[id] <- { TxNode = xNode; TyNode = yNode; TxSlot = xSlot; TySlot = ySlot }
             | RELine _ -> ()
             | REArc _  -> ()
+            | REBezierCubic _ -> ()
 
         let outputs = ResizeArray<int>()
         let mutable skipped = 0

@@ -20,7 +20,8 @@ let private tools : (SketchToolKind * string * string option) list =
       RectangleTool,        "rect",   Some "G"
       RoundedRectangleTool, "rrect",  Some "\u21e7G"
       CircleTool,           "circle", Some "C"
-      ArcTool,              "arc",    Some "U" ]
+      ArcTool,              "arc",    Some "U"
+      BezierTool,           "spline", Some "⇧B" ]
 
 let private renderToolbar (dispatch: Message -> unit) (currentTool: string) : HTMLElement =
     let toolbar = Dom.el "div" "sketch-toolbar"

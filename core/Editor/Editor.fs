@@ -26,6 +26,7 @@ type SketchToolKind =
     | RoundedRectangleTool
     | CircleTool
     | ArcTool
+    | BezierTool
 
 type ConstraintPlacementKind =
     | DistancePlacement
@@ -234,6 +235,7 @@ module Editor =
         | RoundedRectangleTool -> "roundedRectangle"
         | CircleTool -> "circle"
         | ArcTool -> "arc"
+        | BezierTool -> "bezier"
 
     let constraintPlacementName =
         function
@@ -371,7 +373,7 @@ module Editor =
         | Some sid ->
             match target with
             | TargetPoint(s, _) | TargetLine(s, _) | TargetCircle(s, _)
-            | TargetArc(s, _) | TargetLoop(s, _) | TargetDimension(s, _) -> s = sid
+            | TargetArc(s, _) | TargetSpline(s, _) | TargetLoop(s, _) | TargetDimension(s, _) -> s = sid
             | TargetFrameOrigin f -> Set.contains f (sketchEditFrameIds state)
             | _ -> false
 
@@ -381,6 +383,7 @@ module Editor =
         | TargetLine _
         | TargetCircle _
         | TargetArc _
+        | TargetSpline _
         | TargetLoop _
         | TargetDimension _ -> true
         | _ -> false
@@ -388,14 +391,14 @@ module Editor =
     let isValidSelectionTarget (state: EditorState) target =
         // Pick mode (wiring a block ref via viewport click) overrides
         // the normal "sketch targets only inside sketch-edit mode" gate
-        // for Loop and Primitive (line/arc/circle) targets — a user
-        // wiring a `Loop`- or `Primitive`-typed input must be able to
-        // click any loop or primitive in any sketch in the scene, not
-        // just the actively-edited one.
+        // for Loop and Primitive (line/arc/circle/spline) targets — a
+        // user wiring a `Loop`- or `Primitive`-typed input must be able
+        // to click any loop or primitive in any sketch in the scene,
+        // not just the actively-edited one.
         let pickModeAllowsSketchTarget =
             state.EditingBlockRef.IsSome
             && (match target with
-                | TargetLoop _ | TargetLine _ | TargetCircle _ | TargetArc _ -> true
+                | TargetLoop _ | TargetLine _ | TargetCircle _ | TargetArc _ | TargetSpline _ -> true
                 | _ -> false)
         match target with
         | _ when pickModeAllowsSketchTarget -> true
@@ -892,7 +895,8 @@ module Editor =
                         | Server.REPoint(id, _, _)
                         | Server.RELine(id, _, _)
                         | Server.RECircle(id, _, _)
-                        | Server.REArc(id, _, _, _) -> id
+                        | Server.REArc(id, _, _, _)
+                        | Server.REBezierCubic(id, _, _, _, _) -> id
                     let resolvePrimitiveId (sketchData: Server.Lang.Notebook.SketchData) (entityId: string) : string option =
                         let entitiesById =
                             sketchData.Sketch.Entities
@@ -903,7 +907,8 @@ module Editor =
                             |> List.choose (function
                                 | Server.RELine(id, _, _)
                                 | Server.RECircle(id, _, _)
-                                | Server.REArc(id, _, _, _) -> Some id
+                                | Server.REArc(id, _, _, _)
+                                | Server.REBezierCubic(id, _, _, _, _) -> Some id
                                 | _ -> None)
                         Server.SketchLoops.reconcilePrimitives [] entitiesById allCurveIds
                         |> List.tryFind (fun pr -> pr.EntityId = entityId)
@@ -919,7 +924,7 @@ module Editor =
                         | Some(srcId, paramName), Some(target, _, _) ->
                             let primitiveEntity =
                                 match target with
-                                | TargetLine(s, e) | TargetCircle(s, e) | TargetArc(s, e) -> Some(s, e)
+                                | TargetLine(s, e) | TargetCircle(s, e) | TargetArc(s, e) | TargetSpline(s, e) -> Some(s, e)
                                 | _ -> None
                             primitiveEntity
                             |> Option.bind (fun (sketchActionId, entityId) ->

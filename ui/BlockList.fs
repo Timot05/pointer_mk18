@@ -531,27 +531,13 @@ let private expectedRefType
         |> List.tryFind (fun p -> p.Name = paramName)
         |> Option.map (fun p -> p.Type))
 
-/// Loops on `candidate` whose member type satisfies `expected`. Used
-/// by the pick flow: if the user is wiring into a `Loop {...}` /
-/// `Field` slot and clicks a sketch block, these are the loops the
-/// picker offers. Empty for non-sketch candidates.
-let private matchingLoopIds
-        (doc: DocumentView)
-        (candidate: Notebook.BlockId)
-        (expected: Type.T) : string list =
-    match Map.tryFind candidate doc.BlockOutputs with
-    | Some (Type.Sketch fields) ->
-        fields
-        |> Map.toList
-        |> List.choose (fun (id, ty) ->
-            if Type.isSubtypeOf ty expected then Some id else None)
-    | _ -> []
-
-/// Is `candidate` a valid commit target for the current pick? Type
-/// compatible (direct or via a sketch loop) and not the source itself.
-/// DAG ordering isn't enforced here — `SetBlockArg` auto-reorders so
-/// the source ends up upstream of its targets, so any type-compatible
-/// non-self block works.
+/// Is `candidate` a valid commit target for the current pick? A
+/// block-list row commits the whole-block ref (`varE block.Name`), so
+/// it's only valid when the candidate's *own* output type satisfies
+/// the expected param type. Loop-typed inputs (where the user wires
+/// `profile.loop_0` and similar paths) deliberately exclude sketch
+/// rows here — committing the sketch as a Loop is a type error, so
+/// the loop must be picked in the 3D viewport instead.
 let private isValidPickTarget
         (doc: DocumentView)
         (sourceBlockId: Notebook.BlockId)
@@ -562,11 +548,9 @@ let private isValidPickTarget
         match expectedRefType doc sourceBlockId paramName with
         | None -> false
         | Some expected ->
-            let directOk =
-                match Map.tryFind candidate doc.BlockOutputs with
-                | Some actual -> Type.isSubtypeOf actual expected
-                | None -> false
-            directOk || not (List.isEmpty (matchingLoopIds doc candidate expected))
+            match Map.tryFind candidate doc.BlockOutputs with
+            | Some actual -> Type.isSubtypeOf actual expected
+            | None -> false
 
 let private renderRow
         (dispatch: Message -> unit)

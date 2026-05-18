@@ -88,6 +88,20 @@ module UserScript =
         // the eval side by `NotebookCompose.buildValueEnv`.
         for name in [ "x"; "y"; "z" ] do
             env <- Map.add name Type.Field env
+        // Math primitives — callable lambdas over `Field` operands.
+        // Their value-side bindings live in `NotebookCompose.buildValueEnv`
+        // as VClosures that wrap `EUnary` / `EBinary` / `ERemapAxes`. The
+        // `Scalar <: Field` subtype rule (Type.isSubtypeOf) lets users
+        // pass numeric literals (`max bx 0`) without explicit coercion.
+        let fieldUnary  = Type.curried [ Type.Field ] Type.Field
+        let fieldBinary = Type.curried [ Type.Field; Type.Field ] Type.Field
+        let remapTy =
+            Type.curried [ Type.Field; Type.Field; Type.Field; Type.Field ] Type.Field
+        for name in [ "sqrt"; "abs" ] do
+            env <- Map.add name fieldUnary env
+        for name in [ "min"; "max"; "compare" ] do
+            env <- Map.add name fieldBinary env
+        env <- Map.add "remap_axes" remapTy env
         for spec in BlockSpec.all () do
             let typed = BlockSpec.typedInterface spec
             let inputs = typed.Params |> List.map (fun p -> p.Type)

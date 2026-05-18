@@ -274,16 +274,128 @@ module Document =
                 { Server.Lang.Notebook.defaultSlicePlane with
                     Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } } ]
 
-    /// Demo content the script editor shows on a fresh document. Defines
-    /// one user spec (`capsule`) so the user can immediately see how a
-    /// `let f (...) = body` def becomes a draggable block in the +Add
-    /// palette (⌘K). Built-in primitives (sphere / box / cylinder /
-    /// union / subtract / intersect / translate) are in scope by name.
-    let private defaultScriptSource = """// User-defined block kinds. Each top-level
-//     let name = fun (param: Type) ... -> body end
-// appears in the +Add palette (⌘K). Built-in primitives —
-// sphere, box, cylinder, union, subtract, intersect, translate —
-// are in scope.
+    /// Demo content the script editor shows on a fresh document.
+    /// Defines the standard library of SDF primitives (sphere, box,
+    /// cylinder, halfplane, union, intersect, subtract, thicken, shell)
+    /// plus a `capsule` example so the user can read / edit / extend
+    /// them directly. The math-primitive callables (`sqrt` / `abs` /
+    /// `min` / `max` / `compare` / `remap_axes`) and spatial axes
+    /// (`x` / `y` / `z`) are bound by `NotebookCompose.buildValueEnv`.
+    /// `translate` / `mirror-symmetric` / `from-sketch` / `revolve` /
+    /// `wing-remap-preview` stay as F# intrinsics in `BlockSpec.fs`
+    /// (param-name clashes with axis names, hyphenated names, refined
+    /// Loop types, or compose-time interceptors).
+    let private defaultScriptSource = """// Standard library of SDF primitives, defined as user-editable
+// scripts. Each top-level `let name = fun (param: Type) ... -> body end`
+// appears in the +Add palette (⌘K). The math-primitive callables
+// (sqrt, abs, min, max, compare, remap_axes) and spatial axes
+// (x, y, z) are pre-bound; intrinsics translate / mirror-symmetric /
+// from-sketch / revolve / wing-remap-preview live in BlockSpec.fs.
+
+let sphere = fun (radius: Scalar) ->
+    sqrt (x*x + y*y + z*z) - radius
+end
+
+let halfplane = fun (axis: Scalar) (offset: Scalar) ->
+    let sx = 1 - abs (compare axis 0)
+    let sy = 1 - abs (compare axis 1)
+    let sz = 1 - abs (compare axis 2)
+    sx*x + sy*y + sz*z - offset
+end
+
+let box = fun (width: Scalar) (height: Scalar) (depth: Scalar) ->
+    let hx = width / 2
+    let hy = height / 2
+    let hz = depth / 2
+    let bx = abs x - hx
+    let by = abs y - hy
+    let bz = abs z - hz
+    let mx = max bx 0
+    let my = max by 0
+    let mz = max bz 0
+    let outside = sqrt (mx*mx + my*my + mz*mz)
+    let inside = min (max bx (max by bz)) 0
+    outside + inside
+end
+
+let cylinder = fun (radius: Scalar) (height: Scalar) ->
+    let radial = sqrt (x*x + y*y) - radius
+    let axial = abs z - height / 2
+    max radial axial
+end
+
+// Iquilez polynomial smooth-min, with `radius <= eps` snapping to a
+// hard min. The `enabled` factor keeps radius=0 exact without adding
+// a general AST `if` — `compare radius eps` is -1 below the snap
+// threshold, ≥ 0 above, and `max ... 0` clamps the gate to {0, 1}.
+let smooth_min = fun (a: Field) (b: Field) (radius: Scalar) ->
+    let eps = 0.000001
+    let k = max radius eps
+    let h = max (k - abs (a - b)) 0 / k
+    let enabled = max (compare radius eps) 0
+    min a b - (enabled * h * h * h * k / 6)
+end
+
+let union = fun (target: Field) (tool: Field) (radius: Scalar) ->
+    smooth_min target tool radius
+end
+
+let intersect = fun (target: Field) (tool: Field) (radius: Scalar) ->
+    0 - (smooth_min (0 - target) (0 - tool) radius)
+end
+
+let subtract = fun (target: Field) (tool: Field) (radius: Scalar) ->
+    0 - (smooth_min (0 - target) tool radius)
+end
+
+let thicken = fun (amount: Scalar) (child: Field) ->
+    child - amount
+end
+
+let shell = fun (thickness: Scalar) (child: Field) ->
+    max child (0 - (child + thickness))
+end
+
+// Sweep a closed 2D sketch loop along the axis perpendicular to its
+// plane, clamping to [bottom, top]. Picks the perpendicular axis from
+// the loop's `perpendicular_axis` member (0=X / 1=Y / 2=Z), which the
+// compose bridge seeds from the parent sketch's plane.
+let extrude = fun (loop: Loop) (bottom: Scalar) (top: Scalar) ->
+    let axis = loop.perpendicular_axis
+    let sx = 1 - abs (compare axis 0)
+    let sy = 1 - abs (compare axis 1)
+    let sz = 1 - abs (compare axis 2)
+    let perp = sx*x + sy*y + sz*z
+    max loop.signed_distance (max (perp - top) (bottom - perp))
+end
+
+// Sweep a closed 2D sketch loop around the in-plane "height" axis,
+// generating a body of revolution. The radial loop axis (the one
+// orthogonal to the height in the plane) is replaced by the radial
+// distance from the height axis in 3D. Picks both axes from the
+// loop's plane via `perpendicular_axis`:
+//   perp=Z (XY plane) → radial=X, height=Y; radial = sqrt(x² + z²)
+//   perp=Y (XZ plane) → radial=X, height=Z; radial = sqrt(x² + y²)
+//   perp=X (YZ plane) → radial=Y, height=Z; radial = sqrt(x² + y²)
+let revolve = fun (loop: Loop) ->
+    let perp = loop.perpendicular_axis
+    // Radial loop axis = the in-plane axis with the lower index.
+    // perp=0 (X)   → loop axes {Y, Z}, radial = Y = 1
+    // perp=1 (Y)   → loop axes {X, Z}, radial = X = 0
+    // perp=2 (Z)   → loop axes {X, Y}, radial = X = 0
+    let radial_axis = 1 - abs (compare perp 0)
+    let px = 1 - abs (compare perp 0)
+    let py = 1 - abs (compare perp 1)
+    let pz = 1 - abs (compare perp 2)
+    let rx = 1 - abs (compare radial_axis 0)
+    let ry = 1 - abs (compare radial_axis 1)
+    let perp_coord = px*x + py*y + pz*z
+    let radial_coord = rx*x + ry*y
+    let r = sqrt (perp_coord*perp_coord + radial_coord*radial_coord)
+    let new_x = rx*r + (1 - rx)*x
+    let new_y = ry*r + (1 - ry)*y
+    remap_axes loop.signed_distance new_x new_y z
+end
 
 let capsule = fun (radius: Scalar) (length: Scalar) ->
     let half = length / 2

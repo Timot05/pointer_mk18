@@ -20,12 +20,17 @@ let private inferErr (env: Typecheck.TypeEnv) (expr: Ast.Expr) : Typecheck.TypeE
     | Error es -> es
 
 // ─── Native specs round-trip through the typechecker ───────────────────────
-
-[<Fact>]
-let ``infer: sphere spec body has type Scalar -> Field`` () =
-    let spec = BlockSpec.find "sphere"
-    let t = inferOk emptyEnv spec.Body
-    Assert.Equal(Type.Fun(Type.Scalar, Type.Field), t.Type)
+//
+// `infer: sphere spec body has type ...` and the `union` analog used to
+// elaborate `BlockSpec.find "sphere/union".Body` against `emptyEnv`.
+// After the BlockSpec→script migration, those bodies reference math
+// primitives (`sqrt`, `min`, `max`) and axes (`x`, `y`, `z`) that need
+// to be in scope, so a bare `emptyEnv` elaboration doesn't work. The
+// same "param list / output" contract is verified end-to-end in
+// LangTests' `sphere extracts as [radius:Scalar] -> Field` (which reads
+// the already-resolved `UserScript.UserSpec.Params` / `.Output`).
+// Translate stayed intrinsic, so its dedicated test still exercises
+// the BlockSpec path.
 
 [<Fact>]
 let ``infer: translate spec body has type Scalar -> Scalar -> Scalar -> Field -> Field`` () =
@@ -36,14 +41,6 @@ let ``infer: translate spec body has type Scalar -> Scalar -> Scalar -> Field ->
             [ Type.Scalar; Type.Scalar; Type.Scalar; Type.Field ]
             Type.Field
     Assert.Equal(expected, t.Type)
-
-[<Fact>]
-let ``infer: union spec body has type Field -> Field -> Scalar -> Field`` () =
-    let spec = BlockSpec.find "union"
-    let t = inferOk emptyEnv spec.Body
-    Assert.Equal(
-        Type.Fun(Type.Field, Type.Fun(Type.Field, Type.Fun(Type.Scalar, Type.Field))),
-        t.Type)
 
 // ─── Error cases ───────────────────────────────────────────────────────────
 
@@ -61,17 +58,22 @@ let ``error: unannotated lambda in infer position fails MissingTypeAnnotation`` 
     | other -> failwithf "parse: unexpected %A" other
 
 [<Fact>]
-let ``error: applying sphere to a Field-typed argument fails TypeMismatch`` () =
-    // Apply the sphere spec to an axis (which is Field, not Scalar) —
-    // saturating with a wrongly-typed argument should error.
-    let spec = BlockSpec.find "sphere"
-    let bogusApp =
-        Ast.mkExpr (Ast.EApply(spec.Body, Ast.mkExpr (Ast.EAxis Ast.AxisX) Ast.noneSpan))
-            Ast.noneSpan
-    let errors = inferErr emptyEnv bogusApp
-    match errors with
-    | [ Typecheck.TypeMismatch(Type.Scalar, Type.Field, _) ] -> ()
-    | other -> failwithf "unexpected errors: %A" other
+let ``error: applying a Scalar -> Field function to a Field argument fails TypeMismatch`` () =
+    // Bind a synthetic `f : Scalar -> Field` and a Field-typed `x` in
+    // the env; applying `f x` should error because Field is not <: Scalar
+    // (only the reverse direction lifts, per `Type.isSubtypeOf`).
+    let env =
+        Map.empty
+        |> Map.add "f" (Type.Fun(Type.Scalar, Type.Field))
+        |> Map.add "x" Type.Field
+    let src = "f x"
+    match Parser.parseProgram src with
+    | Ok [ Ast.SExpr e ] ->
+        let errors = inferErr env e
+        match errors with
+        | [ Typecheck.TypeMismatch(Type.Scalar, Type.Field, _) ] -> ()
+        | other -> failwithf "unexpected errors: %A" other
+    | other -> failwithf "parse: unexpected %A" other
 
 [<Fact>]
 let ``error: undefined identifier surfaces`` () =

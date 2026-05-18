@@ -3,6 +3,31 @@ module LangTests
 open Xunit
 open Server.Lang
 
+/// Resolve a spec's typed interface (param names + types + output)
+/// from either `BlockSpec` (the surviving intrinsics — translate /
+/// mirror-symmetric / from-sketch / revolve / wing-remap-preview)
+/// or the default user-script source (sphere / box / cylinder /
+/// halfplane / union / intersect / subtract / thicken / shell, plus
+/// the `smooth_min` / `capsule` helpers). After the BlockSpec→script
+/// migration, tests need to walk both lookup paths.
+let private specInterface (name: string)
+        : string list * Type.T list * Type.T =
+    match BlockSpec.tryFind name with
+    | Some s ->
+        let i = BlockSpec.typedInterface s
+        i.Params |> List.map (fun p -> p.Name),
+        i.Params |> List.map (fun p -> p.Type),
+        i.Output
+    | None ->
+        let scriptSrc = (Server.Document.emptyDocument ()).ScriptSourceText
+        let r = UserScript.analyze scriptSrc
+        match Map.tryFind name r.Specs with
+        | Some us ->
+            us.Params |> List.map (fun p -> p.Name),
+            us.Params |> List.map (fun p -> p.Type),
+            us.Output
+        | None -> failwithf "no spec '%s' in BlockSpec or default script" name
+
 // ─── Lexer ──────────────────────────────────────────────────────────────────
 
 let private kindsOf (source: string) : Token.Kind list =
@@ -215,33 +240,26 @@ let ``ast: collectExports deduplicates by name keeping last write`` () =
 // ─── Native block specs ────────────────────────────────────────────────────
 
 [<Fact>]
-let ``BlockSpec: sphere extracts as [radius:Scalar] -> Field`` () =
-    let spec = BlockSpec.find "sphere"
-    let extracted = BlockSpec.typedInterface spec
-    Assert.Equal<int>(1, List.length extracted.Params)
-    Assert.Equal("radius", extracted.Params.[0].Name)
-    Assert.Equal(Type.Scalar, extracted.Params.[0].Type)
-    Assert.Equal(Type.Field, extracted.Output)
+let ``sphere extracts as [radius:Scalar] -> Field`` () =
+    let names, types, output = specInterface "sphere"
+    Assert.Equal<string list>([ "radius" ], names)
+    Assert.Equal<Type.T list>([ Type.Scalar ], types)
+    Assert.Equal(Type.Field, output)
 
 [<Fact>]
-let ``BlockSpec: translate extracts in declaration order with mixed types`` () =
-    let spec = BlockSpec.find "translate"
-    let extracted = BlockSpec.typedInterface spec
-    let names = extracted.Params |> List.map (fun p -> p.Name)
-    let types = extracted.Params |> List.map (fun p -> p.Type)
+let ``translate extracts in declaration order with mixed types`` () =
+    let names, types, _ = specInterface "translate"
     Assert.Equal<string list>([ "x"; "y"; "z"; "child" ], names)
     Assert.Equal<Type.T list>(
         [ Type.Scalar; Type.Scalar; Type.Scalar; Type.Field ],
         types)
 
 [<Fact>]
-let ``BlockSpec: union extracts as [target:Field; tool:Field; radius:Scalar] -> Field`` () =
-    let spec = BlockSpec.find "union"
-    let extracted = BlockSpec.typedInterface spec
-    let names = extracted.Params |> List.map (fun p -> p.Name)
-    let types = extracted.Params |> List.map (fun p -> p.Type)
+let ``union extracts as [target:Field; tool:Field; radius:Scalar] -> Field`` () =
+    let names, types, output = specInterface "union"
     Assert.Equal<string list>([ "target"; "tool"; "radius" ], names)
     Assert.Equal<Type.T list>([ Type.Field; Type.Field; Type.Scalar ], types)
+    Assert.Equal(Type.Field, output)
 
 // ─── F#-style param annotations ─────────────────────────────────────────────
 
@@ -350,19 +368,10 @@ let ``eval: fun with type-annotated params`` () =
     let _, v = runOk "let scale = fun (x: Scalar) (y: Scalar) -> x * y end\nscale 6 7"
     Assert.Equal(Value.VNumber 42.0, v)
 
-[<Fact>]
-let ``eval: applying sphere spec to 1.0 yields a Sub-rooted Field`` () =
-    // The block driver will saturate the lambda by `EApply`-ing a slot-
-    // backed VField for each param. This test substitutes a constant
-    // (number) for `radius`, which exercises the same code path.
-    let ctx = Value.createContext ()
-    match Eval.evalExpr ctx (BlockSpec.find "sphere").Body with
-    | Ok (Value.VClosure _) ->
-        // Apply the closure to 1.0 — saturates the single param.
-        match Eval.evalExpr ctx { Node = Ast.EApply((BlockSpec.find "sphere").Body, { Node = Ast.ENumber 1.0; Span = Ast.noneSpan }); Span = Ast.noneSpan } with
-        | Ok (Value.VField root) ->
-            let rootNode = ctx.Ir.Nodes.[root.Id]
-            Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
-            Assert.Equal(int MathIr.Binary.Sub, rootNode.Op)
-        | other -> failwithf "expected VField, got %A" other
-    | other -> failwithf "expected closure, got %A" other
+// The "applying sphere yields a Sub-rooted Field" coverage now lives
+// in NotebookTests as "user script can call sqrt over field
+// expressions to define a sphere" — that test composes a notebook
+// against the default script and asserts BinaryK Sub / UnaryK Sqrt
+// on the resulting MathIR root, which is the same property this
+// test used to check via direct closure application on a
+// self-contained AST body.

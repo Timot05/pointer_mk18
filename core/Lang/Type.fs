@@ -137,6 +137,12 @@ module Type =
                 match Map.tryFind "signed_distance" fields with
                 | Some Field -> true
                 | _ -> false
+            // Scalar lifts to Field. Mirrors the runtime auto-promotion
+            // in `Eval.liftToExpr` / EBinary's `Field+Scalar -> Field`
+            // arm. Lets function applications expecting Field accept a
+            // numeric literal (`max bx 0`), matching what EBinary on the
+            // same operands has always allowed.
+            | Scalar, Field -> true
             | Fun(a1, b1), Fun(a2, b2) ->
                 isSubtypeOf a2 a1 && isSubtypeOf b1 b2
             | _ -> sub = sup

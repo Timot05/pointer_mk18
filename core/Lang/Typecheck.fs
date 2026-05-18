@@ -93,20 +93,62 @@ module Typecheck =
     // Cleared at the top of every `elaborate` call so state from any
     // earlier run can't leak in.
 
-    let mutable private cellStack : (string * Map<string, Type.T> ref) list = []
+    /// Which structural-refinement kind the cell belongs to. Sketch /
+    /// Loop / Primitive each use the same `Map<string, Type.T> ref`
+    /// accumulator but project back to different `Type.T` constructors
+    /// and grow under different default-member rules.
+    type private RefinementKind =
+        | RKSketch
+        | RKLoop
+        | RKPrimitive
 
-    let private lookupCell (name: string) : (Map<string, Type.T> ref) option =
+    let mutable private cellStack
+            : (string * Map<string, Type.T> ref * RefinementKind) list = []
+
+    let private lookupCell
+            (name: string)
+            : (Map<string, Type.T> ref * RefinementKind) option =
         cellStack
-        |> List.tryFind (fun (n, _) -> n = name)
-        |> Option.map snd
+        |> List.tryFind (fun (n, _, _) -> n = name)
+        |> Option.map (fun (_, c, k) -> c, k)
 
-    let private pushCell (name: string) (cell: Map<string, Type.T> ref) =
-        cellStack <- (name, cell) :: cellStack
+    let private pushCell
+            (name: string)
+            (cell: Map<string, Type.T> ref)
+            (kind: RefinementKind) =
+        cellStack <- (name, cell, kind) :: cellStack
 
     let private popCell () =
         match cellStack with
         | _ :: tail -> cellStack <- tail
         | [] -> ()
+
+    /// Wrap a refinement-cell snapshot in the right Type constructor.
+    let private wrapRefinement (kind: RefinementKind) (fields: Map<string, Type.T>) : Type.T =
+        match kind with
+        | RKSketch    -> Type.Sketch fields
+        | RKLoop      -> Type.Loop fields
+        | RKPrimitive -> Type.Primitive fields
+
+    /// Default inferred type for a member name accessed on a
+    /// cell-bearing param. Sketch grows with `Loop { signed_distance:
+    /// Field }` (matching the per-loop runtime payload). Loop grows
+    /// with the canonical known names — `signed_distance: Field`,
+    /// `perpendicular_axis: Scalar` — and treats everything else as a
+    /// `Primitive { signed_distance: Field }` (per-line/arc/circle).
+    /// Primitive grows only with `signed_distance: Field`.
+    let private inferMemberType (kind: RefinementKind) (memberName: string) : Type.T =
+        match kind with
+        | RKSketch ->
+            Type.Loop (Map.ofList [ "signed_distance", Type.Field ])
+        | RKLoop ->
+            match memberName with
+            | "signed_distance"    -> Type.Field
+            | "perpendicular_axis" -> Type.Scalar
+            | _ ->
+                Type.Primitive (Map.ofList [ "signed_distance", Type.Field ])
+        | RKPrimitive ->
+            Type.Field
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -170,25 +212,27 @@ module Typecheck =
             | None   -> Error [ UndefinedVar(id.Name, id.Span) ]
 
         | ELambda(p, Some t, body) ->
-            // For Sketch parameters, open a refinement cell so the body's
-            // EPath accesses can accumulate the required members. The
-            // cell starts seeded with whatever the annotation already
-            // declares (empty `Sketch` → empty cell; a future `Sketch
-            // { outer }` annotation would seed `outer` directly).
-            let isSketchParam, initialFields =
+            // For Sketch / Loop / Primitive parameters, open a refinement
+            // cell so the body's EPath accesses can accumulate the
+            // required members. The cell starts seeded with whatever the
+            // annotation already declares (empty `Sketch` / `Loop` /
+            // `Primitive` → empty cell; a hypothetical `Loop {
+            // signed_distance }` annotation would seed it directly).
+            let cellInfo =
                 match t with
-                | Type.Sketch m -> true, m
-                | _ -> false, Map.empty
-            let cell = if isSketchParam then Some (ref initialFields) else None
-            cell |> Option.iter (fun c -> pushCell p.Name c)
+                | Type.Sketch m    -> Some (ref m, RKSketch)
+                | Type.Loop m      -> Some (ref m, RKLoop)
+                | Type.Primitive m -> Some (ref m, RKPrimitive)
+                | _                -> None
+            cellInfo |> Option.iter (fun (c, k) -> pushCell p.Name c k)
             let env' = bind env p.Name t
             let bodyResult = infer env' body
-            cell |> Option.iter (fun _ -> popCell ())
+            cellInfo |> Option.iter (fun _ -> popCell ())
             bodyResult |> Result.map (fun tBody ->
                 let resolvedParam =
-                    match cell with
-                    | Some c -> Type.Sketch !c
-                    | None -> t
+                    match cellInfo with
+                    | Some (c, k) -> wrapRefinement k !c
+                    | None        -> t
                 let lambdaTy = Type.Fun(resolvedParam, tBody.Type)
                 Tast.mkTExpr (Tast.TELambda(p, resolvedParam, tBody)) lambdaTy expr.Span)
 
@@ -268,24 +312,27 @@ module Typecheck =
 
         | EPath idents ->
             // Dotted access: `head.seg1.seg2...`. Walk segments through
-            // the head's structural type (today: only `Type.Sketch` with
-            // a field refinement supports this). Each non-terminal
-            // segment must itself be a record/sketch with the next name.
+            // the head's structural type. Sketch, Loop, and Primitive
+            // are the cell-bearing kinds — when the head names a lambda
+            // param with one of them, accessing a missing member grows
+            // the param's cell with an inferred type (see
+            // `inferMemberType`). Other types (Field, Scalar, ...)
+            // don't carry refinements.
             //
-            // If the head names a lambda parameter with an active
-            // refinement cell (only Sketch params today), an access to a
-            // member that isn't yet in the cell *grows* the cell to
-            // include it. This is how `let f (s : Sketch) = s.outer`
-            // infers `f`'s required refinement: walking the body adds
-            // `outer : Field` to the cell, which is later snapshotted
-            // into `f`'s parameter type when the lambda closes.
+            // Only the head is cell-bearing. Deeper segments walk
+            // fully-resolved types from compose's seeded refinement, so
+            // missing members at depth are real errors. This is how
+            // `let extrude (l : Loop) = l.signed_distance` infers
+            // `extrude`'s required refinement: walking the body adds
+            // `signed_distance : Field` to the cell, which closes into
+            // `Loop { signed_distance: Field }` when the lambda returns.
             match idents with
             | [] -> Error [ EmptyPath expr.Span ]
             | head :: rest ->
                 let headCell = lookupCell head.Name
                 let headTyOpt =
                     match headCell with
-                    | Some cell -> Some (Type.Sketch !cell)
+                    | Some (cell, kind) -> Some (wrapRefinement kind !cell)
                     | None -> Map.tryFind head.Name env
                 match headTyOpt with
                 | None -> Error [ UndefinedVar(head.Name, head.Span) ]
@@ -294,43 +341,29 @@ module Typecheck =
                         match trail with
                         | [] -> Ok curTy
                         | seg :: deeper ->
-                            match curTy with
-                            | Type.Sketch fields ->
+                            let refinementFields =
+                                match curTy with
+                                | Type.Sketch f | Type.Loop f | Type.Primitive f -> Some f
+                                | _ -> None
+                            match refinementFields with
+                            | Some fields ->
                                 match Map.tryFind seg.Name fields with
                                 | Some t -> walk t seg.Name deeper
                                 | None ->
-                                    // If this is the head of a refinement-cell
-                                    // sketch (a lambda parameter), grow the
-                                    // cell with `seg : Loop {signed_distance:
-                                    // Field}` and continue. Only the head is
-                                    // cell-bearing; nested members go through
-                                    // fully-resolved types and don't auto-grow.
+                                    // Cell-grow only at the path head,
+                                    // and only if its kind is cell-bearing.
+                                    // Deeper segments walk fully-resolved
+                                    // types from compose's seeded refinement.
                                     match headCell with
-                                    | Some cell when curName = head.Name ->
-                                        let inferredMember =
-                                            Type.Loop (Map.ofList [ "signed_distance", Type.Field ])
-                                        cell := Map.add seg.Name inferredMember !cell
-                                        walk inferredMember seg.Name deeper
+                                    | Some (cell, kind) when curName = head.Name ->
+                                        let inferred = inferMemberType kind seg.Name
+                                        cell := Map.add seg.Name inferred !cell
+                                        walk inferred seg.Name deeper
                                     | _ ->
-                                        let available =
-                                            fields |> Map.toList |> List.map fst
+                                        let available = fields |> Map.toList |> List.map fst
                                         Error [ UnknownSketchMember(curName, seg.Name, available, seg.Span) ]
-                            | Type.Loop fields
-                            | Type.Primitive fields ->
-                                // Walking into a loop's or primitive's
-                                // named member (`.signed_distance`,
-                                // `.line_0`, ...). No cell growth at
-                                // this depth — only the path head is
-                                // cell-bearing. Missing names are real
-                                // errors.
-                                match Map.tryFind seg.Name fields with
-                                | Some t -> walk t seg.Name deeper
-                                | None ->
-                                    let available =
-                                        fields |> Map.toList |> List.map fst
-                                    Error [ UnknownSketchMember(curName, seg.Name, available, seg.Span) ]
-                            | other ->
-                                Error [ NotASketch(other, seg.Span) ]
+                            | None ->
+                                Error [ NotASketch(curTy, seg.Span) ]
                     walk headTy head.Name rest
                     |> Result.map (fun finalTy ->
                         Tast.mkTExpr (Tast.TEPath idents) finalTy expr.Span)
@@ -352,22 +385,24 @@ module Typecheck =
                 Error [ AnnotationConflict(t, a, p.Span) ]
             | _ ->
                 // Open a refinement cell when the expected param type is
-                // Sketch, matching the infer-mode lambda case. Allows
-                // refinement inference inside checked positions too.
-                let isSketchParam, initialFields =
+                // Sketch / Loop / Primitive, mirroring the infer-mode
+                // lambda case. Lets refinement inference run inside
+                // checked positions too.
+                let cellInfo =
                     match a with
-                    | Type.Sketch m -> true, m
-                    | _ -> false, Map.empty
-                let cell = if isSketchParam then Some (ref initialFields) else None
-                cell |> Option.iter (fun c -> pushCell p.Name c)
+                    | Type.Sketch m    -> Some (ref m, RKSketch)
+                    | Type.Loop m      -> Some (ref m, RKLoop)
+                    | Type.Primitive m -> Some (ref m, RKPrimitive)
+                    | _                -> None
+                cellInfo |> Option.iter (fun (c, k) -> pushCell p.Name c k)
                 let env' = bind env p.Name a
                 let bodyResult = check env' b body
-                cell |> Option.iter (fun _ -> popCell ())
+                cellInfo |> Option.iter (fun _ -> popCell ())
                 bodyResult |> Result.map (fun tBody ->
                     let resolvedParam =
-                        match cell with
-                        | Some c -> Type.Sketch !c
-                        | None -> a
+                        match cellInfo with
+                        | Some (c, k) -> wrapRefinement k !c
+                        | None        -> a
                     Tast.mkTExpr (Tast.TELambda(p, resolvedParam, tBody)) (Type.Fun(resolvedParam, b)) expr.Span)
         | _ ->
             // Default: infer then verify. Use width-subtype for sketches

@@ -47,13 +47,13 @@ module BlockSpec =
     let inline private ( *. ) (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Mul, a, b))
     let inline private ( /. ) (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Div, a, b))
 
-    let private sqrtE (e: Expr) = mk (EUnary(UnaryOp.Sqrt, e))
-    let private absE  (e: Expr) = mk (EUnary(UnaryOp.Abs,  e))
-    let private sqE   (e: Expr) = mk (EUnary(UnaryOp.Square, e))
-    let private negE  (e: Expr) = mk (EUnary(UnaryOp.Neg,  e))
-    let private minE  (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Min, a, b))
-    let private maxE  (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Max, a, b))
-    let private cmpE  (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Compare, a, b))
+    // Only the helpers the surviving intrinsics still use are kept —
+    // `absE` / `cmpE` for mirror-symmetric's axis selector and inward
+    // reflection math. `sqrt` / `sq` / `min` / `max` / `neg` helpers
+    // moved out alongside the migrated specs; user code calls them
+    // as ordinary identifiers now (see `NotebookCompose.buildValueEnv`).
+    let private absE (e: Expr) = mk (EUnary(UnaryOp.Abs, e))
+    let private cmpE (a: Expr) (b: Expr) = mk (EBinary(BinaryOp.Compare, a, b))
 
     /// Exact selector for small enum-like scalar parameters:
     /// `1 - abs(compare(value, choice))`, yielding 1 when equal and 0
@@ -95,74 +95,12 @@ module BlockSpec =
     // expressions the old `Builtins.<kind>Impl` functions produced via
     // MathIR, just expressed in our AST instead.
 
-    /// `sphere radius` — `sqrt(x² + y² + z²) - radius`.
-    let private sphereSpec : BlockSpec =
-        let r = varE "radius"
-        let xyz = sqE (axE AxisX) +. sqE (axE AxisY) +. sqE (axE AxisZ)
-        let body = sqrtE xyz -. r
-        { Name = "sphere"
-          Body = lambda [ "radius", Type.Scalar ] body
-          ScalarDefaults = Map.ofList [ "radius", 1.0 ] }
-
-    /// `halfplane axis offset` — axis-aligned halfspace.
-    /// `axis` is a discrete choice (0=X, 1=Y, 2=Z) stored as a numeric
-    /// Expr literal and rendered in the UI as a dropdown (see
-    /// `BlockList.renderInputRow`). SDF: `<axis> - offset`.
-    let private halfplaneSpec : BlockSpec =
-        let axis = varE "axis"
-        let offset = varE "offset"
-        let sx = eqChoiceE axis 0.0
-        let sy = eqChoiceE axis 1.0
-        let sz = eqChoiceE axis 2.0
-        let selected = sx *. axE AxisX +. sy *. axE AxisY +. sz *. axE AxisZ
-        { Name = "halfplane"
-          Body = lambda [ "axis", Type.Scalar; "offset", Type.Scalar ] (selected -. offset)
-          ScalarDefaults = Map.ofList [ "axis", 0.0; "offset", 0.0 ] }
-
-    /// `box width height depth` — outside + inside form.
-    /// outside = ||max(|p| - half, 0)||
-    /// inside  = min(max(bx, max(by, bz)), 0)
-    let private boxSpec : BlockSpec =
-        let w = varE "width"
-        let h = varE "height"
-        let d = varE "depth"
-        let two = nE 2.0
-        let hx = w /. two
-        let hy = h /. two
-        let hz = d /. two
-        let bx = absE (axE AxisX) -. hx
-        let by = absE (axE AxisY) -. hy
-        let bz = absE (axE AxisZ) -. hz
-        let zero = nE 0.0
-        let outside =
-            sqrtE
-                (sqE (maxE bx zero)
-                 +. sqE (maxE by zero)
-                 +. sqE (maxE bz zero))
-        let inside = minE (maxE bx (maxE by bz)) zero
-        let body = outside +. inside
-        { Name = "box"
-          Body = lambda
-                    [ "width", Type.Scalar
-                      "height", Type.Scalar
-                      "depth", Type.Scalar ]
-                    body
-          ScalarDefaults = Map.ofList [ "width", 1.0; "height", 1.0; "depth", 1.0 ] }
-
-    /// `cylinder radius height` — Z-axis cylinder.
-    /// max(sqrt(x² + y²) - r, |z| - h/2)
-    let private cylinderSpec : BlockSpec =
-        let r = varE "radius"
-        let h = varE "height"
-        let two = nE 2.0
-        let radial = sqrtE (sqE (axE AxisX) +. sqE (axE AxisY)) -. r
-        let axial = absE (axE AxisZ) -. (h /. two)
-        let body = maxE radial axial
-        { Name = "cylinder"
-          Body = lambda
-                    [ "radius", Type.Scalar; "height", Type.Scalar ]
-                    body
-          ScalarDefaults = Map.ofList [ "radius", 1.0; "height", 2.0 ] }
+    // sphere / halfplane / box / cylinder migrated to the default
+    // user script (see `Server.Document.emptyDocument`'s
+    // `ScriptSourceText` in core/Editor/Domain.fs). They route through
+    // `UserScript.Specs` at compose time. Math-primitive callables
+    // (sqrt / abs / min / max / compare / remap_axes) used by their
+    // bodies are bound in `NotebookCompose.buildValueEnv`.
 
     /// `translate x y z child` — coord remap (sample at p - (x,y,z)).
     let private translateSpec : BlockSpec =
@@ -212,64 +150,10 @@ module BlockSpec =
                     body
           ScalarDefaults = Map.ofList [ "axis", 1.0; "root", 0.0 ] }
 
-    /// Iquilez polynomial smooth-min, with `radius <= eps` snapping to a
-    /// hard min. The enable factor keeps radius=0 exact without adding a
-    /// general AST `if` node:
-    ///   h = max(k - abs(a-b), 0) / k
-    ///   smin = min(a,b) - enabled * h^3 * k / 6
-    let private smoothMinE (a: Expr) (b: Expr) (radius: Expr) : Expr =
-        let eps = nE 1e-6
-        let zero = nE 0.0
-        let six = nE 6.0
-        let k = maxE radius eps
-        let h = maxE (k -. absE (a -. b)) zero /. k
-        let enabled = maxE (cmpE radius eps) zero
-        minE a b -. (enabled *. h *. h *. h *. k /. six)
-
-    /// `union target tool radius` — smooth union via `smoothMin(target, tool, radius)`.
-    let private unionSpec : BlockSpec =
-        let body = smoothMinE (varE "target") (varE "tool") (varE "radius")
-        { Name = "union"
-          Body = lambda [ "target", Type.Field; "tool", Type.Field; "radius", Type.Scalar ] body
-          ScalarDefaults = Map.ofList [ "radius", 0.0 ] }
-
-    /// `intersect target tool radius` — `-smoothMin(-target, -tool, radius)`.
-    let private intersectSpec : BlockSpec =
-        let body = negE (smoothMinE (negE (varE "target")) (negE (varE "tool")) (varE "radius"))
-        { Name = "intersect"
-          Body = lambda [ "target", Type.Field; "tool", Type.Field; "radius", Type.Scalar ] body
-          ScalarDefaults = Map.ofList [ "radius", 0.0 ] }
-
-    /// `subtract target tool radius` — `-smoothMin(-target, tool, radius)`.
-    let private subtractSpec : BlockSpec =
-        let body = negE (smoothMinE (negE (varE "target")) (varE "tool") (varE "radius"))
-        { Name = "subtract"
-          Body = lambda [ "target", Type.Field; "tool", Type.Field; "radius", Type.Scalar ] body
-          ScalarDefaults = Map.ofList [ "radius", 0.0 ] }
-
-    /// `thicken amount child` — shifts iso-surface outward by `amount`.
-    let private thickenSpec : BlockSpec =
-        let body = varE "child" -. varE "amount"
-        { Name = "thicken"
-          Body = lambda
-                    [ "amount", Type.Scalar; "child", Type.Field ]
-                    body
-          ScalarDefaults = Map.ofList [ "amount", 0.1 ] }
-
-    /// `shell thickness child` — hollows the shape inward. The outer
-    /// surface stays at the original iso (`f = 0`); the inner surface is
-    /// the inward offset (`f = -thickness`). SDF: `max(f, -(f + t))` —
-    /// the intersection of the original interior with the complement of
-    /// the inward-offset interior. The shape doesn't grow.
-    let private shellSpec : BlockSpec =
-        let child = varE "child"
-        let t = varE "thickness"
-        let body = maxE child (negE (child +. t))
-        { Name = "shell"
-          Body = lambda
-                    [ "thickness", Type.Scalar; "child", Type.Field ]
-                    body
-          ScalarDefaults = Map.ofList [ "thickness", 0.05 ] }
+    // union / intersect / subtract / thicken / shell migrated to the
+    // default user script. Their bodies (and the shared `smooth_min`
+    // helper) live in `ScriptSourceText` and route through
+    // `UserScript.Specs`.
 
     /// `from-sketch loop` — project a sketch loop to its 3D signed-
     /// distance field. The parameter is a `Loop` whose refinement
@@ -289,26 +173,11 @@ module BlockSpec =
           Body = lambda [ "loop", loopWithSd ] body
           ScalarDefaults = Map.empty }
 
-    /// `revolve loop` — sweep a closed 2D loop around a hardcoded axis
-    /// in its plane. Body is a typed placeholder; `NotebookCompose`
-    /// intercepts blocks with this spec name and wraps the loop's
-    /// signed-distance in `ERemapAxes` so world coords feed the 2D SDF
-    /// as (radial, height). Revolve axis per plane:
-    ///   XY → Y axis (radial = sqrt(x² + z²), height = y)
-    ///   XZ → Z axis (radial = sqrt(x² + y²), height = z)
-    ///   YZ → Z axis (radial = sqrt(x² + y²), height = z)
-    ///
-    /// The interceptor needs the loop's parent sketch to determine the
-    /// revolve plane — that's why this stays a special-case in compose
-    /// rather than becoming a plain `Loop -> Field` spec like
-    /// `from-sketch`. The Plane type isn't surfaced to the DSL yet.
-    let private revolveSpec : BlockSpec =
-        let loopWithSd =
-            Type.Loop (Map.ofList [ "signed_distance", Type.Field ])
-        let body = mk (EFold(MathIr.FoldOp.Min, []))
-        { Name = "revolve"
-          Body = lambda [ "loop", loopWithSd ] body
-          ScalarDefaults = Map.empty }
+    // revolve and extrude migrated to the default user script. They
+    // both read the loop's `perpendicular_axis` member (a Scalar 0/1/2
+    // seeded by the compose bridge from the parent sketch's plane) to
+    // pick the right axis at typecheck time, removing the need for a
+    // compose-time interceptor.
 
     /// `wing-remap-preview leading trailing` — experimental field that
     /// remaps a canonical unit chord/span strip through two one-line XY
@@ -323,19 +192,15 @@ module BlockSpec =
           Body = lambda [ "leading", Type.Sketch Map.empty; "trailing", Type.Sketch Map.empty ] body
           ScalarDefaults = Map.empty }
 
-    do register sphereSpec
-    do register boxSpec
-    do register cylinderSpec
-    do register halfplaneSpec
+    // Intrinsic specs only — bodies that need MathIR-builder access at
+    // compose time (wing-remap-preview), compose-time interceptors
+    // (revolve), refined Loop param types the parser doesn't surface
+    // (from-sketch), or identifier-name clashes / hyphenated names that
+    // prevent migration to the user-script path (translate,
+    // mirror-symmetric).
     do register translateSpec
     do register mirrorSymmetricSpec
-    do register unionSpec
-    do register intersectSpec
-    do register subtractSpec
-    do register thickenSpec
-    do register shellSpec
     do register fromSketchSpec
-    do register revolveSpec
     do register wingRemapPreviewSpec
 
     // ── Lookups ────────────────────────────────────────────────────────────

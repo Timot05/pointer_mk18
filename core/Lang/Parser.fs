@@ -409,15 +409,22 @@ module Parser =
         skipNewlines p
         let tok = current p
         match tok.Kind with
-        | Ident "Scalar" -> advance p |> ignore; Ok Type.Scalar
-        | Ident "Bool"   -> advance p |> ignore; Ok Type.Bool
-        | Ident "String" -> advance p |> ignore; Ok Type.String
-        | Ident "Unit"   -> advance p |> ignore; Ok Type.Unit
-        | Ident "Field"  -> advance p |> ignore; Ok Type.Field
-        | Ident "Sketch" -> advance p |> ignore; Ok (Type.Sketch Map.empty)
-        | Ident "Frame"  -> advance p |> ignore; Ok Type.Frame
+        | Ident "Scalar"    -> advance p |> ignore; Ok Type.Scalar
+        | Ident "Bool"      -> advance p |> ignore; Ok Type.Bool
+        | Ident "String"    -> advance p |> ignore; Ok Type.String
+        | Ident "Unit"      -> advance p |> ignore; Ok Type.Unit
+        | Ident "Field"     -> advance p |> ignore; Ok Type.Field
+        | Ident "Sketch"    -> advance p |> ignore; Ok (Type.Sketch Map.empty)
+        // `Loop` / `Primitive` annotations parse as the empty-refinement
+        // form (same shape as `Sketch`). The compose stage's sketch
+        // bridge populates concrete refinements at the call site, and
+        // width subtyping (`Type.isSubtypeOf`) accepts the refined
+        // value where the empty form is required.
+        | Ident "Loop"      -> advance p |> ignore; Ok (Type.Loop Map.empty)
+        | Ident "Primitive" -> advance p |> ignore; Ok (Type.Primitive Map.empty)
+        | Ident "Frame"     -> advance p |> ignore; Ok Type.Frame
         | Ident name -> err tok (sprintf "unknown type '%s'" name)
-        | _ -> err tok "expected type name (Scalar | Bool | String | Unit | Field | Sketch | Frame)"
+        | _ -> err tok "expected type name (Scalar | Bool | String | Unit | Field | Sketch | Loop | Primitive | Frame)"
 
     /// Parse a single lambda / let parameter. Accepted forms:
     ///   bareIdent              →  (ident, None)

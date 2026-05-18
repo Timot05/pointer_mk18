@@ -101,7 +101,7 @@ let mount (root: HTMLElement) : JS.Promise<obj> =
                 // CSS `width: 100%` on the canvas element upscales in the
                 // browser for free. Returned to 1.0 once the camera has
                 // been idle for `HIGH_RES_DELAY_MS`.
-                let LOW_RES_SCALE = 0.5
+                let LOW_RES_SCALE = 0.25
                 let HIGH_RES_DELAY_MS = 150.0
                 let mutable renderScale = 1.0
 

@@ -191,10 +191,33 @@ body {
 /* ── Script editor panel ──────────────────────────────────────────── */
 
 .panel-script {
+  position: relative;
   min-width: 0;
   border-right: 1px solid var(--border);
   display: flex;
   background: var(--bg-page);
+}
+
+.script-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background 0.12s ease-out;
+}
+
+.script-resize-handle:hover,
+.script-resize-handle.is-dragging {
+  background: var(--accent);
+}
+
+.layout.is-resizing {
+  cursor: ew-resize;
+  user-select: none;
 }
 
 .script-editor-panel {

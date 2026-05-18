@@ -164,17 +164,20 @@ module ViewerPipeline =
         let frameHighlightAllowed = state.ConstraintPlacementMode <> Some AnglePlacement
 
         // Pick mode (wiring a block ref via viewport click) lights up
-        // every loop in the scene as a click target — so loop hovers
-        // also need to surface as highlights regardless of which sketch
-        // is being edited. Mirror the same gate `isValidSelectionTarget`
-        // uses in `Editor.fs`.
-        let pickModeAllowsLoop target =
+        // every loop AND primitive (line/arc/circle) in the scene as a
+        // click target — so their hovers also need to surface as
+        // highlights regardless of which sketch is being edited.
+        // Mirror the same gate `isValidSelectionTarget` uses in
+        // `Editor.fs`.
+        let pickModeAllowsSketchTarget target =
             state.EditingBlockRef.IsSome
-            && (match target with TargetLoop _ -> true | _ -> false)
+            && (match target with
+                | TargetLoop _ | TargetLine _ | TargetCircle _ | TargetArc _ -> true
+                | _ -> false)
 
         let highlightedTargetAllowed target =
             match target with
-            | _ when pickModeAllowsLoop target -> true
+            | _ when pickModeAllowsSketchTarget target -> true
             | TargetFrameOrigin _ -> frameHighlightAllowed && Editor.belongsToActiveSketch state target
             | _ -> Editor.belongsToActiveSketch state target
 

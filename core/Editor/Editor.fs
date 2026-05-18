@@ -388,14 +388,17 @@ module Editor =
     let isValidSelectionTarget (state: EditorState) target =
         // Pick mode (wiring a block ref via viewport click) overrides
         // the normal "sketch targets only inside sketch-edit mode" gate
-        // for loops: a user wiring a `Loop`-typed input must be able to
-        // click any loop in any sketch in the scene, not just the
-        // actively-edited one.
-        let pickModeAllowsLoop =
+        // for Loop and Primitive (line/arc/circle) targets — a user
+        // wiring a `Loop`- or `Primitive`-typed input must be able to
+        // click any loop or primitive in any sketch in the scene, not
+        // just the actively-edited one.
+        let pickModeAllowsSketchTarget =
             state.EditingBlockRef.IsSome
-            && (match target with TargetLoop _ -> true | _ -> false)
+            && (match target with
+                | TargetLoop _ | TargetLine _ | TargetCircle _ | TargetArc _ -> true
+                | _ -> false)
         match target with
-        | _ when pickModeAllowsLoop -> true
+        | _ when pickModeAllowsSketchTarget -> true
         | TargetFrameOrigin _ -> belongsToActiveSketch state target
         | _ when isSketchTarget target -> belongsToActiveSketch state target
         | _ -> state.Compiled.Pickables |> List.exists (Pickable.sameTarget target)
@@ -875,11 +878,36 @@ module Editor =
                 | ViewerPick(intent, candidates) ->
                     let resolved = reduceSelectionCandidates state candidates
                     // Pick mode (wiring a block-input ref): if the user
-                    // clicks a sketch loop in the viewport while
-                    // `EditingBlockRef` is set, commit an
-                    // `EPath [sketchName; loopId]` to the slot and
-                    // exit pick mode. Sketch ActionId → BlockId via
-                    // `SketchAuthoring.tryParseBlockId`.
+                    // clicks a sketch loop OR a sketch primitive (line/
+                    // circle/arc) in the viewport while `EditingBlockRef`
+                    // is set, commit an `EPath [sketchName; memberId]`
+                    // to the slot and exit pick mode. Sketch ActionId →
+                    // BlockId via `SketchAuthoring.tryParseBlockId`.
+                    // For primitives, the raw entity id (e.g. "leading")
+                    // is mapped to the stable primitive id (e.g. "line_0")
+                    // via the same `reconcilePrimitives` pass that the
+                    // compose stage uses to build the sketch refinement.
+                    let entityIdOf (e: Server.RenderEntity) =
+                        match e with
+                        | Server.REPoint(id, _, _)
+                        | Server.RELine(id, _, _)
+                        | Server.RECircle(id, _, _)
+                        | Server.REArc(id, _, _, _) -> id
+                    let resolvePrimitiveId (sketchData: Server.Lang.Notebook.SketchData) (entityId: string) : string option =
+                        let entitiesById =
+                            sketchData.Sketch.Entities
+                            |> List.map (fun e -> entityIdOf e, e)
+                            |> Map.ofList
+                        let allCurveIds =
+                            sketchData.Sketch.Entities
+                            |> List.choose (function
+                                | Server.RELine(id, _, _)
+                                | Server.RECircle(id, _, _)
+                                | Server.REArc(id, _, _, _) -> Some id
+                                | _ -> None)
+                        Server.SketchLoops.reconcilePrimitives [] entitiesById allCurveIds
+                        |> List.tryFind (fun pr -> pr.EntityId = entityId)
+                        |> Option.map (fun pr -> pr.Id)
                     let pickCommit =
                         match state.EditingBlockRef, resolved with
                         | Some(srcId, paramName), Some(TargetLoop(sketchActionId, loopId), _, _) ->
@@ -888,6 +916,23 @@ module Editor =
                                 state.Doc.Blocks
                                 |> List.tryFind (fun b -> b.Id = bid)
                                 |> Option.map (fun b -> srcId, paramName, b.Name, loopId))
+                        | Some(srcId, paramName), Some(target, _, _) ->
+                            let primitiveEntity =
+                                match target with
+                                | TargetLine(s, e) | TargetCircle(s, e) | TargetArc(s, e) -> Some(s, e)
+                                | _ -> None
+                            primitiveEntity
+                            |> Option.bind (fun (sketchActionId, entityId) ->
+                                SketchAuthoring.tryParseBlockId sketchActionId
+                                |> Option.bind (fun bid ->
+                                    state.Doc.Blocks
+                                    |> List.tryFind (fun b -> b.Id = bid)
+                                    |> Option.bind (fun b ->
+                                        match b.Body with
+                                        | Server.Lang.Notebook.SketchBody data ->
+                                            resolvePrimitiveId data entityId
+                                            |> Option.map (fun primId -> srcId, paramName, b.Name, primId)
+                                        | _ -> None)))
                         | _ -> None
                     match pickCommit with
                     | Some(srcId, paramName, sketchName, loopId) ->

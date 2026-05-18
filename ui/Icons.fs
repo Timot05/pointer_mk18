@@ -59,14 +59,14 @@ let private descriptorForSpecName (name: string) : obj =
     | "cylinder" -> db2Database
     | "box" -> cube
     | "translate" -> moveIcon
-    | "mirror-symmetric" -> rotateIcon
+    | "mirror_symmetric" -> rotateIcon
     | "union" -> joinFull
     | "intersect" -> joinInner
     | "subtract" -> joinLeft
     | "thicken" -> containerImage
     | "shell" -> circleDash
-    | "from-sketch" -> shapeUnite
     | "revolve" -> rotateClockwise
+    | "extrude" -> containerImage
     | "wing-remap-preview" -> zAxis
     | _ -> layers
 

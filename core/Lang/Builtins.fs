@@ -86,47 +86,45 @@ module Builtins =
                     ir.Binary(MathIr.Binary.Sub, y, ir.Constant g.Y0),
                     ir.Constant slope))
 
-    let private tryPointCoords (sketch: Server.ActionSketch) pointId =
-        sketch.Entities
-        |> List.tryPick (function
-            | Server.REPoint(id, x, y) when id = pointId -> Some(x, y)
-            | _ -> None)
+    let private readScalar (name: string) (key: string) (pv: PrimitiveValue) (span: Span) : Result<float, EvalError> =
+        match Map.tryFind key pv.Fields with
+        | Some thunk ->
+            match thunk.Value with
+            | VNumber n -> Ok n
+            | other ->
+                evalError span (sprintf "@wing_remap_preview: %s.%s is not a scalar (got %A)" name key other)
+        | None ->
+            evalError span
+                (sprintf "@wing_remap_preview: %s primitive is missing field '%s' (expected a line primitive)"
+                    name key)
 
-    let private emitFirstLineGuide
+    let private lineGuideFromPrimitive
             (ir: MathIr.MathIR)
             (span: Span)
             (name: string)
-            (sv: SketchValue) : Result<LineGuide, EvalError> =
-        match sv.Plane with
-        | Server.XY ->
-            match sv.Sketch.Entities |> List.tryPick (function Server.RELine(_, a, b) -> Some(a, b) | _ -> None) with
-            | None -> evalError span (sprintf "@wing_remap_preview: %s sketch must contain a line" name)
-            | Some(a, b) ->
-                match tryPointCoords sv.Sketch a, tryPointCoords sv.Sketch b with
-                | Some(x0, y0), Some(x1, y1) ->
-                    let p0x = ir.Constant x0
-                    let p0y = ir.Constant y0
-                    let p1x = ir.Constant x1
-                    let p1y = ir.Constant y1
-                    Ok
-                        { Primitive = ir.LineSegmentN(MathIr.Plane.XY, p0x, p0y, p1x, p1y)
-                          X0 = x0
-                          Y0 = y0
-                          X1 = x1
-                          Y1 = y1
-                          MinY = min y0 y1
-                          MaxY = max y0 y1 }
-                | _ -> evalError span (sprintf "@wing_remap_preview: %s line endpoints are missing" name)
-        | _ -> evalError span "@wing_remap_preview: only XY sketches are supported for now"
+            (pv: PrimitiveValue) : Result<LineGuide, EvalError> =
+        readScalar name "x0" pv span >>= fun x0 ->
+        readScalar name "y0" pv span >>= fun y0 ->
+        readScalar name "x1" pv span >>= fun x1 ->
+        readScalar name "y1" pv span >>= fun y1 ->
+            let p0x = ir.Constant x0
+            let p0y = ir.Constant y0
+            let p1x = ir.Constant x1
+            let p1y = ir.Constant y1
+            Ok
+                { Primitive = ir.LineSegmentN(MathIr.Plane.XY, p0x, p0y, p1x, p1y)
+                  X0 = x0; Y0 = y0; X1 = x1; Y1 = y1
+                  MinY = min y0 y1
+                  MaxY = max y0 y1 }
 
     let private wingRemapPreviewImpl
             (ctx: EvalContext)
             (span: Span)
-            (leading: SketchValue)
-            (trailing: SketchValue) : Result<MathIr.Expr, EvalError> =
+            (leading: PrimitiveValue)
+            (trailing: PrimitiveValue) : Result<MathIr.Expr, EvalError> =
         let ir = ctx.Ir
-        emitFirstLineGuide ir span "leading" leading >>= fun le ->
-        emitFirstLineGuide ir span "trailing" trailing >>= fun te ->
+        lineGuideFromPrimitive ir span "leading" leading >>= fun le ->
+        lineGuideFromPrimitive ir span "trailing" trailing >>= fun te ->
             let axisX = ir.Constant 1.0
             let axisY = ir.Constant 0.0
             let axisZ = ir.Constant 0.0
@@ -238,10 +236,12 @@ module Builtins =
         requireArg span pos named 0 "leading" >>= fun lv ->
         requireArg span pos named 1 "trailing" >>= fun tv ->
             match lv, tv with
-            | VSketch leading, VSketch trailing ->
+            | VPrimitive leading, VPrimitive trailing ->
                 wingRemapPreviewImpl ctx span leading trailing
                 |> Result.map VField
-            | _ -> evalError span "@wing_remap_preview: arguments must be sketches"
+            | _ ->
+                evalError span
+                    "@wing_remap_preview: arguments must be line primitives (e.g. wing_guides.line_0)"
 
     /// Dispatch table for `@name(...)` calls (excluding the input/output/view
     /// specials, which the evaluator routes directly to `ctx.Specials`).

@@ -507,8 +507,33 @@ module NotebookCompose =
                 // `Type.isSubtypeOf` (matched by the runtime), so the
                 // DSL surface `<sketch>.loop_0.line_2` and
                 // `<sketch>.loop_0` both work where a Field is expected.
-                let primitiveType : Type.T =
-                    Type.Primitive (Map.ofList [ "signed_distance", Type.Field ])
+                let entitiesById =
+                    data.Sketch.Entities
+                    |> List.map (fun e -> entityId e, e)
+                    |> Map.ofList
+                // Per-entity refinement: lines also expose x0/y0/x1/y1
+                // scalars, circles expose cx/cy/r. Matches the runtime
+                // VPrimitive.Fields populated by `geometryFields` in
+                // `buildValueEnv` so width-subtype checks succeed when
+                // a sketch's line is wired into an intrinsic that
+                // requires those members (e.g. wing-remap-preview).
+                let entityPrimitiveType (eid: string) : Type.T =
+                    let base_ = Map.ofList [ "signed_distance", Type.Field ]
+                    match Map.tryFind eid entitiesById with
+                    | Some (Server.RELine _) ->
+                        Type.Primitive (
+                            base_
+                            |> Map.add "x0" Type.Scalar
+                            |> Map.add "y0" Type.Scalar
+                            |> Map.add "x1" Type.Scalar
+                            |> Map.add "y1" Type.Scalar)
+                    | Some (Server.RECircle _) ->
+                        Type.Primitive (
+                            base_
+                            |> Map.add "cx" Type.Scalar
+                            |> Map.add "cy" Type.Scalar
+                            |> Map.add "r" Type.Scalar)
+                    | _ -> Type.Primitive base_
                 // Loops carry their parent sketch's perpendicular axis
                 // as a `Scalar` member so user-script bodies can pick
                 // the right axis when wrapping a 2D loop SDF into 3D
@@ -516,17 +541,41 @@ module NotebookCompose =
                 // normal to the sketch plane, matching the existing
                 // `BinaryOp.Compare`-based selector pattern halfplane
                 // and mirror-symmetric use.
-                let refinement =
+                let loopEntries =
                     data.Sketch.Loops
                     |> List.map (fun r ->
                         let loopFieldsMap =
                             r.Primitives
-                            |> List.map (fun (prim: Server.PrimitiveRecord) -> prim.Id, primitiveType)
+                            |> List.map (fun (prim: Server.PrimitiveRecord) ->
+                                prim.Id, entityPrimitiveType prim.EntityId)
                             |> Map.ofList
                             |> Map.add "signed_distance" Type.Field
                             |> Map.add "perpendicular_axis" Type.Scalar
                         r.Id, Type.Loop loopFieldsMap)
-                    |> Map.ofList
+                // Top-level primitives: every line/arc/circle entity in
+                // the sketch (whether or not it participates in a
+                // detected loop) is exposed as a `Primitive` member of
+                // the sketch. IDs follow the same `line_N`/`arc_N`/
+                // `circle_N` convention as loop-nested primitives via
+                // `SketchLoops.reconcilePrimitives` over the full entity
+                // list. Lets a sketch with two disconnected guide lines
+                // expose them as `sketch.line_0` and `sketch.line_1`
+                // for compose-time interceptors (wing-remap-preview) and
+                // any future per-primitive operators.
+                let allCurveEntityIds =
+                    data.Sketch.Entities
+                    |> List.choose (function
+                        | Server.RELine(id, _, _)
+                        | Server.RECircle(id, _, _)
+                        | Server.REArc(id, _, _, _) -> Some id
+                        | _ -> None)
+                let topLevelPrimRecords =
+                    Server.SketchLoops.reconcilePrimitives [] entitiesById allCurveEntityIds
+                let topLevelEntries =
+                    topLevelPrimRecords
+                    |> List.map (fun pr -> pr.Id, entityPrimitiveType pr.EntityId)
+                let refinement =
+                    (loopEntries @ topLevelEntries) |> Map.ofList
                 let sketchType = Type.Sketch refinement
                 typeEnv <- Map.add block.Name sketchType typeEnv
                 blockOutputs <- Map.add block.Id sketchType blockOutputs
@@ -721,14 +770,42 @@ module NotebookCompose =
                         | Ok v -> v
                         | Error _ -> unwiredSentinel ())
 
+                // Build the per-entity geometric scalars exposed on
+                // VPrimitive.Fields. Lines get x0/y0/x1/y1 (resolved
+                // through the point coord table); circles get cx/cy/r;
+                // arcs (ArcCenter) get sx/sy/ex/ey/cx/cy. Used by
+                // intrinsics like wing-remap-preview that need a
+                // primitive's geometry, not just its signed distance.
+                let geometryFields (eid: string) : Map<string, Lazy<Value>> =
+                    match Map.tryFind eid entitiesById with
+                    | Some (Server.RELine(_, a, b)) ->
+                        match Map.tryFind a pts, Map.tryFind b pts with
+                        | Some (ax, ay), Some (bx, by) ->
+                            Map.ofList
+                                [ "x0", lazy (VNumber ax)
+                                  "y0", lazy (VNumber ay)
+                                  "x1", lazy (VNumber bx)
+                                  "y1", lazy (VNumber by) ]
+                        | _ -> Map.empty
+                    | Some (Server.RECircle(_, c, r)) ->
+                        match Map.tryFind c pts with
+                        | Some (cx, cy) ->
+                            Map.ofList
+                                [ "cx", lazy (VNumber cx)
+                                  "cy", lazy (VNumber cy)
+                                  "r", lazy (VNumber r) ]
+                        | None -> Map.empty
+                    | _ -> Map.empty
+
                 let buildPrimitiveFields (prims: Server.PrimitiveRecord list)
                         : Map<string, Lazy<Value>> =
                     prims
                     |> List.choose (fun prim ->
                         buildPrimitiveDistanceExpr loopSpan plane pts entitiesById prim.EntityId
                         |> Option.map (fun expr ->
-                            let primFields : Map<string, Lazy<Value>> =
-                                Map.ofList [ "signed_distance", evalLazy expr ]
+                            let primFields =
+                                geometryFields prim.EntityId
+                                |> Map.add "signed_distance" (evalLazy expr)
                             let primVal = lazy (VPrimitive { Fields = primFields })
                             prim.Id, primVal))
                     |> Map.ofList
@@ -743,7 +820,7 @@ module NotebookCompose =
                     | MathIr.Plane.YZ -> 0.0
                     | _ -> 2.0
                 let perpAxisVal : Lazy<Value> = lazy (VNumber perpAxisNum)
-                let fields =
+                let loopFields =
                     data.Sketch.Loops
                     |> List.choose (fun r ->
                         let pseudoLoop : Server.SketchLoop =
@@ -761,6 +838,37 @@ module NotebookCompose =
                                     VLoop { Fields = loopFields })
                             r.Id, loopThunk))
                     |> Map.ofList
+                // Top-level primitive payloads — every line/arc/circle
+                // entity exposes a `VPrimitive` directly on the sketch,
+                // keyed by the same `line_N` / `arc_N` / `circle_N` id
+                // that the type-side refinement uses. Reuses the same
+                // `reconcilePrimitives` pass over the full entity list,
+                // so loop-nested and top-level paths name the same
+                // primitive consistently.
+                let allCurveEntityIdsRt =
+                    data.Sketch.Entities
+                    |> List.choose (function
+                        | Server.RELine(id, _, _)
+                        | Server.RECircle(id, _, _)
+                        | Server.REArc(id, _, _, _) -> Some id
+                        | _ -> None)
+                let topLevelPrimsRt =
+                    Server.SketchLoops.reconcilePrimitives [] entitiesById allCurveEntityIdsRt
+                let topLevelFields =
+                    topLevelPrimsRt
+                    |> List.choose (fun (prim: Server.PrimitiveRecord) ->
+                        buildPrimitiveDistanceExpr loopSpan plane pts entitiesById prim.EntityId
+                        |> Option.map (fun expr ->
+                            let primFields =
+                                geometryFields prim.EntityId
+                                |> Map.add "signed_distance" (evalLazy expr)
+                            prim.Id, lazy (VPrimitive { Fields = primFields })))
+                    |> Map.ofList
+                // Loops win on name collision so the loop-nested
+                // primitive list keeps its existing shape; top-level
+                // entries only fill gaps.
+                let fields =
+                    Map.fold (fun acc k v -> Map.add k v acc) topLevelFields loopFields
                 envBind ctx.Env block.Name
                     (VSketch { Sketch = data.Sketch; Plane = data.Plane; Fields = fields })
             | _ -> ()

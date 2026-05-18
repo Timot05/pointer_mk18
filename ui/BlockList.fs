@@ -481,7 +481,7 @@ let private renderInputRow
             | _ -> ""
         let currentExpr = Map.tryFind param.Name args
         match param.Type with
-        | Type.Scalar when (specName = "halfplane" || specName = "mirror-symmetric") && param.Name = "axis" ->
+        | Type.Scalar when (specName = "halfplane" || specName = "mirror_symmetric") && param.Name = "axis" ->
             let current =
                 currentExpr
                 |> Option.bind scalarOfExpr

@@ -195,8 +195,16 @@ let ``typecheck: head of path must be defined`` () =
 
 // ─── Eval: VSketch dispatch ─────────────────────────────────────────────────
 
+/// Cached parse of the default user-script source so tests that
+/// reference standard-library specs (mirror_symmetric, extrude,
+/// revolve, etc.) resolve through `UserScript.Specs`. Sourced from
+/// the boot document so we stay in lockstep with what the editor
+/// presents to users.
+let private defaultUserScript : UserScript.Result =
+    UserScript.analyze ((Server.Document.emptyDocument ()).ScriptSourceText)
+
 let private composeAndEval (nb: Notebook) : NotebookCompose.EvalResult =
-    let composed = NotebookCompose.compose nb
+    let composed = NotebookCompose.composeWith nb defaultUserScript
     match Typecheck.elaborate composed.TypeEnv composed.Ast with
     | Ok _ -> ()
     | Error errs ->
@@ -225,12 +233,17 @@ let ``eval: VSketch.Fields contains a VLoop per persisted loop`` () =
     | other -> failwithf "expected VSketch, got %A" other
 
 [<Fact>]
-let ``eval: two-loop sketch produces two field entries`` () =
+let ``eval: two-loop sketch surfaces both loops in Fields`` () =
+    // After top-level-primitives were added, `VSketch.Fields` also
+    // carries every line/arc/circle entity (line_0..line_3 + circle_0
+    // for the square+circle sketch). Test the loops are present rather
+    // than asserting an exact count.
     let nb = notebookOf [ sketchBlockOf 0 "profile" squarePlusCircleSketch XY ]
     let result = composeAndEval nb
     match Map.find "profile" result.Bindings with
     | Value.VSketch sv ->
-        Assert.Equal(2, Map.count sv.Fields)
+        Assert.True(Map.containsKey "loop_0" sv.Fields)
+        Assert.True(Map.containsKey "loop_1" sv.Fields)
     | other -> failwithf "expected VSketch, got %A" other
 
 // ─── Subtype: generic Sketch accepts refined sketches ──────────────────────
@@ -486,23 +499,12 @@ let ``apply: function with empty refinement accepts any sketch`` () =
         let msg = es |> List.map Typecheck.formatError |> String.concat "; "
         failwithf "expected ok, got: %s" msg
 
-[<Fact>]
-let ``apply: from-sketch (Loop input) accepts a refined loop via path`` () =
-    // `from-sketch : Loop {signed_distance: Field} -> Field`. A
-    // path-bearing `EPath ["profile"; "loop_0"]` resolves to the
-    // sketch's loop_0 Loop value, which is width-subtype-compatible
-    // with the spec's required loop refinement.
-    let nb =
-        notebookOf [
-            sketchBlockOf 0 "profile" squareSketch XY
-            nativeBlock 1 "field" "from-sketch" [ "loop", AstBuilder.pathE [ "profile"; "loop_0" ] ]
-        ]
-    let composed = NotebookCompose.compose nb
-    match Typecheck.elaborate composed.TypeEnv composed.Ast with
-    | Ok _ -> ()
-    | Error es ->
-        let msg = es |> List.map Typecheck.formatError |> String.concat "; "
-        failwithf "expected ok, got: %s" msg
+// `apply: from-sketch (Loop input) accepts a refined loop via path`
+// was retired with from-sketch. The same width-subtype-on-Loop-via-
+// path guarantee is covered by the `extrude block output is typed as
+// Field` test in NotebookTests, which wires `profile.loop_0` into
+// extrude's Loop-typed `loop` slot through the same `EPath` route
+// and verifies the typecheck succeeds.
 
 [<Fact>]
 let ``block input: wire profile.loop_0 to a Field-typed param via EPath`` () =
@@ -517,7 +519,7 @@ let ``block input: wire profile.loop_0 to a Field-typed param via EPath`` () =
     let nb =
         notebookOf [
             sketchBlockOf 0 "profile" squareSketch XY
-            nativeBlock 1 "mirrored" "mirror-symmetric"
+            nativeBlock 1 "mirrored" "mirror_symmetric"
                 [ "axis", AstBuilder.numE 0.0
                   "root", AstBuilder.numE 0.0
                   "child", AstBuilder.pathE [ "profile"; "loop_0" ] ]

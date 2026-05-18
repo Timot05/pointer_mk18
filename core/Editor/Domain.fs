@@ -227,21 +227,54 @@ module Document =
           Constraints = []
           Loops = [] }
 
-    /// Boot-time notebook: two sketch guide curves wired into the half-wing
-    /// preview block, then mirrored symmetrically across the root XZ plane.
+    let private squareSketch cx cy half : ActionSketch =
+        let raw : ActionSketch =
+            { Entities =
+                [ REPoint("p0", cx - half, cy - half)
+                  REPoint("p1", cx + half, cy - half)
+                  REPoint("p2", cx + half, cy + half)
+                  REPoint("p3", cx - half, cy + half)
+                  RELine("l0", "p0", "p1")
+                  RELine("l1", "p1", "p2")
+                  RELine("l2", "p2", "p3")
+                  RELine("l3", "p3", "p0") ]
+              Constraints = []
+              Loops = [] }
+        SketchLoops.normalize raw
+
+    let private circleSketch cx cy r : ActionSketch =
+        let raw : ActionSketch =
+            { Entities =
+                [ REPoint("c0", cx, cy)
+                  RECircle("circ", "c0", r) ]
+              Constraints = []
+              Loops = [] }
+        SketchLoops.normalize raw
+
+    /// Both wing guide curves bundled into one sketch. Two lines:
+    /// `line_0` is the leading edge, `line_1` is the trailing edge.
+    /// Top-level primitives are exposed on the sketch refinement, so
+    /// downstream blocks can wire `wing_guides.line_0` / `.line_1`
+    /// directly without splitting them into separate sketch blocks.
+    let private wingGuidesSketch : ActionSketch =
+        { Entities =
+            [ REPoint("le_root", 0.0, 0.0)
+              REPoint("le_tip", 0.25, 5.0)
+              REPoint("te_root", 2.0, 0.0)
+              REPoint("te_tip", 1.25, 5.0)
+              RELine("leading", "le_root", "le_tip")
+              RELine("trailing", "te_root", "te_tip") ]
+          Constraints = []
+          Loops = [] }
+
+    /// Boot-time notebook: one sketch with both wing guide curves
+    /// wired into the half-wing preview block via line-primitive paths,
+    /// then mirrored symmetrically across the root XZ plane.
     let private defaultBlocks : Server.Lang.Notebook.Block list =
         [ { Id = 0
-            Name = "leading"
+            Name = "wing_guides"
             Body = Server.Lang.Notebook.SketchBody
-                { Sketch = lineSketch 0.0 0.0 0.25 5.0
-                  Plane = XY }
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 0
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
-          { Id = 1
-            Name = "trailing"
-            Body = Server.Lang.Notebook.SketchBody
-                { Sketch = lineSketch 2.0 0.0 1.25 5.0
+                { Sketch = wingGuidesSketch
                   Plane = XY }
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
@@ -252,8 +285,8 @@ module Document =
                 Server.Lang.Notebook.NativeBody(
                     "wing-remap-preview",
                     Map.ofList
-                        [ "leading", Server.Lang.AstBuilder.varE "leading"
-                          "trailing", Server.Lang.AstBuilder.varE "trailing" ])
+                        [ "leading", Server.Lang.AstBuilder.pathE [ "wing_guides"; "line_0" ]
+                          "trailing", Server.Lang.AstBuilder.pathE [ "wing_guides"; "line_1" ] ])
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
             SlicePlane =
@@ -263,7 +296,7 @@ module Document =
             Name = "full_wing"
             Body =
                 Server.Lang.Notebook.NativeBody(
-                    "mirror-symmetric",
+                    "mirror_symmetric",
                     Map.ofList
                         [ "axis", Server.Lang.AstBuilder.numE 1.0
                           "root", Server.Lang.AstBuilder.numE 0.0
@@ -272,7 +305,41 @@ module Document =
             ColorIndex = 0
             SlicePlane =
                 { Server.Lang.Notebook.defaultSlicePlane with
-                    Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } } ]
+                    Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } }
+          // Loft demo: square cross-section at z=0 morphing into a
+          // circle at z=3. Positioned off to the right (x ~ 5) so it
+          // doesn't overlap with the wing.
+          { Id = 4
+            Name = "loft_square"
+            Body = Server.Lang.Notebook.SketchBody
+                { Sketch = squareSketch 5.0 0.0 1.0
+                  Plane = XY }
+            Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 0
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
+          { Id = 5
+            Name = "loft_circle"
+            Body = Server.Lang.Notebook.SketchBody
+                { Sketch = circleSketch 5.0 0.0 1.0
+                  Plane = XY }
+            Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 0
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
+          { Id = 6
+            Name = "loft_demo"
+            Body =
+                Server.Lang.Notebook.NativeBody(
+                    "loft",
+                    Map.ofList
+                        [ "a", Server.Lang.AstBuilder.pathE [ "loft_square"; "loop_0" ]
+                          "b", Server.Lang.AstBuilder.pathE [ "loft_circle"; "loop_0" ]
+                          "start_pos", Server.Lang.AstBuilder.numE 0.0
+                          "end_pos", Server.Lang.AstBuilder.numE 3.0 ])
+            Visibility = Server.Lang.Notebook.VIsosurface
+            ColorIndex = 1
+            SlicePlane =
+                { Server.Lang.Notebook.defaultSlicePlane with
+                    Origin = { X = 5.0; Y = 0.0; Z = 1.5 } } } ]
 
     /// Demo content the script editor shows on a fresh document.
     /// Defines the standard library of SDF primitives (sphere, box,
@@ -356,6 +423,70 @@ let shell = fun (thickness: Scalar) (child: Field) ->
     max child (0 - (child + thickness))
 end
 
+// Linearly loft between two parallel-plane sketch loops. `a` is the
+// cross-section at perpendicular-axis position `start_pos`, `b` at
+// `end_pos`. Both loops must lie in parallel planes (same
+// `perpendicular_axis`) — `loft` reads the axis from `a` and assumes
+// `b` matches. The 3D SDF linearly interpolates the two 2D fields by
+// `t` along the perpendicular axis, then intersects with the slab
+// `[start_pos, end_pos]` to close the body at both caps.
+//
+// Output is a Field lower-bound (not exact SDF) because of the
+// linear blend. Adequate for raymarching; raymarcher may need
+// smaller steps near the surface for steeply-morphing cross-sections.
+let loft = fun (a: Loop) (b: Loop) (start_pos: Scalar) (end_pos: Scalar) ->
+    let axis = a.perpendicular_axis
+    let sx = 1 - abs (compare axis 0)
+    let sy = 1 - abs (compare axis 1)
+    let sz = 1 - abs (compare axis 2)
+    let perp = sx*x + sy*y + sz*z
+    let t = (perp - start_pos) / (end_pos - start_pos + 0.000001)
+    let blend = (1 - t) * a.signed_distance + t * b.signed_distance
+    let slab = max (perp - end_pos) (start_pos - perp)
+    max blend slab
+end
+
+// Project a sketch loop's 2D signed-distance field into 3D. Identity
+// on the loop's `signed_distance` member — the loop's enclosing
+// sketch plane determines which two axes the field varies along; the
+// third spatial axis is unused, so the field is infinite along it
+// (you'll typically intersect with a slab via `extrude` or wrap into
+// a revolution via `revolve`).
+let from_sketch = fun (loop: Loop) ->
+    loop.signed_distance
+end
+
+// Two-body coordinate field (signed). Given two distance fields a
+// and b, returns t = (a - b) / (a + b), which is -1 on the boundary
+// of a, +1 on the boundary of b, and 0 at points equidistant from
+// both. Smoothly varies elsewhere. The eps guard keeps the divisor
+// finite when both fields hit zero at the same point.
+//
+// Foundation for loft / blend operations and Blake-Courter-style
+// band-pattern fields, with the sign convention matching the
+// `wing-remap-preview` block (-1 = leading-edge side, +1 =
+// trailing-edge side).
+let two_body = fun (a: Field) (b: Field) ->
+    (a - b) / (a + b + 0.000001)
+end
+
+// Reflect `child` across the plane perpendicular to `axis` at `root`,
+// evaluating the positive (root-side) half on both sides. `axis` is a
+// 0/1/2 discrete choice (rendered as a dropdown in the BlockList);
+// `root` is the position of the mirror plane along that axis.
+let mirror_symmetric = fun (axis: Scalar) (root: Scalar) (child: Field) ->
+    let sx = 1 - abs (compare axis 0)
+    let sy = 1 - abs (compare axis 1)
+    let sz = 1 - abs (compare axis 2)
+    let mx = root + abs (x - root)
+    let my = root + abs (y - root)
+    let mz = root + abs (z - root)
+    let cx = sx*mx + (1 - sx)*x
+    let cy = sy*my + (1 - sy)*y
+    let cz = sz*mz + (1 - sz)*z
+    remap_axes child cx cy cz
+end
+
 // Sweep a closed 2D sketch loop along the axis perpendicular to its
 // plane, clamping to [bottom, top]. Picks the perpendicular axis from
 // the loop's `perpendicular_axis` member (0=X / 1=Y / 2=Z), which the
@@ -409,6 +540,6 @@ end
     let emptyDocument () : Document =
         { Name = "untitled"
           Blocks = defaultBlocks
-          NextBlockId = 4
+          NextBlockId = 7
           SelectedBlockId = Some 3
           ScriptSourceText = defaultScriptSource }

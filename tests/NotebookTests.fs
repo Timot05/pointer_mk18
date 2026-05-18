@@ -168,7 +168,7 @@ let ``mirror symmetric wraps an upstream field in a RemapAxes node`` () =
     let nb =
         notebookOf [
             nativeBlock 0 "half" "sphere" [ "radius", argScalar 1.0 ]
-            nativeBlock 1 "full" "mirror-symmetric"
+            nativeBlock 1 "full" "mirror_symmetric"
                 [ "axis", argScalar 1.0
                   "root", argScalar 0.0
                   "child", argRef "half" ]
@@ -225,14 +225,26 @@ let ``sketch block surfaces as a VSketch output`` () =
     | other -> failwithf "expected VSketch, got %A" other
 
 [<Fact>]
-let ``wing remap preview consumes two sketch refs and emits remapped profile`` () =
+let ``wing remap preview consumes two line primitives and emits remapped profile`` () =
+    // One sketch carrying two parallel guide lines; the wing block
+    // wires each line individually via `sketch.line_N` paths. The
+    // top-level-primitive refinement on the sketch exposes line_0 /
+    // line_1 directly.
+    let sk : ActionSketch =
+        { Entities =
+            [ REPoint("a0", 0.0, 0.0)
+              REPoint("a1", 0.0, 2.0)
+              REPoint("b0", 1.0, 0.0)
+              REPoint("b1", 1.0, 2.0)
+              RELine("l_le", "a0", "a1")
+              RELine("l_te", "b0", "b1") ]
+          Constraints = []; Loops = [] }
     let nb =
         notebookOf [
-            sketchBlockOf 0 "leading" (verticalLineSketch 0.0) XY
-            sketchBlockOf 1 "trailing" (verticalLineSketch 1.0) XY
-            nativeBlock 2 "wing" "wing-remap-preview"
-                [ "leading", argRef "leading"
-                  "trailing", argRef "trailing" ]
+            sketchBlockOf 0 "guides" sk XY
+            nativeBlock 1 "wing" "wing-remap-preview"
+                [ "leading", AstBuilder.pathE [ "guides"; "line_0" ]
+                  "trailing", AstBuilder.pathE [ "guides"; "line_1" ] ]
         ]
     let _, result = evaluateOk nb
     match bindingOf "wing" result with
@@ -260,61 +272,12 @@ let ``wing remap preview consumes two sketch refs and emits remapped profile`` (
 // don't form a loop and so don't have a typed handle to wire — that
 // behavior was retired alongside the compose interceptor.
 
-[<Fact>]
-let ``from-sketch over a triangle wraps the Fold(Min, ...) in a sign flip (Mul)`` () =
-    // Three line segments forming a closed loop. The bridge builds the
-    // loop's signed_distance as `unsigned * (-compare(|sum windings|, π))`;
-    // from-sketch is identity on that signed_distance.
-    let sk =
-        { Entities =
-            [ REPoint("a", 0.0, 0.0)
-              REPoint("b", 1.0, 0.0)
-              REPoint("c", 0.5, 1.0)
-              RELine("ab", "a", "b")
-              RELine("bc", "b", "c")
-              RELine("ca", "c", "a") ]
-          Constraints = []; Loops = [] }
-    let nb =
-        notebookOf [
-            sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "field" "from-sketch" [ "loop", AstBuilder.pathE [ "sk"; "loop_0" ] ]
-        ]
-    let _, result = evaluateOk nb
-    match bindingOf "field" result with
-    | Value.VField root ->
-        let rootNode = result.Ir.Nodes.[root.Id]
-        Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
-        Assert.Equal(int MathIr.Binary.Mul, rootNode.Op)
-        let unsignedNode = result.Ir.Nodes.[rootNode.A]
-        Assert.Equal(MathIr.NodeKind.Fold, unsignedNode.Kind)
-        Assert.Equal(int MathIr.FoldOp.Min, unsignedNode.Op)
-        Assert.Equal(3, unsignedNode.B)
-    | other -> failwithf "expected VField, got %A" other
-
-[<Fact>]
-let ``from-sketch over a single circle lowers to analytic signed disk distance`` () =
-    // A lone circle is its own closed loop; the lowering emits
-    //   sqrt((x-cx)² + (y-cy)²) - r
-    let sk =
-        { Entities =
-            [ REPoint("c", 0.0, 0.0)
-              RECircle("circ", "c", 1.5) ]
-          Constraints = []; Loops = [] }
-    let nb =
-        notebookOf [
-            sketchBlockOf 0 "sk" sk XY
-            nativeBlock 1 "field" "from-sketch" [ "loop", AstBuilder.pathE [ "sk"; "loop_0" ] ]
-        ]
-    let _, result = evaluateOk nb
-    match bindingOf "field" result with
-    | Value.VField root ->
-        let rootNode = result.Ir.Nodes.[root.Id]
-        Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
-        Assert.Equal(int MathIr.Binary.Sub, rootNode.Op)
-        let sqrtNode = result.Ir.Nodes.[rootNode.A]
-        Assert.Equal(MathIr.NodeKind.UnaryK, sqrtNode.Kind)
-        Assert.Equal(int MathIr.Unary.Sqrt, sqrtNode.Op)
-    | other -> failwithf "expected VField, got %A" other
+// The two `from-sketch` MathIR-shape tests were retired alongside the
+// from-sketch spec itself. The loop-lowering math (`buildLoopExpr` in
+// `NotebookCompose.fs`) is now exercised indirectly through the
+// surviving `revolve` and `extrude` tests — both wrap a loop's
+// signed_distance through the same lowering path, so a regression in
+// the loop SDF surfaces as an extrude/revolve failure.
 
 [<Fact>]
 let ``revolve over a circle loop wraps the 2D SDF in RemapAxes`` () =

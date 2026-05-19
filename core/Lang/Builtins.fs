@@ -182,21 +182,18 @@ module Builtins =
     let private wingRemapPreviewImpl
             (ctx: EvalContext)
             (span: Span)
+            (profile: MathIr.Expr)
+            (profileChord: float)
+            (profileOriginX: float)
+            (profileOriginY: float)
+            (profileOriginZ: float)
             (leading: PrimitiveValue)
             (trailing: PrimitiveValue) : Result<MathIr.Expr, EvalError> =
         let ir = ctx.Ir
         guideFromPrimitive ir span "leading" leading >>= fun le ->
         guideFromPrimitive ir span "trailing" trailing >>= fun te ->
-            let axisX = ir.Constant 1.0
-            let axisY = ir.Constant 0.0
-            let axisZ = ir.Constant 0.0
-            let dLeading =
-                ir.CurveDistanceAlong(MathIr.Plane.XY, [ le.Primitive ], axisX, axisY, axisZ, false)
-            let dTrailing =
-                ir.CurveDistanceAlong(MathIr.Plane.XY, [ te.Primitive ], axisX, axisY, axisZ, false)
-            // Two-body coordinate from the nTop variable-loft recipe. With
-            // our CurveDistanceAlong sign convention (`curve_x - sample_x`),
-            // A = leading - x and B = trailing - x. `-(A+B)/(B-A)` maps
+            // Two-body coordinate from the nTop variable-loft recipe.
+            // -(A+B)/(B-A) where A = leading - x, B = trailing - x maps
             // leading edge → -1, mid-chord → 0, trailing edge → +1.
             let y = ir.Y()
             let leadingX = chordXAtYExpr ir le y
@@ -224,61 +221,34 @@ module Builtins =
                 ir.Binary(MathIr.Binary.Div, localChord, ir.Constant rootChord)
             let scaledZ = ir.Binary(MathIr.Binary.Div, ir.Z(), chordScale)
 
-            // Canonical NACA-style source profile in XZ, with x in [-1, 1]
-            // and z as thickness height. Remapping by `twoBody` handles
-            // chord taper and sweep; remapping z by local/root chord keeps
-            // thickness ratio as the chord changes along the span.
-            let sx = ir.X()
-            let sz = ir.Z()
-            let one = ir.Constant 1.0
-            let zero = ir.Constant 0.0
-            let cRaw =
-                ir.Binary(
-                    MathIr.Binary.Mul,
-                    ir.Binary(MathIr.Binary.Add, sx, one),
-                    ir.Constant 0.5)
-            let c =
-                ir.Binary(
-                    MathIr.Binary.Min,
-                    ir.Binary(MathIr.Binary.Max, cRaw, zero),
-                    one)
-            let c2 = ir.Unary(MathIr.Unary.Square, c)
-            let c3 = ir.Binary(MathIr.Binary.Mul, c2, c)
-            let c4 = ir.Unary(MathIr.Unary.Square, c2)
-            let nacaThicknessShape =
-                let term0 = ir.Binary(MathIr.Binary.Mul, ir.Constant 0.2969, ir.Unary(MathIr.Unary.Sqrt, c))
-                let term1 = ir.Binary(MathIr.Binary.Mul, ir.Constant -0.1260, c)
-                let term2 = ir.Binary(MathIr.Binary.Mul, ir.Constant -0.3516, c2)
-                let term3 = ir.Binary(MathIr.Binary.Mul, ir.Constant 0.2843, c3)
-                let term4 = ir.Binary(MathIr.Binary.Mul, ir.Constant -0.1015, c4)
+            // Build new axes that, when substituted into the input profile
+            // via `RemapAxes`, undo the profile's own placement and feed it
+            // canonical (sx, sz) coords derived from the wing pipeline.
+            //
+            // The NACA block computes internally:
+            //   sx = (X - ox) * 2 / chord
+            //   sz = (Z - oz) * 2 / chord
+            // We want sx → twoBody, sz → scaledZ after substitution. So:
+            //   newX = ox + twoBody  * (chord / 2)
+            //   newZ = oz + scaledZ * (chord / 2)
+            //
+            // For Y we feed the profile's own origin_y as a constant so its
+            // internal `|Y - oy|` span window collapses to 0 (always
+            // "inside"). The wing's own span window from the guides handles
+            // the Y bound for the final wing.
+            let halfChord = profileChord * 0.5
+            let newX =
                 ir.Binary(
                     MathIr.Binary.Add,
-                    ir.Binary(MathIr.Binary.Add, term0, term1),
-                    ir.Binary(
-                        MathIr.Binary.Add,
-                        ir.Binary(MathIr.Binary.Add, term2, term3),
-                        term4))
-            let thickness =
+                    ir.Constant profileOriginX,
+                    ir.Binary(MathIr.Binary.Mul, twoBody, ir.Constant halfChord))
+            let newY = ir.Constant profileOriginY
+            let newZ =
                 ir.Binary(
-                    MathIr.Binary.Mul,
-                    nacaThicknessShape,
-                    ir.Constant (5.0 * 0.18 * 2.0))
-            let camberShape =
-                ir.Binary(
-                    MathIr.Binary.Sub,
-                    one,
-                    ir.Unary(MathIr.Unary.Square, sx))
-            let camber =
-                ir.Binary(MathIr.Binary.Mul, ir.Constant 0.04, camberShape)
-            let chordWindow =
-                ir.Binary(MathIr.Binary.Sub, ir.Unary(MathIr.Unary.Abs, sx), one)
-            let heightWindow =
-                ir.Binary(
-                    MathIr.Binary.Sub,
-                    ir.Unary(MathIr.Unary.Abs, ir.Binary(MathIr.Binary.Sub, sz, camber)),
-                    thickness)
-            let sourceProfile = ir.Binary(MathIr.Binary.Max, chordWindow, heightWindow)
-            let remappedProfile = ir.RemapAxes(sourceProfile, twoBody, ir.Y(), scaledZ)
+                    MathIr.Binary.Add,
+                    ir.Constant profileOriginZ,
+                    ir.Binary(MathIr.Binary.Mul, scaledZ, ir.Constant halfChord))
+            let remappedProfile = ir.RemapAxes(profile, newX, newY, newZ)
 
             let minY = max le.MinY te.MinY
             let maxY = min le.MaxY te.MaxY
@@ -292,18 +262,128 @@ module Builtins =
 
             Ok (ir.Binary(MathIr.Binary.Max, remappedProfile, spanWindow))
 
+    // -- naca --------------------------------------------------------------
+    //
+    // Canonical NACA-style airfoil profile expressed in world XZ coords,
+    // centred on (`origin_x`, `origin_y`, `origin_z`) with chord length
+    // `chord` (X extent), thickness ratio `thickness`, max camber
+    // `camber`, and Y span `span` for the bounded extrusion. Same shape
+    // family that the inline NACA inside `wing_remap_preview` uses;
+    // factored here so the user can position / size a standalone airfoil
+    // block (e.g. for blueprint overlay) without touching the wing-remap
+    // pipeline.
+    let private nacaProfileExpr
+            (ir: MathIr.MathIR)
+            (thickness: float)
+            (camber: float)
+            (chord: float)
+            (span: float)
+            (originX: float)
+            (originY: float)
+            (originZ: float) : MathIr.Expr =
+        let halfChord = max (chord * 0.5) 1.0e-6
+        let invHalfChord = 1.0 / halfChord
+        // Map placed world (X, Z) → canonical (sx, sz) with chord ∈ [-1, 1].
+        // Y is the extruded direction — the profile is independent of Y
+        // and gets bounded below by `spanWindow`.
+        let sx =
+            ir.Binary(MathIr.Binary.Mul,
+                ir.Binary(MathIr.Binary.Sub, ir.X(), ir.Constant originX),
+                ir.Constant invHalfChord)
+        let sz =
+            ir.Binary(MathIr.Binary.Mul,
+                ir.Binary(MathIr.Binary.Sub, ir.Z(), ir.Constant originZ),
+                ir.Constant invHalfChord)
+        let one = ir.Constant 1.0
+        let zero = ir.Constant 0.0
+        let cRaw =
+            ir.Binary(MathIr.Binary.Mul,
+                ir.Binary(MathIr.Binary.Add, sx, one),
+                ir.Constant 0.5)
+        let c =
+            ir.Binary(MathIr.Binary.Min,
+                ir.Binary(MathIr.Binary.Max, cRaw, zero),
+                one)
+        let c2 = ir.Unary(MathIr.Unary.Square, c)
+        let c3 = ir.Binary(MathIr.Binary.Mul, c2, c)
+        let c4 = ir.Unary(MathIr.Unary.Square, c2)
+        let nacaThicknessShape =
+            let term0 = ir.Binary(MathIr.Binary.Mul, ir.Constant 0.2969, ir.Unary(MathIr.Unary.Sqrt, c))
+            let term1 = ir.Binary(MathIr.Binary.Mul, ir.Constant -0.1260, c)
+            let term2 = ir.Binary(MathIr.Binary.Mul, ir.Constant -0.3516, c2)
+            let term3 = ir.Binary(MathIr.Binary.Mul, ir.Constant 0.2843, c3)
+            let term4 = ir.Binary(MathIr.Binary.Mul, ir.Constant -0.1015, c4)
+            ir.Binary(MathIr.Binary.Add,
+                ir.Binary(MathIr.Binary.Add, term0, term1),
+                ir.Binary(MathIr.Binary.Add,
+                    ir.Binary(MathIr.Binary.Add, term2, term3), term4))
+        let thicknessExpr =
+            ir.Binary(MathIr.Binary.Mul,
+                nacaThicknessShape,
+                ir.Constant (5.0 * thickness * 2.0))
+        let camberShape =
+            ir.Binary(MathIr.Binary.Sub, one, ir.Unary(MathIr.Unary.Square, sx))
+        let camberExpr =
+            ir.Binary(MathIr.Binary.Mul, ir.Constant camber, camberShape)
+        let chordWindow =
+            ir.Binary(MathIr.Binary.Sub, ir.Unary(MathIr.Unary.Abs, sx), one)
+        let heightWindow =
+            ir.Binary(MathIr.Binary.Sub,
+                ir.Unary(MathIr.Unary.Abs, ir.Binary(MathIr.Binary.Sub, sz, camberExpr)),
+                thicknessExpr)
+        let profile = ir.Binary(MathIr.Binary.Max, chordWindow, heightWindow)
+        let halfSpan = max (span * 0.5) 1.0e-6
+        let spanWindow =
+            ir.Binary(MathIr.Binary.Sub,
+                ir.Unary(MathIr.Unary.Abs, ir.Binary(MathIr.Binary.Sub, ir.Y(), ir.Constant originY)),
+                ir.Constant halfSpan)
+        ir.Binary(MathIr.Binary.Max, profile, spanWindow)
+
+    let private readNumberArg
+            (errPrefix: string)
+            (span: Span)
+            (pos: Value list)
+            (named: Map<string, Value>)
+            (idx: int)
+            (name: string) : Result<float, EvalError> =
+        requireArg span pos named idx name >>= fun v ->
+            match v with
+            | VNumber n -> Ok n
+            | other ->
+                evalError span
+                    (sprintf "%s: argument '%s' must be a scalar (got %A)" errPrefix name other)
+
+    let private nacaCall (ctx: EvalContext) (span: Span) (args: ArgValue list) =
+        let pos = positionals args
+        let named = namedMap args
+        let read = readNumberArg "@naca" span pos named
+        read 0 "thickness" >>= fun thickness ->
+        read 1 "camber" >>= fun camber ->
+        read 2 "chord" >>= fun chord ->
+        read 3 "span" >>= fun spanLen ->
+        read 4 "origin_x" >>= fun ox ->
+        read 5 "origin_y" >>= fun oy ->
+        read 6 "origin_z" >>= fun oz ->
+            Ok (VField (nacaProfileExpr ctx.Ir thickness camber chord spanLen ox oy oz))
+
     let private wingRemapPreviewCall (ctx: EvalContext) (span: Span) (args: ArgValue list) =
         let pos = positionals args
         let named = namedMap args
-        requireArg span pos named 0 "leading" >>= fun lv ->
-        requireArg span pos named 1 "trailing" >>= fun tv ->
-            match lv, tv with
-            | VPrimitive leading, VPrimitive trailing ->
-                wingRemapPreviewImpl ctx span leading trailing
+        let read = readNumberArg "@wing_remap_preview" span pos named
+        requireArg span pos named 0 "profile" >>= fun pv ->
+        read 1 "profile_chord" >>= fun pc ->
+        read 2 "profile_origin_x" >>= fun pox ->
+        read 3 "profile_origin_y" >>= fun poy ->
+        read 4 "profile_origin_z" >>= fun poz ->
+        requireArg span pos named 5 "leading" >>= fun lv ->
+        requireArg span pos named 6 "trailing" >>= fun tv ->
+            match pv, lv, tv with
+            | VField profile, VPrimitive leading, VPrimitive trailing ->
+                wingRemapPreviewImpl ctx span profile pc pox poy poz leading trailing
                 |> Result.map VField
             | _ ->
                 evalError span
-                    "@wing_remap_preview: arguments must be line primitives (e.g. wing_guides.line_0)"
+                    "@wing_remap_preview: profile must be a Field; leading/trailing must be line primitives"
 
     /// Dispatch table for `@name(...)` calls (excluding the input/output/view
     /// specials, which the evaluator routes directly to `ctx.Specials`).
@@ -314,6 +394,7 @@ module Builtins =
             (span: Span) : Result<Value, EvalError> =
         match name with
         | "wing_remap_preview" -> wingRemapPreviewCall ctx span args
+        | "naca" -> nacaCall ctx span args
         | _ -> evalError span (sprintf "unknown builtin @%s" name)
 
     /// Positional arities for the curried `@name` form. `print` / `debug`
@@ -321,7 +402,8 @@ module Builtins =
     /// go through `dispatch` once saturated.
     let arityOf (name: string) : int option =
         match name with
-        | "wing_remap_preview" -> Some 2
+        | "wing_remap_preview" -> Some 7
+        | "naca" -> Some 7
         | "print" -> Some 2
         | "debug" -> Some 1
         | _ -> None

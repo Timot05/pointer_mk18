@@ -119,30 +119,82 @@ module BlockSpec =
     // pick the right axis at typecheck time, removing the need for a
     // compose-time interceptor.
 
-    /// `wing-remap-preview leading trailing` — experimental field that
-    /// remaps a canonical unit chord/span strip through two one-line XY
-    /// sketch guides. This validates the curve-distance/remap path before
-    /// adding airfoil thickness or a closed wing solid.
+    /// `naca thickness camber chord span origin_x origin_y origin_z` —
+    /// canonical NACA-style airfoil profile positioned in world XZ.
+    /// Useful as a standalone Field block for blueprint overlay / placement
+    /// preview; can be wrapped or composed with other Fields like any other
+    /// primitive. The wing-remap pipeline still computes its own canonical
+    /// NACA internally — this spec doesn't feed wing-remap-preview today.
+    let private nacaSpec : BlockSpec =
+        let names =
+            [ "thickness"; "camber"; "chord"; "span"
+              "origin_x"; "origin_y"; "origin_z" ]
+        let body =
+            names
+            |> List.fold
+                (fun acc n -> mk (EApply(acc, varE n)))
+                (internalE "naca")
+        { Name = "naca"
+          Body =
+              lambda
+                  (names |> List.map (fun n -> n, Type.Scalar))
+                  body
+          ScalarDefaults =
+              Map.ofList
+                  [ "thickness", 0.18
+                    "camber", 0.04
+                    "chord", 2.0
+                    "span", 1.0
+                    "origin_x", 0.0
+                    "origin_y", 0.0
+                    "origin_z", 0.0 ] }
+
+    /// `wing-remap-preview profile profile_chord profile_origin_{x,y,z}
+    /// leading trailing` — remaps a profile Field (typically a `naca`
+    /// block output) through two one-line XY sketch guides to produce
+    /// a swept wing surface.
+    ///
+    /// The `profile_*` scalars must match the source profile's own
+    /// placement params (chord length + origin) so that the wing block
+    /// can correctly inverse-transform them before substituting the
+    /// canonical chord (twoBody) and chord-scaled Z into the profile's
+    /// internal `(sx, sz)` coordinates.
     let private wingRemapPreviewSpec : BlockSpec =
-        // `leading` / `trailing` are individual line primitives (e.g.
-        // `wing_guides.line_0`). The runtime dispatch (in `Builtins`)
-        // reads each primitive's `x0`/`y0`/`x1`/`y1` scalar fields —
-        // populated by `NotebookCompose.buildValueEnv` for every line
-        // entity in a sketch — to build the NACA chord-interpolation
-        // math.
         let linePrimitiveType =
             Type.Primitive (
                 Map.ofList
                     [ "signed_distance", Type.Field
                       "x0", Type.Scalar; "y0", Type.Scalar
                       "x1", Type.Scalar; "y1", Type.Scalar ])
+        let names =
+            [ "profile"
+              "profile_chord"
+              "profile_origin_x"
+              "profile_origin_y"
+              "profile_origin_z"
+              "leading"
+              "trailing" ]
         let body =
-            mk (EApply(
-                mk (EApply(internalE "wing_remap_preview", varE "leading")),
-                varE "trailing"))
+            names
+            |> List.fold
+                (fun acc n -> mk (EApply(acc, varE n)))
+                (internalE "wing_remap_preview")
+        let params' =
+            [ "profile", Type.Field
+              "profile_chord", Type.Scalar
+              "profile_origin_x", Type.Scalar
+              "profile_origin_y", Type.Scalar
+              "profile_origin_z", Type.Scalar
+              "leading", linePrimitiveType
+              "trailing", linePrimitiveType ]
         { Name = "wing-remap-preview"
-          Body = lambda [ "leading", linePrimitiveType; "trailing", linePrimitiveType ] body
-          ScalarDefaults = Map.empty }
+          Body = lambda params' body
+          ScalarDefaults =
+              Map.ofList
+                  [ "profile_chord", 2.0
+                    "profile_origin_x", 0.0
+                    "profile_origin_y", 0.0
+                    "profile_origin_z", 0.0 ] }
 
     // Intrinsic specs only — bodies that need MathIR-builder access at
     // compose time (wing-remap-preview), compose-time interceptors
@@ -152,6 +204,7 @@ module BlockSpec =
     // mirror-symmetric).
     do register translateSpec
     do register wingRemapPreviewSpec
+    do register nacaSpec
 
     // ── Lookups ────────────────────────────────────────────────────────────
 
@@ -179,7 +232,17 @@ module BlockSpec =
                       "x1", Type.Scalar; "y1", Type.Scalar ])
         Map.ofList [
             "wing_remap_preview",
-            Type.curried [ linePrimitiveType; linePrimitiveType ] Type.Field
+            Type.curried
+                [ Type.Field
+                  Type.Scalar; Type.Scalar; Type.Scalar; Type.Scalar
+                  linePrimitiveType; linePrimitiveType ]
+                Type.Field
+
+            "naca",
+            Type.curried
+                [ Type.Scalar; Type.Scalar; Type.Scalar; Type.Scalar
+                  Type.Scalar; Type.Scalar; Type.Scalar ]
+                Type.Field
         ]
 
     /// Convenience: typed input list + output type for a spec.

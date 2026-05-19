@@ -81,5 +81,12 @@ fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
 @fragment
 fn fs(input: VsOut) -> @location(0) vec4<f32> {
     let sampled = textureSample(image, image_sampler, input.uv);
-    return vec4<f32>(sampled.rgb, sampled.a * quad.opacity);
+    let alpha = sampled.a * quad.opacity;
+    // Drop fully-transparent fragments so they don't write depth and
+    // occlude planes behind them. Pipeline has depth-write on so
+    // intersecting planes slice correctly against each other.
+    if (alpha < 0.001) {
+        discard;
+    }
+    return vec4<f32>(sampled.rgb, alpha);
 }

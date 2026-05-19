@@ -242,8 +242,21 @@ let ``wing remap preview consumes two line primitives and emits remapped profile
     let nb =
         notebookOf [
             sketchBlockOf 0 "guides" sk XY
+            nativeBlock 2 "naca_profile" "naca"
+                [ "thickness", AstBuilder.numE 0.18
+                  "camber", AstBuilder.numE 0.04
+                  "chord", AstBuilder.numE 2.0
+                  "span", AstBuilder.numE 1.0
+                  "origin_x", AstBuilder.numE 0.0
+                  "origin_y", AstBuilder.numE 0.0
+                  "origin_z", AstBuilder.numE 0.0 ]
             nativeBlock 1 "wing" "wing-remap-preview"
-                [ "leading", AstBuilder.pathE [ "guides"; "line_0" ]
+                [ "profile", AstBuilder.varE "naca_profile"
+                  "profile_chord", AstBuilder.numE 2.0
+                  "profile_origin_x", AstBuilder.numE 0.0
+                  "profile_origin_y", AstBuilder.numE 0.0
+                  "profile_origin_z", AstBuilder.numE 0.0
+                  "leading", AstBuilder.pathE [ "guides"; "line_0" ]
                   "trailing", AstBuilder.pathE [ "guides"; "line_1" ] ]
         ]
     let _, result = evaluateOk nb
@@ -252,13 +265,7 @@ let ``wing remap preview consumes two line primitives and emits remapped profile
         let rootNode = result.Ir.Nodes.[root.Id]
         Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
         Assert.Equal(int MathIr.Binary.Max, rootNode.Op)
-        let curveIntrinsics =
-            result.Ir.Intrinsics
-            |> Seq.filter (fun i -> i.Kind = MathIr.IntrinsicKind.CurveDistanceAlong)
-            |> Seq.length
-        Assert.Equal(2, curveIntrinsics)
         let wgsl = MathIrWgsl.emit result.Ir root "wing_preview"
-        Assert.Contains("let_axis_line_distance", wgsl)
         Assert.Contains("fn wing_preview", wgsl)
     | other -> failwithf "expected VField, got %A" other
 

@@ -158,8 +158,14 @@ let create (scene: Scene.Scene) : ImagePlaneRenderer =
                        entryPoint = "fs"
                        targets = [| {| format = scene.Format; blend = alphaBlend () |} |] |}
                    primitive = {| topology = "triangle-list" |}
+                   // depth-write ON so two image planes that physically
+                   // intersect get sliced against each other per-pixel
+                   // rather than one drawing fully over the other. The
+                   // shader `discard`s fully-transparent fragments so
+                   // transparent PNG regions don't punch opaque holes
+                   // into the depth buffer.
                    depthStencil =
-                    {| format = "depth24plus"; depthWriteEnabled = false; depthCompare = "less" |} |})
+                    {| format = "depth24plus"; depthWriteEnabled = true; depthCompare = "less" |} |})
 
     let sampler =
         device.createSampler
@@ -328,21 +334,39 @@ let update (renderer: ImagePlaneRenderer) (doc: Server.Document) : unit =
 /// Issue one draw per ready image block onto the supplied render
 /// pass. Must be called inside a render pass that has the camera
 /// bind group bound at group 0.
+///
+/// Painter's algorithm: depth-write is off (so transparent regions
+/// blend correctly against the SDF and each other), which means GPU
+/// depth-test alone can't sort the planes against each other. We
+/// sort back-to-front by camera distance here so a nearer image
+/// correctly overlaps a farther one. Coplanar / intersecting planes
+/// remain ambiguous — the painter approach can't resolve those, and
+/// the v1 plan notes z-fighting as an accepted limitation.
 let draw
         (renderer: ImagePlaneRenderer)
         (pass: IGPURenderPassEncoder)
         (doc: Server.Document) : unit =
-    let mutable bound = false
-    for block in doc.Blocks do
-        match block.Body with
-        | Notebook.ImageBody _ when block.Visibility = Notebook.VIsosurface ->
-            match renderer.Entries.TryGetValue block.Id with
-            | true, entry when entry.Ready ->
-                if not bound then
-                    pass.setPipeline renderer.Pipeline
-                    pass.setBindGroup (0, renderer.Scene.CameraBindGroup)
-                    bound <- true
-                pass.setBindGroup (1, entry.BindGroup)
-                pass.draw 6
-            | _ -> ()
-        | _ -> ()
+    let eye = Camera.eye renderer.Scene.Camera
+    let distSq (o: Vec3) =
+        let dx = o.X - eye.X
+        let dy = o.Y - eye.Y
+        let dz = o.Z - eye.Z
+        dx * dx + dy * dy + dz * dz
+    let drawable =
+        doc.Blocks
+        |> List.choose (fun block ->
+            match block.Body with
+            | Notebook.ImageBody data when block.Visibility = Notebook.VIsosurface ->
+                match renderer.Entries.TryGetValue block.Id with
+                | true, entry when entry.Ready -> Some (distSq data.Origin, entry)
+                | _ -> None
+            | _ -> None)
+        |> List.sortByDescending fst
+    match drawable with
+    | [] -> ()
+    | _ ->
+        pass.setPipeline renderer.Pipeline
+        pass.setBindGroup (0, renderer.Scene.CameraBindGroup)
+        for _, entry in drawable do
+            pass.setBindGroup (1, entry.BindGroup)
+            pass.draw 6

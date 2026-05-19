@@ -298,13 +298,38 @@ module Document =
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
             SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
+          // Standalone airfoil profile — positionable and sizeable
+          // independently of the wing-remap pipeline. Useful as a
+          // placement/overlay aid (e.g. matching a blueprint image of
+          // an airfoil cross-section).
+          { Id = 1
+            Name = "naca"
+            Body =
+                Server.Lang.Notebook.NativeBody(
+                    "naca",
+                    Map.ofList
+                        [ "thickness", Server.Lang.AstBuilder.numE 0.18
+                          "camber", Server.Lang.AstBuilder.numE 0.04
+                          "chord", Server.Lang.AstBuilder.numE 2.0
+                          "span", Server.Lang.AstBuilder.numE 1.0
+                          "origin_x", Server.Lang.AstBuilder.numE 1.0
+                          "origin_y", Server.Lang.AstBuilder.numE 2.5
+                          "origin_z", Server.Lang.AstBuilder.numE 0.0 ])
+            Visibility = Server.Lang.Notebook.VHidden
+            ColorIndex = 2
+            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
           { Id = 2
             Name = "half_wing"
             Body =
                 Server.Lang.Notebook.NativeBody(
                     "wing-remap-preview",
                     Map.ofList
-                        [ "leading", Server.Lang.AstBuilder.pathE [ "wing_guides"; "spline_0" ]
+                        [ "profile", Server.Lang.AstBuilder.varE "naca"
+                          "profile_chord", Server.Lang.AstBuilder.numE 2.0
+                          "profile_origin_x", Server.Lang.AstBuilder.numE 1.0
+                          "profile_origin_y", Server.Lang.AstBuilder.numE 2.5
+                          "profile_origin_z", Server.Lang.AstBuilder.numE 0.0
+                          "leading", Server.Lang.AstBuilder.pathE [ "wing_guides"; "spline_0" ]
                           "trailing", Server.Lang.AstBuilder.pathE [ "wing_guides"; "spline_1" ] ])
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
@@ -422,7 +447,12 @@ module Document =
                 Server.Lang.Notebook.NativeBody(
                     "wing-remap-preview",
                     Map.ofList
-                        [ "leading",  Server.Lang.AstBuilder.pathE [ "h_stab_guides"; "spline_0" ]
+                        [ "profile", Server.Lang.AstBuilder.varE "naca"
+                          "profile_chord", Server.Lang.AstBuilder.numE 2.0
+                          "profile_origin_x", Server.Lang.AstBuilder.numE 1.0
+                          "profile_origin_y", Server.Lang.AstBuilder.numE 2.5
+                          "profile_origin_z", Server.Lang.AstBuilder.numE 0.0
+                          "leading",  Server.Lang.AstBuilder.pathE [ "h_stab_guides"; "spline_0" ]
                           "trailing", Server.Lang.AstBuilder.pathE [ "h_stab_guides"; "spline_1" ] ])
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
@@ -475,7 +505,12 @@ module Document =
                 Server.Lang.Notebook.NativeBody(
                     "wing-remap-preview",
                     Map.ofList
-                        [ "leading",  Server.Lang.AstBuilder.pathE [ "v_stab_guides"; "spline_0" ]
+                        [ "profile", Server.Lang.AstBuilder.varE "naca"
+                          "profile_chord", Server.Lang.AstBuilder.numE 2.0
+                          "profile_origin_x", Server.Lang.AstBuilder.numE 1.0
+                          "profile_origin_y", Server.Lang.AstBuilder.numE 2.5
+                          "profile_origin_z", Server.Lang.AstBuilder.numE 0.0
+                          "leading",  Server.Lang.AstBuilder.pathE [ "v_stab_guides"; "spline_0" ]
                           "trailing", Server.Lang.AstBuilder.pathE [ "v_stab_guides"; "spline_1" ] ])
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0

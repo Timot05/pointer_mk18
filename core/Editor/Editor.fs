@@ -632,7 +632,11 @@ module Editor =
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None }
 
-    /// Wholesale document replacement with a full UI reset. Used by ClearModel.
+    /// Wholesale document replacement with a full UI reset. Used by
+    /// ClearModel and ReplaceDocument (file load). `recompileNotebook`
+    /// must run before `recompileState` so `LastNotebookBytes` is
+    /// refreshed — the viewer's background renderer keys off that ref
+    /// to know it needs to upload new MathIR to the kernel worker.
     let loadDoc (doc: Document) (state: EditorState) =
         { state with
             Doc = doc
@@ -652,6 +656,7 @@ module Editor =
             ConstraintPlacementDraft = None
             ConstraintPlacementCursor = None
             ExpandedBlockIds = Set.empty }
+        |> recompileNotebook
         |> recompileState
 
     let applySelectionIntent intent target current =
@@ -1155,7 +1160,7 @@ module Editor =
                 | SetConstraintPlacementCursor cursor ->
                     { state with ConstraintPlacementCursor = cursor } |> normalizeState
                 | ReplaceDocument doc ->
-                    { state with Doc = doc } |> recompileState
+                    loadDoc doc state
                 | ClearModel ->
                     loadDoc (Document.emptyDocument ()) state
                 // ── Typed-block notebook ──────────────────────────────────

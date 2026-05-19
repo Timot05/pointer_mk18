@@ -266,25 +266,35 @@ let private wireLabelOfExpr (e: Server.Lang.Ast.Expr) : string option =
         | _ -> Some (segments |> List.map (fun s -> s.Name) |> String.concat " / ")
     | _ -> None
 
-// ── Visibility badge (reuses `.visibility-badge`) ──────────────────────────
+// ── Visibility badges (reuse `.visibility-badge`) ──────────────────────────
 
-let private visibilityGlyph (v: Notebook.BlockVisibility) : string =
-    match v with
-    | Notebook.VHidden     -> ""
-    | Notebook.VIsosurface -> "◎"   // ◎ bullseye — 3D surface
-    | Notebook.VFieldLines -> "≡"   // ≡ — iso-contour overlay
+/// True when the block produces a `Type.Field` value — the only output
+/// shape for which the isolines render mode (`VFieldLines`) has meaning.
+/// Sketches / images / scalars / loops / primitives get the simple
+/// hide/show binary instead.
+let private blockProducesField (doc: DocumentView) (block: Notebook.Block) : bool =
+    match Map.tryFind block.Id doc.BlockOutputs with
+    | Some Server.Lang.Type.Field -> true
+    | _ -> false
 
-let private renderVisibilityBadge
+/// Show/hide toggle. For Field blocks, "show" restores the previous
+/// non-hidden mode if one's known; otherwise lands on `VIsosurface`.
+let private renderShowHideButton
         (dispatch: Message -> unit)
         (block: Notebook.Block) : HTMLElement =
-    let btn = Dom.elText "button" "visibility-badge" (visibilityGlyph block.Visibility)
-    if block.Visibility = Notebook.VHidden then btn.classList.add "is-hidden"
-    btn.title <- "Cycle visibility"
+    let isHidden = block.Visibility = Notebook.VHidden
+    let glyph = if isHidden then "○" else "●"
+    let btn = Dom.elText "button" "visibility-badge" glyph
+    if isHidden then btn.classList.add "is-hidden"
+    btn.title <- if isHidden then "Show" else "Hide"
     btn.addEventListener (
         "click",
         fun e ->
             e.stopPropagation ()
-            dispatch (CycleBlockVisibility block.Id))
+            let next =
+                if isHidden then Notebook.VIsosurface
+                else Notebook.VHidden
+            dispatch (SetBlockVisibility(block.Id, next)))
     btn.addEventListener (
         "contextmenu",
         fun e ->
@@ -293,6 +303,46 @@ let private renderVisibilityBadge
             let me = e :?> MouseEvent
             openBlockColorMenu dispatch block me.clientX me.clientY)
     btn
+
+/// Mode toggle — only meaningful when the block is visible. Toggles
+/// between `VIsosurface` (◎) and `VFieldLines` (≡). Renders disabled
+/// when the block is hidden so the user has to show it first.
+let private renderFieldModeButton
+        (dispatch: Message -> unit)
+        (block: Notebook.Block) : HTMLElement =
+    let isLines = block.Visibility = Notebook.VFieldLines
+    let isHidden = block.Visibility = Notebook.VHidden
+    let glyph = if isLines then "≡" else "◎"
+    let btn = Dom.elText "button" "visibility-badge visibility-mode" glyph
+    if isHidden then btn.classList.add "is-hidden"
+    btn.title <-
+        if isHidden then "Show the block first"
+        elif isLines then "Switch to isosurface"
+        else "Switch to isolines"
+    if isHidden then
+        btn?disabled <- true
+    btn.addEventListener (
+        "click",
+        fun e ->
+            e.stopPropagation ()
+            if not isHidden then
+                let next =
+                    if isLines then Notebook.VIsosurface
+                    else Notebook.VFieldLines
+                dispatch (SetBlockVisibility(block.Id, next)))
+    btn
+
+let private renderVisibilityBadge
+        (dispatch: Message -> unit)
+        (doc: DocumentView)
+        (block: Notebook.Block) : HTMLElement =
+    // Wrap one or two buttons in a small container so flexbox lays them
+    // out side-by-side without touching the row layout.
+    let container = Dom.el "span" "visibility-badge-group"
+    if blockProducesField doc block then
+        container.appendChild (renderFieldModeButton dispatch block :> Node) |> ignore
+    container.appendChild (renderShowHideButton dispatch block :> Node) |> ignore
+    container
 
 // ── Scalar input editor (reuses `.input-row-edit`) ─────────────────────────
 
@@ -487,7 +537,10 @@ let private renderImageBlockRows
     let opacityRow =
         renderImageNumberRow dispatch "opacity" data.Opacity
             (fun v -> SetBlockImageOpacity(block.Id, max 0.0 (min 1.0 v)))
-    [ urlRow; planeRow; originX; originY; originZ; widthRow; heightRow; opacityRow ]
+    let rotationRow =
+        renderImageNumberRow dispatch "rotation°" data.Rotation
+            (fun v -> SetBlockImageRotation(block.Id, v))
+    [ urlRow; planeRow; originX; originY; originZ; widthRow; heightRow; rotationRow; opacityRow ]
 
 let private renderAxisDropdown
         (dispatch: Message -> unit)
@@ -817,7 +870,7 @@ let private renderRow
             beginRename ())
 
     row.appendChild (main :> Node) |> ignore
-    row.appendChild (renderVisibilityBadge dispatch block :> Node) |> ignore
+    row.appendChild (renderVisibilityBadge dispatch doc block :> Node) |> ignore
 
     // Drop zone for ref-bubble drags — allows dropping onto the row even
     // outside `.action-main` so the whole bar is a target. Drop is

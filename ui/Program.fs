@@ -132,9 +132,9 @@ let private actionListSignature (doc: DocumentView) =
             sprintf "%s(%s)" name argDigest
         | Server.Lang.Notebook.SketchBody _ -> "sketch"
         | Server.Lang.Notebook.ImageBody data ->
-            sprintf "image(%s|%A|%g,%g,%g|%g,%g|%g)"
+            sprintf "image(%s|%A|%g,%g,%g|%g,%g|%g|%g)"
                 data.Url data.Plane data.Origin.X data.Origin.Y data.Origin.Z
-                data.Width data.Height data.Opacity
+                data.Width data.Height data.Opacity data.Rotation
     let rows = doc.Blocks |> List.map (fun b -> b.Id, b.Name, bodyTag b.Body, b.Visibility, b.ColorIndex)
     // User-spec names + analysis errors flow into the +Add palette and
     // BlockList row rendering, so include them in the signature so a

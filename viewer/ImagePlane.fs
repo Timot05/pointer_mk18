@@ -273,7 +273,21 @@ let private writeQuadUniforms
         (renderer: ImagePlaneRenderer)
         (entry: ImageEntry)
         (data: Notebook.ImageData) : unit =
-    let xAxis, yAxis = planeAxes data.Plane
+    let xAxisRaw, yAxisRaw = planeAxes data.Plane
+    // Rotation is stored in degrees, applied as an in-plane CCW
+    // rotation about the origin. Pre-rotate the plane basis here so
+    // the shader stays a plain projection.
+    let theta = data.Rotation * System.Math.PI / 180.0
+    let c = cos theta
+    let s = sin theta
+    let xAxis =
+        { X = c * xAxisRaw.X + s * yAxisRaw.X
+          Y = c * xAxisRaw.Y + s * yAxisRaw.Y
+          Z = c * xAxisRaw.Z + s * yAxisRaw.Z }
+    let yAxis =
+        { X = -s * xAxisRaw.X + c * yAxisRaw.X
+          Y = -s * xAxisRaw.Y + c * yAxisRaw.Y
+          Z = -s * xAxisRaw.Z + c * yAxisRaw.Z }
     let buf : float32[] = Array.zeroCreate (QUAD_BUFFER_BYTES / 4)
     // origin (vec4 — vec3 + pad)
     buf.[0]  <- float32 data.Origin.X

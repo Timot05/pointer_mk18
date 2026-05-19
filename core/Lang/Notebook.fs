@@ -46,6 +46,11 @@ module Notebook =
         Width:   float
         Height:  float
         Opacity: float
+        /// In-plane rotation, in degrees, about the plane's normal
+        /// through `Origin`. 0 leaves the image axis-aligned to the
+        /// plane's local X/Y; positive values rotate counter-clockwise
+        /// as viewed looking down the plane's normal.
+        Rotation: float
     }
 
     /// What a block actually is at the data level. Native blocks are

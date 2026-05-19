@@ -506,6 +506,7 @@ module Document =
                 Width = 10.0
                 Height = 10.0
                 Opacity = 1.0
+                Rotation = 0.0
             }
             Visibility = Server.Lang.Notebook.VIsosurface
             ColorIndex = 0

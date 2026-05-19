@@ -197,6 +197,8 @@ type Message =
     | SetBlockImageSize of Server.Lang.Notebook.BlockId * width: float * height: float
     /// Replace the opacity (0..1) on an image block.
     | SetBlockImageOpacity of Server.Lang.Notebook.BlockId * float
+    /// Replace the in-plane rotation (degrees) on an image block.
+    | SetBlockImageRotation of Server.Lang.Notebook.BlockId * float
     | SelectBlock of Server.Lang.Notebook.BlockId
     /// Replace a single named arg on a block (scalar drag-edit, or
     /// rewiring a ref bubble). The arg is a full DSL expression —
@@ -217,8 +219,15 @@ type Message =
     | MoveBlock of source: Server.Lang.Notebook.BlockId * insertBefore: Server.Lang.Notebook.BlockId option
     /// Cycle the block's `Visibility` through Hidden → Visible → FieldLines
     /// → Isosurface → Hidden. The badge in the block list is the visible
-    /// trigger; the keyboard shortcut hooks the same message.
+    /// trigger; the keyboard shortcut hooks the same message. For
+    /// non-Field-typed blocks (sketches / images / etc.) the cycle
+    /// collapses to a binary Hidden ↔ Isosurface toggle since FieldLines
+    /// has no rendering meaning there.
     | CycleBlockVisibility of Server.Lang.Notebook.BlockId
+    /// Set a block's `Visibility` directly. Lets the UI render dedicated
+    /// "show/hide" and "isosurface/isolines" buttons that target an
+    /// explicit state rather than cycling through a fixed order.
+    | SetBlockVisibility of Server.Lang.Notebook.BlockId * Server.Lang.Notebook.BlockVisibility
     /// Set the block's isosurface display colour palette index.
     | SetBlockColor of Server.Lang.Notebook.BlockId * colorIndex: int
     /// Replace a sketch block's `ActionSketch` payload (used by
@@ -1232,6 +1241,7 @@ module Editor =
                             Width = 5.0
                             Height = 5.0
                             Opacity = 1.0
+                            Rotation = 0.0
                         }
                         Visibility = Server.Lang.Notebook.VIsosurface
                         ColorIndex = 0
@@ -1296,6 +1306,17 @@ module Editor =
                                 match b.Body with
                                 | Server.Lang.Notebook.ImageBody data ->
                                     { b with Body = Server.Lang.Notebook.ImageBody { data with Opacity = op } }
+                                | _ -> b)
+                    { state with Doc = { state.Doc with Blocks = updated } }
+                    |> recompileNotebook
+                | SetBlockImageRotation(blockId, rot) ->
+                    let updated =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id <> blockId then b else
+                                match b.Body with
+                                | Server.Lang.Notebook.ImageBody data ->
+                                    { b with Body = Server.Lang.Notebook.ImageBody { data with Rotation = rot } }
                                 | _ -> b)
                     { state with Doc = { state.Doc with Blocks = updated } }
                     |> recompileNotebook
@@ -1428,15 +1449,35 @@ module Editor =
                                 SelectedBlockId = selectedBlock } }
                     |> recompileNotebook
                 | CycleBlockVisibility id ->
+                    let producesField =
+                        match Map.tryFind id state.NotebookBlockOutputs with
+                        | Some Server.Lang.Type.Field -> true
+                        | _ -> false
                     let nextVis (v: Server.Lang.Notebook.BlockVisibility) =
-                        match v with
-                        | Server.Lang.Notebook.VHidden     -> Server.Lang.Notebook.VIsosurface
-                        | Server.Lang.Notebook.VIsosurface -> Server.Lang.Notebook.VFieldLines
-                        | Server.Lang.Notebook.VFieldLines -> Server.Lang.Notebook.VHidden
+                        match v, producesField with
+                        // Field-typed blocks cycle through all three states
+                        // so the keyboard shortcut still surfaces the
+                        // isolines view.
+                        | Server.Lang.Notebook.VHidden,     true  -> Server.Lang.Notebook.VIsosurface
+                        | Server.Lang.Notebook.VIsosurface, true  -> Server.Lang.Notebook.VFieldLines
+                        | Server.Lang.Notebook.VFieldLines, true  -> Server.Lang.Notebook.VHidden
+                        // Non-Field blocks (sketches / images / etc.)
+                        // collapse to a binary visible/hidden toggle —
+                        // VFieldLines is meaningless without a field SDF.
+                        | Server.Lang.Notebook.VHidden,     false -> Server.Lang.Notebook.VIsosurface
+                        | _,                                 false -> Server.Lang.Notebook.VHidden
                     let blocks =
                         state.Doc.Blocks
                         |> List.map (fun b ->
                             if b.Id = id then { b with Visibility = nextVis b.Visibility }
+                            else b)
+                    { state with Doc = { state.Doc with Blocks = blocks } }
+                    |> recompileNotebook
+                | SetBlockVisibility(id, vis) ->
+                    let blocks =
+                        state.Doc.Blocks
+                        |> List.map (fun b ->
+                            if b.Id = id then { b with Visibility = vis }
                             else b)
                     { state with Doc = { state.Doc with Blocks = blocks } }
                     |> recompileNotebook

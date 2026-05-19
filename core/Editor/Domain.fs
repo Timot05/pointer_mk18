@@ -379,13 +379,14 @@ module Document =
             Body = Server.Lang.Notebook.SketchBody
                 { Sketch =
                     { Entities =
-                        [ // Top (positive-Y) silhouette: nose 0.25 →
-                          // bulge to 0.8 around mid-body → tail 0.15.
+                        [ // Side view in XZ. Sketch-local Y = world Z.
+                          // Top (high-Z) silhouette: nose 0.25 → bulge
+                          // to 0.85 around mid-body → tail 0.15.
                           REPoint("t_nose", -3.0,  0.25)
                           REPoint("t_cp0",  -1.0,  0.85)
                           REPoint("t_cp1",   3.5,  0.85)
                           REPoint("t_tail",  6.0,  0.15)
-                          // Bottom (negative-Y) silhouette: mirror of the top.
+                          // Bottom (low-Z) silhouette: mirror of the top.
                           REPoint("b_nose", -3.0, -0.25)
                           REPoint("b_cp0",  -1.0, -0.85)
                           REPoint("b_cp1",   3.5, -0.85)
@@ -394,7 +395,7 @@ module Document =
                           REBezierCubic("g_bot", "b_nose", "b_cp0", "b_cp1", "b_tail") ]
                       Constraints = []
                       Loops = [] }
-                  Plane = XY }
+                  Plane = XZ }
             Visibility = Server.Lang.Notebook.VHidden
             ColorIndex = 0
             SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
@@ -672,34 +673,41 @@ let wing_loft = fun (a: Loop) (b: Loop) (g_left: Primitive) (g_right: Primitive)
     max blend slab
 end
 
-// Aircraft-fuselage loft — `wing_loft` rotated 90° so the body axis is
-// world X (nose → tail) instead of world Y. Cross-sections `a` and `b`
-// live in the YZ plane (their local X = world Y = body width, their
-// local Y = world Z = body height). Guides `g_top` / `g_bot` live in
-// the XY plane: their local X = world X = body length, their local Y =
-// world Y = body half-width.
+// Aircraft-fuselage loft — body axis = world X (nose → tail).
+// Cross-sections `a` and `b` live in the YZ plane (their local X =
+// world Y = body width, their local Y = world Z = body height).
+// Guides `g_top` / `g_bot` live in the XZ plane (SIDE VIEW): their
+// local X = world X = body length, their local Y = world Z = body
+// half-height. The guides therefore control the body's HEIGHT
+// profile along its length; the cross-sections supply the width.
 //
-// Width convention: at `start`, the cross-section sits at its
-// natural absolute Y extent — its world-Y edges coincide with the
-// spline endpoints `g_top.y0` and `g_bot.y0`. As X moves nose-to-
-// tail the splines stretch or shrink the cross-section by the
-// ratio `S(x) / S(start)`. So if the splines are at ±0.25 at the
-// nose, the cross-section is naturally 0.5 wide; the body expands
-// to 1.7 wide where the guides bow out to ±0.85, and contracts to
-// 0.3 wide where the guides taper to ±0.15.
+// Height convention: at `start`, the cross-section sits at its
+// natural absolute Z extent — its world-Z edges coincide with the
+// spline endpoints `g_top.y0` and `g_bot.y0` (sketch-local Y =
+// world Z). As X moves nose-to-tail the splines stretch or shrink
+// the cross-section vertically by the ratio `S(x) / S(start)`. So
+// if the splines are at ±0.25 at the nose, the cross-section is
+// naturally 0.5 tall; the body expands where the guides bow out
+// and contracts where they taper back in.
 let body_loft = fun (a: Loop) (b: Loop) (g_top: Primitive) (g_bot: Primitive) (start: Scalar) (end_pos: Scalar) ->
     let t = (x - start) / (end_pos - start + 0.000001)
     let t_t = (x - g_top.x0) / (g_top.x1 - g_top.x0 + 0.000001)
     let u_t = 1 - t_t
-    let top_y = u_t*u_t*u_t * g_top.y0 + 3*u_t*u_t*t_t * g_top.cy0 + 3*u_t*t_t*t_t * g_top.cy1 + t_t*t_t*t_t * g_top.y1
+    let top_z = u_t*u_t*u_t * g_top.y0 + 3*u_t*u_t*t_t * g_top.cy0 + 3*u_t*t_t*t_t * g_top.cy1 + t_t*t_t*t_t * g_top.y1
     let t_b = (x - g_bot.x0) / (g_bot.x1 - g_bot.x0 + 0.000001)
     let u_b = 1 - t_b
-    let bot_y = u_b*u_b*u_b * g_bot.y0 + 3*u_b*u_b*t_b * g_bot.cy0 + 3*u_b*t_b*t_b * g_bot.cy1 + t_b*t_b*t_b * g_bot.y1
+    let bot_z = u_b*u_b*u_b * g_bot.y0 + 3*u_b*u_b*t_b * g_bot.cy0 + 3*u_b*t_b*t_b * g_bot.cy1 + t_b*t_b*t_b * g_bot.y1
     let s_start = g_top.y0 - g_bot.y0
-    let center = (top_y + bot_y) / 2
-    let chord = (y - center) * s_start / (top_y - bot_y + 0.000001)
-    let a_remap = remap_axes a.signed_distance x chord z
-    let b_remap = remap_axes b.signed_distance x chord z
+    let center = (top_z + bot_z) / 2
+    // Isotropic scaling: the single XZ guide pair drives the body's
+    // overall scale at each station. Sampling Y and (Z - center) at
+    // the same inverse-scale keeps the cross-section's aspect ratio
+    // (a circle stays a circle, just bigger/smaller).
+    let inv_scale = s_start / (top_z - bot_z + 0.000001)
+    let y_scaled = y * inv_scale
+    let z_scaled = (z - center) * inv_scale
+    let a_remap = remap_axes a.signed_distance x y_scaled z_scaled
+    let b_remap = remap_axes b.signed_distance x y_scaled z_scaled
     let blend = (1 - t) * a_remap + t * b_remap
     let slab = max (x - end_pos) (start - x)
     max blend slab
@@ -752,21 +760,32 @@ let two_body = fun (a: Field) (b: Field) ->
     (a - b) / (a + b + 0.000001)
 end
 
-// Reflect `child` across the plane perpendicular to `axis` at `root`,
-// evaluating the positive (root-side) half on both sides. `axis` is a
-// 0/1/2 discrete choice (rendered as a dropdown in the BlockList);
-// `root` is the position of the mirror plane along that axis.
+// Reflect `child` across the plane perpendicular to `axis` at `root`.
+// Evaluates `child` at both the + and - reflection of the sample
+// point and takes the SDF union (min) so the result is symmetric
+// regardless of which side of `root` the child originally lives on.
+// `axis` is a 0/1/2 discrete choice (rendered as a dropdown in the
+// BlockList); `root` is the position of the mirror plane along that
+// axis.
 let mirror_symmetric = fun (axis: Scalar) (root: Scalar) (child: Field) ->
     let sx = 1 - abs (compare axis 0)
     let sy = 1 - abs (compare axis 1)
     let sz = 1 - abs (compare axis 2)
-    let mx = root + abs (x - root)
-    let my = root + abs (y - root)
-    let mz = root + abs (z - root)
-    let cx = sx*mx + (1 - sx)*x
-    let cy = sy*my + (1 - sy)*y
-    let cz = sz*mz + (1 - sz)*z
-    remap_axes child cx cy cz
+    let mx_pos = root + abs (x - root)
+    let my_pos = root + abs (y - root)
+    let mz_pos = root + abs (z - root)
+    let mx_neg = root - abs (x - root)
+    let my_neg = root - abs (y - root)
+    let mz_neg = root - abs (z - root)
+    let cx_pos = sx*mx_pos + (1 - sx)*x
+    let cy_pos = sy*my_pos + (1 - sy)*y
+    let cz_pos = sz*mz_pos + (1 - sz)*z
+    let cx_neg = sx*mx_neg + (1 - sx)*x
+    let cy_neg = sy*my_neg + (1 - sy)*y
+    let cz_neg = sz*mz_neg + (1 - sz)*z
+    let pos_eval = remap_axes child cx_pos cy_pos cz_pos
+    let neg_eval = remap_axes child cx_neg cy_neg cz_neg
+    min pos_eval neg_eval
 end
 
 // Swap world Y and Z when sampling `child` — turns a Y-spanning

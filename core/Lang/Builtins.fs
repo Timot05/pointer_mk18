@@ -192,9 +192,10 @@ module Builtins =
         let ir = ctx.Ir
         guideFromPrimitive ir span "leading" leading >>= fun le ->
         guideFromPrimitive ir span "trailing" trailing >>= fun te ->
-            // Two-body coordinate from the nTop variable-loft recipe.
-            // -(A+B)/(B-A) where A = leading - x, B = trailing - x maps
-            // leading edge → -1, mid-chord → 0, trailing edge → +1.
+            // Two-body coordinate (-1 at leading edge → +1 at trailing edge),
+            // taken directly from the guides. Wing's X range at any y is
+            // [leadingX(y), trailingX(y)] — the wing literally follows the
+            // guide curves.
             let y = ir.Y()
             let leadingX = chordXAtYExpr ir le y
             let trailingX = chordXAtYExpr ir te y
@@ -209,9 +210,16 @@ module Builtins =
                     MathIr.Unary.Neg,
                     ir.Binary(MathIr.Binary.Div, midsurface, clearance))
 
-            let rootY = max le.MinY te.MinY
-            let rootChord =
-                max (abs (chordXAtY te rootY - chordXAtY le rootY)) 1.0e-6
+            // Direction-agnostic root chord: take the larger of the
+            // two endpoint chords. The convention that "root = larger
+            // chord" lets the user run their guides in either Y
+            // direction (positive→tip OR negative→tip) without
+            // inverting the thickness-scaling reference.
+            let yLow = min le.MinY te.MinY
+            let yHigh = max le.MaxY te.MaxY
+            let chordAtLow = abs (chordXAtY te yLow - chordXAtY le yLow)
+            let chordAtHigh = abs (chordXAtY te yHigh - chordXAtY le yHigh)
+            let rootChord = max (max chordAtLow chordAtHigh) 1.0e-6
             let localChord =
                 ir.Binary(
                     MathIr.Binary.Max,
@@ -221,22 +229,20 @@ module Builtins =
                 ir.Binary(MathIr.Binary.Div, localChord, ir.Constant rootChord)
             let scaledZ = ir.Binary(MathIr.Binary.Div, ir.Z(), chordScale)
 
-            // Build new axes that, when substituted into the input profile
-            // via `RemapAxes`, undo the profile's own placement and feed it
-            // canonical (sx, sz) coords derived from the wing pipeline.
-            //
-            // The NACA block computes internally:
-            //   sx = (X - ox) * 2 / chord
-            //   sz = (Z - oz) * 2 / chord
-            // We want sx → twoBody, sz → scaledZ after substitution. So:
-            //   newX = ox + twoBody  * (chord / 2)
-            //   newZ = oz + scaledZ * (chord / 2)
+            // Substitute into the NACA so its internal `sx = (X - ox) * 2/chord`
+            // resolves to `twoBody`, and `sz = (Z - oz) * 2/chord` resolves to
+            // `scaledZ`. The NACA's `chord` is its canonical X-scale; the wing
+            // gets its actual chord from the guides.
             //
             // For Y we feed the profile's own origin_y as a constant so its
-            // internal `|Y - oy|` span window collapses to 0 (always
-            // "inside"). The wing's own span window from the guides handles
-            // the Y bound for the final wing.
-            let halfChord = profileChord * 0.5
+            // internal `|Y - oy|` span window collapses to 0 (always inside).
+            // The wing's own span window from the guides handles the Y bound.
+            //
+            // For the wing to visually "start at the NACA's leading/trailing
+            // edges", the user must position the guides so the guide
+            // separation at root matches `profile_chord` and the guide center
+            // at root matches `profile_origin_x`.
+            let halfChord = (max (abs profileChord) 1.0e-6) * 0.5
             let newX =
                 ir.Binary(
                     MathIr.Binary.Add,

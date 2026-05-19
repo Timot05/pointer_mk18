@@ -528,7 +528,12 @@ let ``block input: wire profile.loop_0 to a Field-typed param via EPath`` () =
     match Map.tryFind "mirrored" result.Bindings with
     | Some (Value.VField root) ->
         let rootNode = result.Ir.Nodes.[root.Id]
-        Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
+        // mirror_symmetric is `min(remap_pos, remap_neg)` so the root
+        // is a Binary Min with two RemapAxes children.
+        Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
+        Assert.Equal(int MathIr.Binary.Min, rootNode.Op)
+        Assert.Equal(MathIr.NodeKind.RemapAxes, result.Ir.Nodes.[rootNode.A].Kind)
+        Assert.Equal(MathIr.NodeKind.RemapAxes, result.Ir.Nodes.[rootNode.B].Kind)
     | other -> failwithf "expected VField, got %A" other
 
 // ─── Cubic Bezier (spline) ─────────────────────────────────────────────────

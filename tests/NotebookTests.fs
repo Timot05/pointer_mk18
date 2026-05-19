@@ -177,7 +177,12 @@ let ``mirror symmetric wraps an upstream field in a RemapAxes node`` () =
     match bindingOf "full" result with
     | Value.VField root ->
         let rootNode = result.Ir.Nodes.[root.Id]
-        Assert.Equal(MathIr.NodeKind.RemapAxes, rootNode.Kind)
+        // mirror_symmetric is now `min(remap_pos, remap_neg)` so the
+        // root is a Binary Min node whose children are both RemapAxes.
+        Assert.Equal(MathIr.NodeKind.BinaryK, rootNode.Kind)
+        Assert.Equal(int MathIr.Binary.Min, rootNode.Op)
+        Assert.Equal(MathIr.NodeKind.RemapAxes, result.Ir.Nodes.[rootNode.A].Kind)
+        Assert.Equal(MathIr.NodeKind.RemapAxes, result.Ir.Nodes.[rootNode.B].Kind)
     | other -> failwithf "expected VField, got %A" other
 
 [<Fact>]

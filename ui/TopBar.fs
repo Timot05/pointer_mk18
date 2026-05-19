@@ -56,6 +56,16 @@ let render
     let topbar = Dom.el "div" "topbar"
     topbar.appendChild (Dom.elText "span" "topbar-logo" "Dekal" :> Node) |> ignore
 
+    // Close every currently-open top-bar dropdown. Used by each
+    // dropdown button before opening itself so two dropdowns can't
+    // be open at the same time.
+    let closeAllDropdowns () =
+        let openDropdowns = document.querySelectorAll ".topbar-dropdown-open"
+        for i in 0 .. openDropdowns.length - 1 do
+            let el = openDropdowns.[i] :?> HTMLElement
+            el.classList.remove "topbar-dropdown-open"
+            el?style?display <- "none"
+
     let fileMenu = Dom.el "div" "topbar-menu"
     let fileBtn = Dom.elText "button" "topbar-button" "File"
     let fileDropdown = Dom.el "div" "topbar-dropdown"
@@ -93,11 +103,9 @@ let render
         "click",
         fun e ->
             e.stopPropagation ()
-            let isOpen = fileDropdown.classList.contains "topbar-dropdown-open"
-            if isOpen then
-                fileDropdown.classList.remove "topbar-dropdown-open"
-                fileDropdown?style?display <- "none"
-            else
+            let wasOpen = fileDropdown.classList.contains "topbar-dropdown-open"
+            closeAllDropdowns ()
+            if not wasOpen then
                 fileDropdown.classList.add "topbar-dropdown-open"
                 fileDropdown?style?display <- "flex"
     )
@@ -143,11 +151,9 @@ let render
         "click",
         fun e ->
             e.stopPropagation ()
-            let isOpen = examplesDropdown.classList.contains "topbar-dropdown-open"
-            if isOpen then
-                examplesDropdown.classList.remove "topbar-dropdown-open"
-                examplesDropdown?style?display <- "none"
-            else
+            let wasOpen = examplesDropdown.classList.contains "topbar-dropdown-open"
+            closeAllDropdowns ()
+            if not wasOpen then
                 examplesDropdown.classList.add "topbar-dropdown-open"
                 examplesDropdown?style?display <- "flex"
     )

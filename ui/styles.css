@@ -170,6 +170,18 @@ body {
   background: var(--bg-surface);
 }
 
+/* Empty-state placeholder shown when no example JSONs are bundled.
+   Inherits .topbar-dropdown-item layout but is non-interactive. */
+.topbar-dropdown-empty {
+  color: var(--text-muted);
+  cursor: default;
+  font-style: italic;
+}
+
+.topbar-dropdown-empty:hover {
+  background: none;
+}
+
 .topbar-github {
   display: inline-flex;
   align-items: center;

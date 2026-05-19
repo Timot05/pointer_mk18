@@ -219,334 +219,7 @@ module Document =
                         | _ -> b)
             { doc with Blocks = blocks }
 
-    let private lineSketch x0 y0 x1 y1 : ActionSketch =
-        { Entities =
-            [ REPoint("p0", x0, y0)
-              REPoint("p1", x1, y1)
-              RELine("line0", "p0", "p1") ]
-          Constraints = []
-          Loops = [] }
 
-    let private squareSketch cx cy half : ActionSketch =
-        let raw : ActionSketch =
-            { Entities =
-                [ REPoint("p0", cx - half, cy - half)
-                  REPoint("p1", cx + half, cy - half)
-                  REPoint("p2", cx + half, cy + half)
-                  REPoint("p3", cx - half, cy + half)
-                  RELine("l0", "p0", "p1")
-                  RELine("l1", "p1", "p2")
-                  RELine("l2", "p2", "p3")
-                  RELine("l3", "p3", "p0") ]
-              Constraints = []
-              Loops = [] }
-        SketchLoops.normalize raw
-
-    let private circleSketch cx cy r : ActionSketch =
-        let raw : ActionSketch =
-            { Entities =
-                [ REPoint("c0", cx, cy)
-                  RECircle("circ", "c0", r) ]
-              Constraints = []
-              Loops = [] }
-        SketchLoops.normalize raw
-
-    let private rectangleSketch cx cy halfX halfY : ActionSketch =
-        let raw : ActionSketch =
-            { Entities =
-                [ REPoint("p0", cx - halfX, cy - halfY)
-                  REPoint("p1", cx + halfX, cy - halfY)
-                  REPoint("p2", cx + halfX, cy + halfY)
-                  REPoint("p3", cx - halfX, cy + halfY)
-                  RELine("l0", "p0", "p1")
-                  RELine("l1", "p1", "p2")
-                  RELine("l2", "p2", "p3")
-                  RELine("l3", "p3", "p0") ]
-              Constraints = []
-              Loops = [] }
-        SketchLoops.normalize raw
-
-    /// Both wing guide curves bundled into one sketch. Two cubic Bezier
-    /// splines: `spline_0` is the leading edge, `spline_1` is the
-    /// trailing edge. Control points bow each edge outward at mid-span
-    /// to produce a Spitfire-style elliptical planform — the chord
-    /// peaks around y ≈ 2 and tapers smoothly to the tip.
-    let private wingGuidesSketch : ActionSketch =
-        { Entities =
-            [ REPoint("le_root", 0.0, 0.0)
-              REPoint("le_cp0", -0.5, 1.5)
-              REPoint("le_cp1", -0.25, 3.5)
-              REPoint("le_tip", 0.25, 5.0)
-              REPoint("te_root", 2.0, 0.0)
-              REPoint("te_cp0", 2.5, 1.5)
-              REPoint("te_cp1", 2.25, 3.5)
-              REPoint("te_tip", 1.25, 5.0)
-              REBezierCubic("leading", "le_root", "le_cp0", "le_cp1", "le_tip")
-              REBezierCubic("trailing", "te_root", "te_cp0", "te_cp1", "te_tip") ]
-          Constraints = []
-          Loops = [] }
-
-    /// Boot-time notebook: one sketch with both wing guide curves
-    /// wired into the half-wing preview block via line-primitive paths,
-    /// then mirrored symmetrically across the root XZ plane.
-    let private defaultBlocks : Server.Lang.Notebook.Block list =
-        [ { Id = 0
-            Name = "wing_guides"
-            Body = Server.Lang.Notebook.SketchBody
-                { Sketch = wingGuidesSketch
-                  Plane = XY }
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 0
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
-          // Standalone airfoil profile — positionable and sizeable
-          // independently of the wing-remap pipeline. Useful as a
-          // placement/overlay aid (e.g. matching a blueprint image of
-          // an airfoil cross-section).
-          { Id = 1
-            Name = "naca"
-            Body =
-                Server.Lang.Notebook.NativeBody(
-                    "naca",
-                    Map.ofList
-                        [ "thickness", Server.Lang.AstBuilder.numE 0.18
-                          "camber", Server.Lang.AstBuilder.numE 0.04
-                          "chord", Server.Lang.AstBuilder.numE 2.0
-                          "span", Server.Lang.AstBuilder.numE 1.0
-                          "origin_x", Server.Lang.AstBuilder.numE 1.0
-                          "origin_y", Server.Lang.AstBuilder.numE 2.5
-                          "origin_z", Server.Lang.AstBuilder.numE 0.0 ])
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 2
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
-          { Id = 2
-            Name = "half_wing"
-            Body =
-                Server.Lang.Notebook.NativeBody(
-                    "wing-remap-preview",
-                    Map.ofList
-                        [ "profile", Server.Lang.AstBuilder.varE "naca"
-                          "profile_chord", Server.Lang.AstBuilder.numE 2.0
-                          "profile_origin_x", Server.Lang.AstBuilder.numE 1.0
-                          "profile_origin_y", Server.Lang.AstBuilder.numE 2.5
-                          "profile_origin_z", Server.Lang.AstBuilder.numE 0.0
-                          "leading", Server.Lang.AstBuilder.pathE [ "wing_guides"; "spline_0" ]
-                          "trailing", Server.Lang.AstBuilder.pathE [ "wing_guides"; "spline_1" ] ])
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 0
-            SlicePlane =
-                { Server.Lang.Notebook.defaultSlicePlane with
-                    Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } }
-          { Id = 3
-            Name = "full_wing"
-            Body =
-                Server.Lang.Notebook.NativeBody(
-                    "mirror_symmetric",
-                    Map.ofList
-                        [ "axis", Server.Lang.AstBuilder.numE 1.0
-                          "root", Server.Lang.AstBuilder.numE 0.0
-                          "child", Server.Lang.AstBuilder.varE "half_wing" ])
-            Visibility = Server.Lang.Notebook.VIsosurface
-            ColorIndex = 0
-            SlicePlane =
-                { Server.Lang.Notebook.defaultSlicePlane with
-                    Origin = { X = 1.0; Y = 2.5; Z = 0.0 } } }
-          // Aircraft fuselage: a body lofted along the world X axis
-          // (nose at X=-3, tail at X=6) so it runs perpendicular to
-          // the wing span (which lives along Y), sitting on the
-          // wing's mirror plane (Y=0). Cross-sections are rectangles
-          // in the YZ plane sized to match the spline separation at
-          // X=start (±0.25 in world Y), so their natural width IS the
-          // body's width at the nose. The splines then stretch the
-          // body outward at mid-cabin and back inward at the tail.
-          { Id = 4
-            Name = "body_nose"
-            Body = Server.Lang.Notebook.SketchBody
-                { Sketch = rectangleSketch 0.0 0.0 0.25 0.30
-                  Plane = YZ }
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 0
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
-          { Id = 5
-            Name = "body_tail"
-            Body = Server.Lang.Notebook.SketchBody
-                { Sketch = rectangleSketch 0.0 0.0 0.25 0.20
-                  Plane = YZ }
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 0
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
-          { Id = 7
-            Name = "body_guides"
-            Body = Server.Lang.Notebook.SketchBody
-                { Sketch =
-                    { Entities =
-                        [ // Side view in XZ. Sketch-local Y = world Z.
-                          // Top (high-Z) silhouette: nose 0.25 → bulge
-                          // to 0.85 around mid-body → tail 0.15.
-                          REPoint("t_nose", -3.0,  0.25)
-                          REPoint("t_cp0",  -1.0,  0.85)
-                          REPoint("t_cp1",   3.5,  0.85)
-                          REPoint("t_tail",  6.0,  0.15)
-                          // Bottom (low-Z) silhouette: mirror of the top.
-                          REPoint("b_nose", -3.0, -0.25)
-                          REPoint("b_cp0",  -1.0, -0.85)
-                          REPoint("b_cp1",   3.5, -0.85)
-                          REPoint("b_tail",  6.0, -0.15)
-                          REBezierCubic("g_top", "t_nose", "t_cp0", "t_cp1", "t_tail")
-                          REBezierCubic("g_bot", "b_nose", "b_cp0", "b_cp1", "b_tail") ]
-                      Constraints = []
-                      Loops = [] }
-                  Plane = XZ }
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 0
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
-          { Id = 6
-            Name = "fuselage"
-            Body =
-                Server.Lang.Notebook.NativeBody(
-                    "body_loft",
-                    Map.ofList
-                        [ "a", Server.Lang.AstBuilder.pathE [ "body_nose"; "loop_0" ]
-                          "b", Server.Lang.AstBuilder.pathE [ "body_tail"; "loop_0" ]
-                          "g_top", Server.Lang.AstBuilder.pathE [ "body_guides"; "spline_0" ]
-                          "g_bot", Server.Lang.AstBuilder.pathE [ "body_guides"; "spline_1" ]
-                          "start", Server.Lang.AstBuilder.numE -3.0
-                          "end_pos", Server.Lang.AstBuilder.numE 6.0 ])
-            Visibility = Server.Lang.Notebook.VIsosurface
-            ColorIndex = 1
-            SlicePlane =
-                { Server.Lang.Notebook.defaultSlicePlane with
-                    Origin = { X = 1.5; Y = 0.0; Z = 0.0 } } }
-          // Horizontal stabilizer (tailplane). A small swept-back wing
-          // at the rear of the fuselage spanning ±2 in Y after the
-          // mirror. Splines run from the root at Y=0 to the tip at
-          // Y=2; chord is 0.5 at the root and tapers to 0.35 at the
-          // tip. Sits on the fuselage centerline (Z=0).
-          { Id = 8
-            Name = "h_stab_guides"
-            Body = Server.Lang.Notebook.SketchBody
-                { Sketch =
-                    { Entities =
-                        [ REPoint("hl_root", 4.3, 0.0)
-                          REPoint("hl_cp0",  4.35, 0.7)
-                          REPoint("hl_cp1",  4.4,  1.4)
-                          REPoint("hl_tip",  4.5, 2.0)
-                          REPoint("ht_root", 4.8, 0.0)
-                          REPoint("ht_cp0",  4.82, 0.7)
-                          REPoint("ht_cp1",  4.83, 1.4)
-                          REPoint("ht_tip",  4.85, 2.0)
-                          REBezierCubic("leading",  "hl_root", "hl_cp0", "hl_cp1", "hl_tip")
-                          REBezierCubic("trailing", "ht_root", "ht_cp0", "ht_cp1", "ht_tip") ]
-                      Constraints = []
-                      Loops = [] }
-                  Plane = XY }
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 0
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
-          { Id = 9
-            Name = "half_h_stab"
-            Body =
-                Server.Lang.Notebook.NativeBody(
-                    "wing-remap-preview",
-                    Map.ofList
-                        [ "profile", Server.Lang.AstBuilder.varE "naca"
-                          "profile_chord", Server.Lang.AstBuilder.numE 2.0
-                          "profile_origin_x", Server.Lang.AstBuilder.numE 1.0
-                          "profile_origin_y", Server.Lang.AstBuilder.numE 2.5
-                          "profile_origin_z", Server.Lang.AstBuilder.numE 0.0
-                          "leading",  Server.Lang.AstBuilder.pathE [ "h_stab_guides"; "spline_0" ]
-                          "trailing", Server.Lang.AstBuilder.pathE [ "h_stab_guides"; "spline_1" ] ])
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 0
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
-          { Id = 10
-            Name = "full_h_stab"
-            Body =
-                Server.Lang.Notebook.NativeBody(
-                    "mirror_symmetric",
-                    Map.ofList
-                        [ "axis", Server.Lang.AstBuilder.numE 1.0
-                          "root", Server.Lang.AstBuilder.numE 0.0
-                          "child", Server.Lang.AstBuilder.varE "half_h_stab" ])
-            Visibility = Server.Lang.Notebook.VIsosurface
-            ColorIndex = 2
-            SlicePlane =
-                { Server.Lang.Notebook.defaultSlicePlane with
-                    Origin = { X = 4.6; Y = 1.0; Z = 0.0 } } }
-          // Vertical stabilizer (fin). Same trick as the H-stab but
-          // built in the wing's natural Y-spanning orientation, then
-          // routed through `swap_yz` so the span direction maps to
-          // world Z (the fin extends upward from the fuselage). Not
-          // mirrored — a single fin sitting at Y=0. Splines run from
-          // the root at Y=0 (which becomes Z=0 after the swap) to the
-          // tip at Y=1.5 (Z=1.5 in world).
-          { Id = 11
-            Name = "v_stab_guides"
-            Body = Server.Lang.Notebook.SketchBody
-                { Sketch =
-                    { Entities =
-                        [ REPoint("vl_root", 4.3, 0.0)
-                          REPoint("vl_cp0",  4.4,  0.5)
-                          REPoint("vl_cp1",  4.5,  1.0)
-                          REPoint("vl_tip",  4.65, 1.5)
-                          REPoint("vt_root", 5.0, 0.0)
-                          REPoint("vt_cp0",  5.0,  0.5)
-                          REPoint("vt_cp1",  4.95, 1.0)
-                          REPoint("vt_tip",  4.85, 1.5)
-                          REBezierCubic("leading",  "vl_root", "vl_cp0", "vl_cp1", "vl_tip")
-                          REBezierCubic("trailing", "vt_root", "vt_cp0", "vt_cp1", "vt_tip") ]
-                      Constraints = []
-                      Loops = [] }
-                  Plane = XY }
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 0
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
-          { Id = 12
-            Name = "half_v_stab"
-            Body =
-                Server.Lang.Notebook.NativeBody(
-                    "wing-remap-preview",
-                    Map.ofList
-                        [ "profile", Server.Lang.AstBuilder.varE "naca"
-                          "profile_chord", Server.Lang.AstBuilder.numE 2.0
-                          "profile_origin_x", Server.Lang.AstBuilder.numE 1.0
-                          "profile_origin_y", Server.Lang.AstBuilder.numE 2.5
-                          "profile_origin_z", Server.Lang.AstBuilder.numE 0.0
-                          "leading",  Server.Lang.AstBuilder.pathE [ "v_stab_guides"; "spline_0" ]
-                          "trailing", Server.Lang.AstBuilder.pathE [ "v_stab_guides"; "spline_1" ] ])
-            Visibility = Server.Lang.Notebook.VHidden
-            ColorIndex = 0
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane }
-          { Id = 13
-            Name = "v_stab"
-            Body =
-                Server.Lang.Notebook.NativeBody(
-                    "swap_yz",
-                    Map.ofList
-                        [ "child", Server.Lang.AstBuilder.varE "half_v_stab" ])
-            Visibility = Server.Lang.Notebook.VIsosurface
-            ColorIndex = 2
-            SlicePlane =
-                { Server.Lang.Notebook.defaultSlicePlane with
-                    Origin = { X = 4.6; Y = 0.0; Z = 0.75 } } }
-          // Reference image: a flat textured quad on the XY plane at
-          // the world origin, behind the aircraft. Useful as a
-          // blueprint backdrop while modelling. CORS-restricted hosts
-          // will leave the quad invisible; pick a CORS-friendly URL
-          // if the load fails.
-          { Id = 14
-            Name = "reference"
-            Body = Server.Lang.Notebook.ImageBody {
-                Url = "https://scontent.fqls2-1.fna.fbcdn.net/v/t1.6435-9/94920049_2996164733810306_2295814526865506304_n.jpg?_nc_cat=104&ccb=1-7&_nc_sid=33274f&_nc_ohc=mJC7oFeGda8Q7kNvwGV-01L&_nc_oc=Adp7YjkkTvNxv7gnipTbWLOg-3MQ2CZFKHkkTmck1yqhKZXlO_BclhgXPd62hXc8C6cr6Y4Z88QIphnrEZuTg9Q0&_nc_zt=23&_nc_ht=scontent.fqls2-1.fna&_nc_gid=InZp20pyczogFinRIpYftw&_nc_ss=7b289&oh=00_Af6CNuAcYfNGld6yp9y7Z9SgswZfsBX0Z4geD-lpTAbGaw&oe=6A32ECB5"
-                Plane = XY
-                Origin = { X = 0.0; Y = 0.0; Z = 0.0 }
-                Width = 10.0
-                Height = 10.0
-                Opacity = 1.0
-                Rotation = 0.0
-            }
-            Visibility = Server.Lang.Notebook.VIsosurface
-            ColorIndex = 0
-            SlicePlane = Server.Lang.Notebook.defaultSlicePlane } ]
 
     /// Demo content the script editor shows on a fresh document.
     /// Defines the standard library of SDF primitives (sphere, box,
@@ -630,6 +303,47 @@ let shell = fun (thickness: Scalar) (child: Field) ->
     max child (0 - (child + thickness))
 end
 
+// Cubic Bezier evaluation at parameter t (Bernstein form). The
+// control points are scalar constants (primitive fields), but
+// `t` is a Field because callers feed in a world-axis-derived
+// value (e.g. `x` or `y`) which is itself Field-typed in this DSL.
+let bezier_cubic = fun (p0: Scalar) (p1: Scalar) (p2: Scalar) (p3: Scalar) (t: Field) ->
+    let u = 1 - t
+    u*u*u * p0 + 3*u*u*t * p1 + 3*u*t*t * p2 + t*t*t * p3
+end
+
+// First derivative of the cubic Bezier wrt t. Itself a quadratic
+// Bezier of the velocity vectors (p_{i+1} - p_i).
+let bezier_cubic_deriv = fun (p0: Scalar) (p1: Scalar) (p2: Scalar) (p3: Scalar) (t: Field) ->
+    let u = 1 - t
+    3 * (u*u*(p1 - p0) + 2*u*t*(p2 - p1) + t*t*(p3 - p2))
+end
+
+// Find t such that bezier_cubic(p0..p3, t) = target. Three unrolled
+// Newton steps starting from the linear (chord-line) initial guess.
+// Used by wing_loft / body_loft to invert the guide X(t) (or Y(t))
+// so the loft evaluates the spline at the correct parameter for each
+// world coordinate, instead of the linear-t approximation which
+// drifts when control points aren't placed at the canonical thirds.
+//
+// PRECONDITION: the X(t) (or Y(t)) component must be monotonic over
+// [0,1]. If the curve folds back on itself, Newton can converge to
+// any of the multiple roots depending on initial guess. Authoring
+// guides nose → tail with monotonically increasing control points
+// satisfies this.
+let bezier_invert = fun (p0: Scalar) (p1: Scalar) (p2: Scalar) (p3: Scalar) (target: Field) ->
+    let t0 = (target - p0) / (p3 - p0 + 0.000001)
+    let f0 = bezier_cubic p0 p1 p2 p3 t0 - target
+    let df0 = bezier_cubic_deriv p0 p1 p2 p3 t0
+    let t1 = t0 - f0 / (df0 + 0.000001)
+    let f1 = bezier_cubic p0 p1 p2 p3 t1 - target
+    let df1 = bezier_cubic_deriv p0 p1 p2 p3 t1
+    let t2 = t1 - f1 / (df1 + 0.000001)
+    let f2 = bezier_cubic p0 p1 p2 p3 t2 - target
+    let df2 = bezier_cubic_deriv p0 p1 p2 p3 t2
+    t2 - f2 / (df2 + 0.000001)
+end
+
 // Multi-guide loft (wing-style). Sweeps a cross-section between
 // loop `a` (at span position `start`) and loop `b` (at `end_pos`),
 // while constraining the chord direction with two cubic Bezier
@@ -650,19 +364,19 @@ end
 // (matching guide X separation 2 at `start`) stretches to 1.7 wide
 // where the guides separate by 1.7, and so on.
 //
-// The cubic-at-y arithmetic is inlined rather than factored into a
-// helper because the typecheck's refinement-cell mechanism only
-// grows through direct path access — calling a helper that
-// requires the refined Primitive would fail to propagate the
-// required `x0/y0/x1/y1/cx0/cy0/cx1/cy1` members from this site.
+// Each guide spline is inverted via Newton (see `bezier_invert`) to
+// recover the parameter t where the curve hits world y, then the
+// X-component is evaluated at that t. This corrects the previous
+// linear-t-from-y approximation which only matches the visual
+// spline when the Y control points sit at the canonical thirds.
+// Path access of each guide field stays at this call site so the
+// typecheck's refinement cell still grows the required members.
 let wing_loft = fun (a: Loop) (b: Loop) (g_left: Primitive) (g_right: Primitive) (start: Scalar) (end_pos: Scalar) ->
     let t = (y - start) / (end_pos - start + 0.000001)
-    let t_l = (y - g_left.y0) / (g_left.y1 - g_left.y0 + 0.000001)
-    let u_l = 1 - t_l
-    let left_x = u_l*u_l*u_l * g_left.x0 + 3*u_l*u_l*t_l * g_left.cx0 + 3*u_l*t_l*t_l * g_left.cx1 + t_l*t_l*t_l * g_left.x1
-    let t_r = (y - g_right.y0) / (g_right.y1 - g_right.y0 + 0.000001)
-    let u_r = 1 - t_r
-    let right_x = u_r*u_r*u_r * g_right.x0 + 3*u_r*u_r*t_r * g_right.cx0 + 3*u_r*t_r*t_r * g_right.cx1 + t_r*t_r*t_r * g_right.x1
+    let t_l = bezier_invert g_left.y0 g_left.cy0 g_left.cy1 g_left.y1 y
+    let left_x = bezier_cubic g_left.x0 g_left.cx0 g_left.cx1 g_left.x1 t_l
+    let t_r = bezier_invert g_right.y0 g_right.cy0 g_right.cy1 g_right.y1 y
+    let right_x = bezier_cubic g_right.x0 g_right.cx0 g_right.cx1 g_right.x1 t_r
     let s_start = g_right.x0 - g_left.x0
     let center = (right_x + left_x) / 2
     let chord = (x - center) * s_start / (right_x - left_x + 0.000001)
@@ -691,12 +405,14 @@ end
 // and contracts where they taper back in.
 let body_loft = fun (a: Loop) (b: Loop) (g_top: Primitive) (g_bot: Primitive) (start: Scalar) (end_pos: Scalar) ->
     let t = (x - start) / (end_pos - start + 0.000001)
-    let t_t = (x - g_top.x0) / (g_top.x1 - g_top.x0 + 0.000001)
-    let u_t = 1 - t_t
-    let top_z = u_t*u_t*u_t * g_top.y0 + 3*u_t*u_t*t_t * g_top.cy0 + 3*u_t*t_t*t_t * g_top.cy1 + t_t*t_t*t_t * g_top.y1
-    let t_b = (x - g_bot.x0) / (g_bot.x1 - g_bot.x0 + 0.000001)
-    let u_b = 1 - t_b
-    let bot_z = u_b*u_b*u_b * g_bot.y0 + 3*u_b*u_b*t_b * g_bot.cy0 + 3*u_b*t_b*t_b * g_bot.cy1 + t_b*t_b*t_b * g_bot.y1
+    // Invert each guide's X(t) to find where the spline reaches the
+    // current world x, then evaluate the spline's Y-component
+    // (= world Z, since guides are in XZ) at that parameter. See
+    // `bezier_invert` for the monotonicity precondition.
+    let t_top = bezier_invert g_top.x0 g_top.cx0 g_top.cx1 g_top.x1 x
+    let top_z = bezier_cubic g_top.y0 g_top.cy0 g_top.cy1 g_top.y1 t_top
+    let t_bot = bezier_invert g_bot.x0 g_bot.cx0 g_bot.cx1 g_bot.x1 x
+    let bot_z = bezier_cubic g_bot.y0 g_bot.cy0 g_bot.cy1 g_bot.y1 t_bot
     let s_start = g_top.y0 - g_bot.y0
     let center = (top_z + bot_z) / 2
     // Isotropic scaling: the single XZ guide pair drives the body's
@@ -847,44 +563,41 @@ let capsule = fun (radius: Scalar) (length: Scalar) ->
 end
 """
 
-    /// Built-in fallback document, assembled from the F# `defaultBlocks`
-    /// + `defaultScriptSource` literals above. Used when no JSON
-    /// override is present (the .NET tests path, or the browser when
-    /// `ui/defaults/default-document.json` is `null` / empty / fails
-    /// to parse).
-    let private constructedDefaultDocument () : Document =
+    /// Minimal empty document — no blocks, default user-script library.
+    /// Returned when the bundled boot example is missing or fails to
+    /// decode; the user can still author from scratch since the
+    /// script library is intact and the Examples dropdown remains
+    /// available.
+    let private emptyFallbackDocument () : Document =
         { Name = "untitled"
-          Blocks = defaultBlocks
-          NextBlockId = 15
-          SelectedBlockId = Some 3
+          Blocks = []
+          NextBlockId = 0
+          SelectedBlockId = None
           ScriptSourceText = defaultScriptSource }
 
 #if FABLE_COMPILER
-    /// Raw JSON text bundled by Vite via the `@defaults` alias. Treated
-    /// as an override of the F#-constructed default: if the file
-    /// contains a valid serialized `Document`, it becomes the boot-doc;
-    /// if it's `null` / empty / unparseable, we fall back to the F#
-    /// constructor. This lets the user "Save" from the running app
-    /// (which produces JSON via the same Fable round-trip), drop the
-    /// file into `ui/defaults/`, and have it become the new default
-    /// without touching F# code.
-    let private defaultDocumentJsonOverride : string =
-        Fable.Core.JsInterop.importDefault "@defaults/default-document.json?raw"
+    /// Raw JSON text bundled by Vite — the boot document. Points at
+    /// `ui/defaults/examples/basic.json` which doubles as a selectable
+    /// entry under the Examples top-bar dropdown, so editing or
+    /// replacing it changes both the boot default and that menu
+    /// entry in lockstep.
+    let private bootDocumentJson : string =
+        Fable.Core.JsInterop.importDefault "@defaults/examples/basic.json?raw"
 #else
-    let private defaultDocumentJsonOverride : string = ""
+    let private bootDocumentJson : string = ""
 #endif
 
     let emptyDocument () : Document =
 #if FABLE_COMPILER
-        let trimmed = defaultDocumentJsonOverride.Trim()
+        let trimmed = bootDocumentJson.Trim()
         if trimmed = "" || trimmed = "null" then
-            constructedDefaultDocument ()
+            emptyFallbackDocument ()
         else
-            match Thoth.Json.Decode.Auto.fromString<Document>(defaultDocumentJsonOverride) with
+            match Thoth.Json.Decode.Auto.fromString<Document>(bootDocumentJson) with
             | Ok doc -> doc
             | Error msg ->
-                Browser.Dom.console.warn ("default-document.json failed to decode; using F# default. " + msg)
-                constructedDefaultDocument ()
+                Browser.Dom.console.warn ("basic.json failed to decode; using empty document. " + msg)
+                emptyFallbackDocument ()
 #else
-        constructedDefaultDocument ()
+        emptyFallbackDocument ()
 #endif

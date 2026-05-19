@@ -77,10 +77,11 @@ let render
         (viewerHost: HTMLElement)
         (onSave: unit -> unit)
         (onLoad: unit -> unit)
+        (onLoadExample: string -> unit)
         : HTMLElement =
     let root = Dom.el "div" "ui-root"
 
-    root.appendChild (TopBar.render dispatch onSave onLoad doc.ScriptEditorOpen :> Node) |> ignore
+    root.appendChild (TopBar.render dispatch onSave onLoad onLoadExample doc.ScriptEditorOpen :> Node) |> ignore
 
     let layout = Dom.el "div" "layout"
     if doc.ScriptEditorOpen then

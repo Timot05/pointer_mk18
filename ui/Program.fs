@@ -93,6 +93,14 @@ let private onLoad () =
     )
     input.click ()
 
+// Load an example whose JSON content is already in-memory (bundled
+// at build time via `Examples.fs`). Mirrors `onLoad`'s parse-and-
+// dispatch flow without the file-picker step.
+let private onLoadExample (jsonContent: string) =
+    match Thoth.Json.Decode.Auto.fromString<Server.Document>(jsonContent) with
+    | Ok doc -> dispatch (ReplaceDocument doc)
+    | Error msg -> console.error ("Failed to load example: " + msg)
+
 // `BlockList` is compiled before `MeshExport` so it can't reference it
 // statically; bind the per-block mesh-export hook here, after both are in
 // scope. Runs once at startup.
@@ -104,7 +112,7 @@ BlockList.downloadMeshFor <- MeshExport.downloadBlockStl
 
 let private renderInto (root: Browser.Types.HTMLElement) =
     let doc = DocumentPipeline.documentView store.State
-    let shell = Shell.render dispatch doc viewerHost onSave onLoad
+    let shell = Shell.render dispatch doc viewerHost onSave onLoad onLoadExample
     root.innerHTML <- ""
     root.appendChild shell |> ignore
 

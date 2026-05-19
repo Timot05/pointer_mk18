@@ -14,7 +14,32 @@ module DocumentJsonRoundTripTests
 
 open Xunit
 open Server
+open Server.Lang
 open Thoth.Json.Net
+
+[<Fact>]
+let ``examples/basic.json decodes and compiles cleanly`` () =
+    // One-off check: the hand-crafted basic example for the Examples
+    // dropdown must (1) decode via Thoth and (2) compose into a
+    // non-empty IR without block errors. Catches structural mistakes
+    // in the JSON (loop shape, EVar/EPath wiring, etc.) before the
+    // user hits them in the browser.
+    let path =
+        System.IO.Path.Combine(
+            __SOURCE_DIRECTORY__,
+            "..", "ui", "defaults", "examples", "basic.json")
+    let text = System.IO.File.ReadAllText path
+    match Decode.Auto.fromString<Document>(text) with
+    | Error msg -> failwithf "decode failed: %s" msg
+    | Ok doc ->
+        let nb : Notebook.Notebook =
+            { NextId = doc.NextBlockId; Blocks = doc.Blocks }
+        let userScript = UserScript.analyze doc.ScriptSourceText
+        let result = NotebookCompose.compileWith nb userScript
+        Assert.True(
+            Map.isEmpty result.BlockErrors,
+            sprintf "expected no block errors, got %A" (Map.toList result.BlockErrors))
+        Assert.True(result.Ir.IsSome, "expected non-empty IR")
 
 [<Fact>]
 let ``Thoth: empty document round-trips via Encode.Auto / Decode.Auto`` () =

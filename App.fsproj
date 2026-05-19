@@ -81,6 +81,7 @@
     <Compile Include="ui\Benchmarks.fs" />
     <Compile Include="ui\Dom.fs" />
     <Compile Include="ui\Icons.fs" />
+    <Compile Include="ui\Examples.fs" />
     <Compile Include="ui\TopBar.fs" />
     <Compile Include="ui\BlockList.fs" />
     <Compile Include="ui\SketchAuthoringPanel.fs" />

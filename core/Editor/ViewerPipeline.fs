@@ -99,7 +99,8 @@ module ViewerPipeline =
             state.Doc.Blocks
             |> List.choose (fun b ->
                 match b.Body with
-                | Server.Lang.Notebook.SketchBody data ->
+                | Server.Lang.Notebook.SketchBody data
+                  when b.Visibility <> Server.Lang.Notebook.VHidden ->
                     let sketchOrigin = Editor.resolveSketchTransform state None data.Plane
 
                     let ctx: SketchCompileContext =
@@ -200,7 +201,8 @@ module ViewerPipeline =
             state.Doc.Blocks
             |> List.choose (fun b ->
                 match b.Body with
-                | Server.Lang.Notebook.SketchBody data ->
+                | Server.Lang.Notebook.SketchBody data
+                  when b.Visibility <> Server.Lang.Notebook.VHidden ->
                     Some
                         { Id = SketchAuthoring.blockSketchId b.Id
                           Transform = Editor.resolveSketchTransform state None data.Plane }
@@ -210,7 +212,8 @@ module ViewerPipeline =
             state.Doc.Blocks
             |> List.collect (fun b ->
                 match b.Body with
-                | Server.Lang.Notebook.SketchBody data ->
+                | Server.Lang.Notebook.SketchBody data
+                  when b.Visibility <> Server.Lang.Notebook.VHidden ->
                     let sid = SketchAuthoring.blockSketchId b.Id
                     data.Sketch.Constraints
                     |> List.mapi (fun i c ->

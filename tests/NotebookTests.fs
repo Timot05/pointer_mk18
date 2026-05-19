@@ -548,21 +548,6 @@ let ``compileWith: user-defined block compiles to MathIR end to end`` () =
     Assert.True(result.BlockErrors.IsEmpty, "expected no block errors")
 
 [<Fact>]
-let ``compileWith: default notebook (wing + loft demo with splines) compiles cleanly`` () =
-    // The boot document carries the wing-guide and loft-guide splines
-    // wired into `wing-remap-preview` and `wing_loft`. A clean compile
-    // confirms the spline migration produces a typecheck + a non-empty
-    // MathIR for the full demo scene.
-    let doc = Server.Document.emptyDocument ()
-    let nb : Notebook = { NextId = doc.NextBlockId; Blocks = doc.Blocks }
-    let userScript = UserScript.analyze doc.ScriptSourceText
-    let result = NotebookCompose.compileWith nb userScript
-    Assert.True(
-        result.BlockErrors.IsEmpty,
-        sprintf "expected no block errors, got %A" result.BlockErrors)
-    Assert.True(result.Ir.IsSome, "expected an IR for the default doc")
-
-[<Fact>]
 let ``compileWith: default capsule script compiles end to end`` () =
     // The capsule definition in Document.emptyDocument uses let-blocks,
     // translate, sphere, cylinder, union — all the patterns a user is

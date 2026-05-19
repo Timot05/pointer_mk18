@@ -1,0 +1,1815 @@
+{
+  "Name": "untitled",
+  "Blocks": [
+    {
+      "Id": 14,
+      "Name": "reference_xz",
+      "Body": [
+        "ImageBody",
+        {
+          "Url": "https://scontent.fqls2-1.fna.fbcdn.net/v/t1.6435-9/94920049_2996164733810306_2295814526865506304_n.jpg?_nc_cat=104&ccb=1-7&_nc_sid=33274f&_nc_ohc=mJC7oFeGda8Q7kNvwGV-01L&_nc_oc=Adp7YjkkTvNxv7gnipTbWLOg-3MQ2CZFKHkkTmck1yqhKZXlO_BclhgXPd62hXc8C6cr6Y4Z88QIphnrEZuTg9Q0&_nc_zt=23&_nc_ht=scontent.fqls2-1.fna&_nc_gid=InZp20pyczogFinRIpYftw&_nc_ss=7b289&oh=00_Af6CNuAcYfNGld6yp9y7Z9SgswZfsBX0Z4geD-lpTAbGaw&oe=6A32ECB5",
+          "Plane": "XZ",
+          "Origin": {
+            "X": 4.8,
+            "Y": 0,
+            "Z": -0.42
+          },
+          "Width": 13.668571429,
+          "Height": 10,
+          "Opacity": 0.1,
+          "Rotation": 0
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 15,
+      "Name": "reference_xy",
+      "Body": [
+        "ImageBody",
+        {
+          "Url": "https://scontent.fqls2-1.fna.fbcdn.net/v/t1.6435-9/95097554_2996244180469028_6841057452763381760_n.jpg?_nc_cat=110&ccb=1-7&_nc_sid=33274f&_nc_ohc=c3iHi-XrIicQ7kNvwFhutvp&_nc_oc=Adppo7VPZeVWQ7tOLPZTkbrUNagYfqyX7YAlrecuF3SIG5mSeMJ3zMBgJ5yZRLWT9tWtQm_1f31E590RkfBloujR&_nc_zt=23&_nc_ht=scontent.fqls2-1.fna&_nc_gid=S660zxANemEuMawvbZCAiw&_nc_ss=7b289&oh=00_Af7YqIm7eaj1zfGOzww7mjsH-1hH6oqn9ICG4o-aRj3ATw&oe=6A33A355",
+          "Plane": "XY",
+          "Origin": {
+            "X": 10.6,
+            "Y": -1,
+            "Z": 0
+          },
+          "Width": 48.3380607815,
+          "Height": 27.2,
+          "Opacity": 0.1,
+          "Rotation": -90
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 0,
+      "Name": "wing_guides",
+      "Body": [
+        "SketchBody",
+        {
+          "Sketch": {
+            "Entities": [
+              [
+                "REPoint",
+                "le_root",
+                3.1025876998901367,
+                -0.02459973655641079
+              ],
+              [
+                "REPoint",
+                "le_cp0",
+                3.046488046646118,
+                -4.123071193695068
+              ],
+              [
+                "REPoint",
+                "le_cp1",
+                3.0390355587005615,
+                -9.60157585144043
+              ],
+              [
+                "REPoint",
+                "le_tip",
+                3.72843337059021,
+                -14.757122039794922
+              ],
+              [
+                "REPoint",
+                "te_root",
+                4.44364070892334,
+                -0.057989828288555145
+              ],
+              [
+                "REPoint",
+                "te_cp0",
+                4.37075662612915,
+                -5.209390163421631
+              ],
+              [
+                "REPoint",
+                "te_cp1",
+                4.302117824554443,
+                -10.103039741516113
+              ],
+              [
+                "REPoint",
+                "te_tip",
+                4.11870002746582,
+                -14.749493598937988
+              ],
+              [
+                "REBezierCubic",
+                "leading",
+                "le_root",
+                "le_cp0",
+                "le_cp1",
+                "le_tip"
+              ],
+              [
+                "REBezierCubic",
+                "trailing",
+                "te_root",
+                "te_cp0",
+                "te_cp1",
+                "te_tip"
+              ]
+            ],
+            "Constraints": [],
+            "Loops": []
+          },
+          "Plane": "XY"
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 1,
+      "Name": "naca_wing",
+      "Body": [
+        "NativeBody",
+        "naca",
+        {
+          "camber": {
+            "Node": [
+              "ENumber",
+              0.04
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "chord": {
+            "Node": [
+              "ENumber",
+              1.4
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "origin_x": {
+            "Node": [
+              "ENumber",
+              3.75
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "origin_y": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "origin_z": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "span": {
+            "Node": [
+              "ENumber",
+              0.3
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "thickness": {
+            "Node": [
+              "ENumber",
+              0.1
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 2,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 2,
+      "Name": "half_wing",
+      "Body": [
+        "NativeBody",
+        "wing-remap-preview",
+        {
+          "leading": {
+            "Node": [
+              "EPath",
+              [
+                {
+                  "Name": "wing_guides",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                },
+                {
+                  "Name": "spline_0",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                }
+              ]
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile": {
+            "Node": [
+              "EVar",
+              {
+                "Name": "naca_wing",
+                "IdentKind": "User",
+                "Span": {
+                  "Start": 0,
+                  "Stop": 0
+                }
+              }
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_chord": {
+            "Node": [
+              "ENumber",
+              1.4
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_origin_x": {
+            "Node": [
+              "ENumber",
+              3.75
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_origin_y": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_origin_z": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "trailing": {
+            "Node": [
+              "EPath",
+              [
+                {
+                  "Name": "wing_guides",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                },
+                {
+                  "Name": "spline_1",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                }
+              ]
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 1,
+          "Y": 2.5,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 3,
+      "Name": "full_wing",
+      "Body": [
+        "NativeBody",
+        "mirror_symmetric",
+        {
+          "axis": {
+            "Node": [
+              "ENumber",
+              1
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "child": {
+            "Node": [
+              "EVar",
+              {
+                "Name": "half_wing",
+                "IdentKind": "User",
+                "Span": {
+                  "Start": 0,
+                  "Stop": 0
+                }
+              }
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "root": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VIsosurface",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 1,
+          "Y": 2.5,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 4,
+      "Name": "body_nose",
+      "Body": [
+        "SketchBody",
+        {
+          "Sketch": {
+            "Entities": [
+              [
+                "REPoint",
+                "p1",
+                0.004952060434274763,
+                -0.014838264676692914
+              ],
+              [
+                "RECircle",
+                "c1",
+                "p1",
+                0.1
+              ]
+            ],
+            "Constraints": [
+              [
+                "CircleDiameter",
+                "c1",
+                "p1",
+                0.2,
+                {
+                  "X": -0.3697661691834164,
+                  "Y": -1.1254273967760897
+                }
+              ]
+            ],
+            "Loops": [
+              {
+                "Id": "loop_0",
+                "EntityIds": [
+                  "c1"
+                ],
+                "UserNamed": false,
+                "Primitives": [
+                  {
+                    "Id": "circle_0",
+                    "EntityId": "c1",
+                    "UserNamed": false
+                  }
+                ]
+              }
+            ]
+          },
+          "Plane": "YZ"
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 5,
+      "Name": "body_tail",
+      "Body": [
+        "SketchBody",
+        {
+          "Sketch": {
+            "Entities": [
+              [
+                "REPoint",
+                "p1",
+                0.021788297221064568,
+                -0.007338370196521282
+              ],
+              [
+                "RECircle",
+                "c1",
+                "p1",
+                0.15000000596046448
+              ]
+            ],
+            "Constraints": [
+              [
+                "CircleDiameter",
+                "c1",
+                "p1",
+                0.30000001192092896,
+                {
+                  "X": -0.31117252524227057,
+                  "Y": 0.7682386907430256
+                }
+              ]
+            ],
+            "Loops": [
+              {
+                "Id": "loop_0",
+                "EntityIds": [
+                  "c1"
+                ],
+                "UserNamed": false,
+                "Primitives": [
+                  {
+                    "Id": "circle_0",
+                    "EntityId": "c1",
+                    "UserNamed": false
+                  }
+                ]
+              }
+            ]
+          },
+          "Plane": "YZ"
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 7,
+      "Name": "body_guides",
+      "Body": [
+        "SketchBody",
+        {
+          "Sketch": {
+            "Entities": [
+              [
+                "REPoint",
+                "t_nose",
+                -0.009009436704218388,
+                0.07838460057973862
+              ],
+              [
+                "REPoint",
+                "t_cp0",
+                3.152742862701416,
+                1.8661699295043945
+              ],
+              [
+                "REPoint",
+                "t_cp1",
+                3.917820930480957,
+                0.0335565060377121
+              ],
+              [
+                "REPoint",
+                "t_tail",
+                10.97857666015625,
+                0.26674070954322815
+              ],
+              [
+                "REPoint",
+                "b_nose",
+                -0.021071303635835648,
+                -0.12125171720981598
+              ],
+              [
+                "REPoint",
+                "b_cp0",
+                2.973529815673828,
+                -1.1657792329788208
+              ],
+              [
+                "REPoint",
+                "b_cp1",
+                1.6497441530227661,
+                -0.302709698677063
+              ],
+              [
+                "REPoint",
+                "b_tail",
+                10.97857666015625,
+                -0.0332593098282814
+              ],
+              [
+                "REBezierCubic",
+                "g_top",
+                "t_nose",
+                "t_cp0",
+                "t_cp1",
+                "t_tail"
+              ],
+              [
+                "REBezierCubic",
+                "g_bot",
+                "b_nose",
+                "b_cp0",
+                "b_cp1",
+                "b_tail"
+              ]
+            ],
+            "Constraints": [
+              [
+                "Distance",
+                "b_nose",
+                "t_nose",
+                0.20000000298023224,
+                {
+                  "X": -0.4204918592254855,
+                  "Y": -0.06670386151820751
+                }
+              ],
+              [
+                "Vertical",
+                "t_tail",
+                "b_tail"
+              ],
+              [
+                "Distance",
+                "b_tail",
+                "t_tail",
+                0.30000001192092896,
+                {
+                  "X": 11.281513309276903,
+                  "Y": 0.11261184909546196
+                }
+              ],
+              [
+                "Distance",
+                "b_nose",
+                "b_tail",
+                11,
+                {
+                  "X": 10.409925700177041,
+                  "Y": -3.0528130897078114
+                }
+              ],
+              [
+                "Vertical",
+                "t_nose",
+                "b_nose"
+              ]
+            ],
+            "Loops": []
+          },
+          "Plane": "XZ"
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 6,
+      "Name": "fuselage",
+      "Body": [
+        "NativeBody",
+        "body_loft",
+        {
+          "a": {
+            "Node": [
+              "EPath",
+              [
+                {
+                  "Name": "body_nose",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                },
+                {
+                  "Name": "loop_0",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                }
+              ]
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "b": {
+            "Node": [
+              "EPath",
+              [
+                {
+                  "Name": "body_tail",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                },
+                {
+                  "Name": "loop_0",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                }
+              ]
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "end_pos": {
+            "Node": [
+              "ENumber",
+              10.8
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "g_bot": {
+            "Node": [
+              "EPath",
+              [
+                {
+                  "Name": "body_guides",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                },
+                {
+                  "Name": "spline_1",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                }
+              ]
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "g_top": {
+            "Node": [
+              "EPath",
+              [
+                {
+                  "Name": "body_guides",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                },
+                {
+                  "Name": "spline_0",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                }
+              ]
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "start": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VIsosurface",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 1.5,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 8,
+      "Name": "h_stab_guides",
+      "Body": [
+        "SketchBody",
+        {
+          "Sketch": {
+            "Entities": [
+              [
+                "REPoint",
+                "hl_root",
+                9.494817733764648,
+                -0.012243013828992844
+              ],
+              [
+                "REPoint",
+                "hl_cp0",
+                9.538732528686523,
+                0.5334059596061707
+              ],
+              [
+                "REPoint",
+                "hl_cp1",
+                9.611310005187988,
+                1.1748005151748657
+              ],
+              [
+                "REPoint",
+                "hl_tip",
+                9.875029563903809,
+                1.9548190832138062
+              ],
+              [
+                "REPoint",
+                "ht_root",
+                10.317404747009277,
+                0.013895189389586449
+              ],
+              [
+                "REPoint",
+                "ht_cp0",
+                10.387557029724121,
+                0.572142481803894
+              ],
+              [
+                "REPoint",
+                "ht_cp1",
+                10.411832809448242,
+                1.2496823072433472
+              ],
+              [
+                "REPoint",
+                "ht_tip",
+                10.517301559448242,
+                1.9157222509384155
+              ],
+              [
+                "REBezierCubic",
+                "leading",
+                "hl_root",
+                "hl_cp0",
+                "hl_cp1",
+                "hl_tip"
+              ],
+              [
+                "REBezierCubic",
+                "trailing",
+                "ht_root",
+                "ht_cp0",
+                "ht_cp1",
+                "ht_tip"
+              ]
+            ],
+            "Constraints": [],
+            "Loops": []
+          },
+          "Plane": "XY"
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 16,
+      "Name": "naca_h_stab",
+      "Body": [
+        "NativeBody",
+        "naca",
+        {
+          "camber": {
+            "Node": [
+              "ENumber",
+              0.04
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "chord": {
+            "Node": [
+              "ENumber",
+              0.8
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "origin_x": {
+            "Node": [
+              "ENumber",
+              10
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "origin_y": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "origin_z": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "span": {
+            "Node": [
+              "ENumber",
+              0.3
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "thickness": {
+            "Node": [
+              "ENumber",
+              0.1
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 2,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 9,
+      "Name": "half_h_stab",
+      "Body": [
+        "NativeBody",
+        "wing-remap-preview",
+        {
+          "leading": {
+            "Node": [
+              "EPath",
+              [
+                {
+                  "Name": "h_stab_guides",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                },
+                {
+                  "Name": "spline_0",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                }
+              ]
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile": {
+            "Node": [
+              "EVar",
+              {
+                "Name": "naca_h_stab",
+                "IdentKind": "User",
+                "Span": {
+                  "Start": 0,
+                  "Stop": 0
+                }
+              }
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_chord": {
+            "Node": [
+              "ENumber",
+              0.8
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_origin_x": {
+            "Node": [
+              "ENumber",
+              10
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_origin_y": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_origin_z": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "trailing": {
+            "Node": [
+              "EPath",
+              [
+                {
+                  "Name": "h_stab_guides",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                },
+                {
+                  "Name": "spline_1",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                }
+              ]
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 10,
+      "Name": "full_h_stab",
+      "Body": [
+        "NativeBody",
+        "mirror_symmetric",
+        {
+          "axis": {
+            "Node": [
+              "ENumber",
+              1
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "child": {
+            "Node": [
+              "EVar",
+              {
+                "Name": "half_h_stab",
+                "IdentKind": "User",
+                "Span": {
+                  "Start": 0,
+                  "Stop": 0
+                }
+              }
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "root": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 4.6,
+          "Y": 1,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 11,
+      "Name": "v_stab_guides",
+      "Body": [
+        "SketchBody",
+        {
+          "Sketch": {
+            "Entities": [
+              [
+                "REPoint",
+                "vl_root",
+                9.234722137451172,
+                0.02258516103029251
+              ],
+              [
+                "REPoint",
+                "vl_cp0",
+                9.409501075744629,
+                0.7064153552055359
+              ],
+              [
+                "REPoint",
+                "vl_cp1",
+                9.582908630371094,
+                1.4039855003356934
+              ],
+              [
+                "REPoint",
+                "vl_tip",
+                9.774153709411621,
+                1.964214563369751
+              ],
+              [
+                "REPoint",
+                "vt_root",
+                10.87722110748291,
+                0.015762867406010628
+              ],
+              [
+                "REPoint",
+                "vt_cp0",
+                10.816828727722168,
+                0.7194615006446838
+              ],
+              [
+                "REPoint",
+                "vt_cp1",
+                10.855691909790039,
+                1.2669291496276855
+              ],
+              [
+                "REPoint",
+                "vt_tip",
+                10.887906074523926,
+                1.900952696800232
+              ],
+              [
+                "REBezierCubic",
+                "leading",
+                "vl_root",
+                "vl_cp0",
+                "vl_cp1",
+                "vl_tip"
+              ],
+              [
+                "REBezierCubic",
+                "trailing",
+                "vt_root",
+                "vt_cp0",
+                "vt_cp1",
+                "vt_tip"
+              ]
+            ],
+            "Constraints": [],
+            "Loops": []
+          },
+          "Plane": "XY"
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 17,
+      "Name": "naca_v_stab",
+      "Body": [
+        "NativeBody",
+        "naca",
+        {
+          "camber": {
+            "Node": [
+              "ENumber",
+              0.04
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "chord": {
+            "Node": [
+              "ENumber",
+              1.5
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "origin_x": {
+            "Node": [
+              "ENumber",
+              10
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "origin_y": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "origin_z": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "span": {
+            "Node": [
+              "ENumber",
+              1.2
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "thickness": {
+            "Node": [
+              "ENumber",
+              0.1
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 2,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 12,
+      "Name": "half_v_stab",
+      "Body": [
+        "NativeBody",
+        "wing-remap-preview",
+        {
+          "leading": {
+            "Node": [
+              "EPath",
+              [
+                {
+                  "Name": "v_stab_guides",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                },
+                {
+                  "Name": "spline_0",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                }
+              ]
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile": {
+            "Node": [
+              "EVar",
+              {
+                "Name": "naca_v_stab",
+                "IdentKind": "User",
+                "Span": {
+                  "Start": 0,
+                  "Stop": 0
+                }
+              }
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_chord": {
+            "Node": [
+              "ENumber",
+              1.5
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_origin_x": {
+            "Node": [
+              "ENumber",
+              10
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_origin_y": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "profile_origin_z": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "trailing": {
+            "Node": [
+              "EPath",
+              [
+                {
+                  "Name": "v_stab_guides",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                },
+                {
+                  "Name": "spline_1",
+                  "IdentKind": "User",
+                  "Span": {
+                    "Start": 0,
+                    "Stop": 0
+                  }
+                }
+              ]
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VHidden",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 13,
+      "Name": "v_stab",
+      "Body": [
+        "NativeBody",
+        "swap_yz",
+        {
+          "child": {
+            "Node": [
+              "EVar",
+              {
+                "Name": "half_v_stab",
+                "IdentKind": "User",
+                "Span": {
+                  "Start": 0,
+                  "Stop": 0
+                }
+              }
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VIsosurface",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 4.6,
+          "Y": 0,
+          "Z": 0.75
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    },
+    {
+      "Id": 19,
+      "Name": "translate_19",
+      "Body": [
+        "NativeBody",
+        "translate",
+        {
+          "child": {
+            "Node": [
+              "EVar",
+              {
+                "Name": "full_h_stab",
+                "IdentKind": "User",
+                "Span": {
+                  "Start": 0,
+                  "Stop": 0
+                }
+              }
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "x": {
+            "Node": [
+              "ENumber",
+              0.2
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "y": {
+            "Node": [
+              "ENumber",
+              0
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          },
+          "z": {
+            "Node": [
+              "ENumber",
+              1.9
+            ],
+            "Span": {
+              "Start": 0,
+              "Stop": 0
+            }
+          }
+        }
+      ],
+      "Visibility": "VIsosurface",
+      "ColorIndex": 0,
+      "SlicePlane": {
+        "Origin": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisX": {
+          "X": 1,
+          "Y": 0,
+          "Z": 0
+        },
+        "AxisY": {
+          "X": 0,
+          "Y": 1,
+          "Z": 0
+        },
+        "Extent": 20
+      }
+    }
+  ],
+  "NextBlockId": 23,
+  "ScriptSourceText": "// Standard library of SDF primitives, defined as user-editable\n// scripts. Each top-level `let name = fun (param: Type) ... -> body end`\n// appears in the +Add palette (⌘K). The math-primitive callables\n// (sqrt, abs, min, max, compare, remap_axes) and spatial axes\n// (x, y, z) are pre-bound; intrinsics translate / mirror-symmetric /\n// from-sketch / revolve / wing-remap-preview live in BlockSpec.fs.\n\nlet sphere = fun (radius: Scalar) ->\n    sqrt (x*x + y*y + z*z) - radius\nend\n\nlet halfplane = fun (axis: Scalar) (offset: Scalar) ->\n    let sx = 1 - abs (compare axis 0)\n    let sy = 1 - abs (compare axis 1)\n    let sz = 1 - abs (compare axis 2)\n    sx*x + sy*y + sz*z - offset\nend\n\nlet box = fun (width: Scalar) (height: Scalar) (depth: Scalar) ->\n    let hx = width / 2\n    let hy = height / 2\n    let hz = depth / 2\n    let bx = abs x - hx\n    let by = abs y - hy\n    let bz = abs z - hz\n    let mx = max bx 0\n    let my = max by 0\n    let mz = max bz 0\n    let outside = sqrt (mx*mx + my*my + mz*mz)\n    let inside = min (max bx (max by bz)) 0\n    outside + inside\nend\n\nlet cylinder = fun (radius: Scalar) (height: Scalar) ->\n    let radial = sqrt (x*x + y*y) - radius\n    let axial = abs z - height / 2\n    max radial axial\nend\n\n// Iquilez polynomial smooth-min, with `radius <= eps` snapping to a\n// hard min. The `enabled` factor keeps radius=0 exact without adding\n// a general AST `if` — `compare radius eps` is -1 below the snap\n// threshold, ≥ 0 above, and `max ... 0` clamps the gate to {0, 1}.\nlet smooth_min = fun (a: Field) (b: Field) (radius: Scalar) ->\n    let eps = 0.000001\n    let k = max radius eps\n    let h = max (k - abs (a - b)) 0 / k\n    let enabled = max (compare radius eps) 0\n    min a b - (enabled * h * h * h * k / 6)\nend\n\nlet union = fun (target: Field) (tool: Field) (radius: Scalar) ->\n    smooth_min target tool radius\nend\n\nlet intersect = fun (target: Field) (tool: Field) (radius: Scalar) ->\n    0 - (smooth_min (0 - target) (0 - tool) radius)\nend\n\nlet subtract = fun (target: Field) (tool: Field) (radius: Scalar) ->\n    0 - (smooth_min (0 - target) tool radius)\nend\n\nlet thicken = fun (amount: Scalar) (child: Field) ->\n    child - amount\nend\n\nlet shell = fun (thickness: Scalar) (child: Field) ->\n    max child (0 - (child + thickness))\nend\n\nlet bezier_cubic = fun (p0: Scalar) (p1: Scalar) (p2: Scalar) (p3: Scalar) (t: Field) ->\n    let u = 1 - t\n    u*u*u * p0 + 3*u*u*t * p1 + 3*u*t*t * p2 + t*t*t * p3\nend\n\nlet bezier_cubic_deriv = fun (p0: Scalar) (p1: Scalar) (p2: Scalar) (p3: Scalar) (t: Field) ->\n    let u = 1 - t\n    3 * (u*u*(p1 - p0) + 2*u*t*(p2 - p1) + t*t*(p3 - p2))\nend\n\n// PRECONDITION: the X(t) (or Y(t)) component must be monotonic\n// over [0,1] -- otherwise Newton can converge to the wrong root.\nlet bezier_invert = fun (p0: Scalar) (p1: Scalar) (p2: Scalar) (p3: Scalar) (target: Field) ->\n    let t0 = (target - p0) / (p3 - p0 + 0.000001)\n    let f0 = bezier_cubic p0 p1 p2 p3 t0 - target\n    let df0 = bezier_cubic_deriv p0 p1 p2 p3 t0\n    let t1 = t0 - f0 / (df0 + 0.000001)\n    let f1 = bezier_cubic p0 p1 p2 p3 t1 - target\n    let df1 = bezier_cubic_deriv p0 p1 p2 p3 t1\n    let t2 = t1 - f1 / (df1 + 0.000001)\n    let f2 = bezier_cubic p0 p1 p2 p3 t2 - target\n    let df2 = bezier_cubic_deriv p0 p1 p2 p3 t2\n    t2 - f2 / (df2 + 0.000001)\nend\n\n\n// Multi-guide loft (wing-style). Sweeps a cross-section between\n// loop `a` (at span position `start`) and loop `b` (at `end_pos`),\n// while constraining the chord direction with two cubic Bezier\n// guide splines — `g_left` and `g_right`. Conventions match\n// `wing-remap-preview`:\n//   cross-sections in the XZ plane (their local axes are X = chord,\n//     Z = thickness)\n//   guides in the XY plane (their local Y is the span = world Y)\n//   span direction = Y\n//   chord direction = X\n//\n// Width convention: at `start`, the cross-section sits at its\n// natural absolute X extent — its world-X edges coincide with the\n// spline endpoints `g_left.x0` and `g_right.x0`. As the span axis\n// progresses, the splines expand or contract the cross-section by\n// the ratio `S(y) / S(start)`, where `S(y)` is the current\n// spline separation. So a cross-section that's 2-wide at the root\n// (matching guide X separation 2 at `start`) stretches to 1.7 wide\n// where the guides separate by 1.7, and so on.\n//\n// The cubic-at-y arithmetic is inlined rather than factored into a\n// helper because the typecheck's refinement-cell mechanism only\n// grows through direct path access — calling a helper that\n// requires the refined Primitive would fail to propagate the\n// required `x0/y0/x1/y1/cx0/cy0/cx1/cy1` members from this site.\nlet wing_loft = fun (a: Loop) (b: Loop) (g_left: Primitive) (g_right: Primitive) (start: Scalar) (end_pos: Scalar) ->\n    let t = (y - start) / (end_pos - start + 0.000001)\n    let t_l = bezier_invert g_left.y0 g_left.cy0 g_left.cy1 g_left.y1 y\n    let left_x = bezier_cubic g_left.x0 g_left.cx0 g_left.cx1 g_left.x1 t_l\n    let t_r = bezier_invert g_right.y0 g_right.cy0 g_right.cy1 g_right.y1 y\n    let right_x = bezier_cubic g_right.x0 g_right.cx0 g_right.cx1 g_right.x1 t_r\n    let s_start = g_right.x0 - g_left.x0\n    let center = (right_x + left_x) / 2\n    let chord = (x - center) * s_start / (right_x - left_x + 0.000001)\n    let a_remap = remap_axes a.signed_distance chord y z\n    let b_remap = remap_axes b.signed_distance chord y z\n    let blend = (1 - t) * a_remap + t * b_remap\n    let slab = max (y - end_pos) (start - y)\n    max blend slab\nend\n\n// Aircraft-fuselage loft — `wing_loft` rotated 90° so the body axis is\n// world X (nose → tail) instead of world Y. Cross-sections `a` and `b`\n// live in the YZ plane (their local X = world Y = body width, their\n// local Y = world Z = body height). Guides `g_top` / `g_bot` live in\n// the XY plane: their local X = world X = body length, their local Y =\n// world Y = body half-width.\n//\n// Width convention: at `start`, the cross-section sits at its\n// natural absolute Y extent — its world-Y edges coincide with the\n// spline endpoints `g_top.y0` and `g_bot.y0`. As X moves nose-to-\n// tail the splines stretch or shrink the cross-section by the\n// ratio `S(x) / S(start)`. So if the splines are at ±0.25 at the\n// nose, the cross-section is naturally 0.5 wide; the body expands\n// to 1.7 wide where the guides bow out to ±0.85, and contracts to\n// 0.3 wide where the guides taper to ±0.15.\nlet body_loft = fun (a: Loop) (b: Loop) (g_top: Primitive) (g_bot: Primitive) (start: Scalar) (end_pos: Scalar) ->\n    let t = (x - start) / (end_pos - start + 0.000001)\n    let t_top = bezier_invert g_top.x0 g_top.cx0 g_top.cx1 g_top.x1 x\n    let top_z = bezier_cubic g_top.y0 g_top.cy0 g_top.cy1 g_top.y1 t_top\n    let t_bot = bezier_invert g_bot.x0 g_bot.cx0 g_bot.cx1 g_bot.x1 x\n    let bot_z = bezier_cubic g_bot.y0 g_bot.cy0 g_bot.cy1 g_bot.y1 t_bot\n    let s_start = g_top.y0 - g_bot.y0\n    let center = (top_z + bot_z) / 2\n    let inv_scale = s_start / (top_z - bot_z + 0.000001)\n    let y_scaled = y * inv_scale\n    let z_scaled = (z - center) * inv_scale\n    let a_remap = remap_axes a.signed_distance x y_scaled z_scaled\n    let b_remap = remap_axes b.signed_distance x y_scaled z_scaled\n    let blend = (1 - t) * a_remap + t * b_remap\n    let slab = max (x - end_pos) (start - x)\n    max blend slab\nend\n\n// Linearly loft between two parallel-plane sketch loops. `a` is the\n// cross-section at perpendicular-axis position `start_pos`, `b` at\n// `end_pos`. Both loops must lie in parallel planes (same\n// `perpendicular_axis`) — `loft` reads the axis from `a` and assumes\n// `b` matches. The 3D SDF linearly interpolates the two 2D fields by\n// `t` along the perpendicular axis, then intersects with the slab\n// `[start_pos, end_pos]` to close the body at both caps.\n//\n// Output is a Field lower-bound (not exact SDF) because of the\n// linear blend. Adequate for raymarching; raymarcher may need\n// smaller steps near the surface for steeply-morphing cross-sections.\nlet loft = fun (a: Loop) (b: Loop) (start_pos: Scalar) (end_pos: Scalar) ->\n    let axis = a.perpendicular_axis\n    let sx = 1 - abs (compare axis 0)\n    let sy = 1 - abs (compare axis 1)\n    let sz = 1 - abs (compare axis 2)\n    let perp = sx*x + sy*y + sz*z\n    let t = (perp - start_pos) / (end_pos - start_pos + 0.000001)\n    let blend = (1 - t) * a.signed_distance + t * b.signed_distance\n    let slab = max (perp - end_pos) (start_pos - perp)\n    max blend slab\nend\n\n// Project a sketch loop's 2D signed-distance field into 3D. Identity\n// on the loop's `signed_distance` member — the loop's enclosing\n// sketch plane determines which two axes the field varies along; the\n// third spatial axis is unused, so the field is infinite along it\n// (you'll typically intersect with a slab via `extrude` or wrap into\n// a revolution via `revolve`).\nlet from_sketch = fun (loop: Loop) ->\n    loop.signed_distance\nend\n\n// Two-body coordinate field (signed). Given two distance fields a\n// and b, returns t = (a - b) / (a + b), which is -1 on the boundary\n// of a, +1 on the boundary of b, and 0 at points equidistant from\n// both. Smoothly varies elsewhere. The eps guard keeps the divisor\n// finite when both fields hit zero at the same point.\n//\n// Foundation for loft / blend operations and Blake-Courter-style\n// band-pattern fields, with the sign convention matching the\n// `wing-remap-preview` block (-1 = leading-edge side, +1 =\n// trailing-edge side).\nlet two_body = fun (a: Field) (b: Field) ->\n    (a - b) / (a + b + 0.000001)\nend\n\n// Reflect `child` across the plane perpendicular to `axis` at `root`,\n// evaluating the positive (root-side) half on both sides. `axis` is a\n// 0/1/2 discrete choice (rendered as a dropdown in the BlockList);\n// `root` is the position of the mirror plane along that axis.\nlet mirror_symmetric = fun (axis: Scalar) (root: Scalar) (child: Field) ->\n    let sx = 1 - abs (compare axis 0)\n    let sy = 1 - abs (compare axis 1)\n    let sz = 1 - abs (compare axis 2)\n    let mx_pos = root + abs (x - root)\n    let my_pos = root + abs (y - root)\n    let mz_pos = root + abs (z - root)\n    let mx_neg = root - abs (x - root)\n    let my_neg = root - abs (y - root)\n    let mz_neg = root - abs (z - root)\n    let cx_pos = sx*mx_pos + (1 - sx)*x\n    let cy_pos = sy*my_pos + (1 - sy)*y\n    let cz_pos = sz*mz_pos + (1 - sz)*z\n    let cx_neg = sx*mx_neg + (1 - sx)*x\n    let cy_neg = sy*my_neg + (1 - sy)*y\n    let cz_neg = sz*mz_neg + (1 - sz)*z\n    let pos_eval = remap_axes child cx_pos cy_pos cz_pos\n    let neg_eval = remap_axes child cx_neg cy_neg cz_neg\n    min pos_eval neg_eval\nend\n\n// Swap world Y and Z when sampling `child` — turns a Y-spanning\n// field (e.g. a `wing-remap-preview` wing) into a Z-spanning field\n// (e.g. a vertical stabilizer / fin). The child's chord (X) stays\n// horizontal; what was its span direction now extends upward, and\n// what was its thickness direction now extends sideways.\nlet swap_yz = fun (child: Field) ->\n    remap_axes child x z y\nend\n\n// Sweep a closed 2D sketch loop along the axis perpendicular to its\n// plane, clamping to [bottom, top]. Picks the perpendicular axis from\n// the loop's `perpendicular_axis` member (0=X / 1=Y / 2=Z), which the\n// compose bridge seeds from the parent sketch's plane.\nlet extrude = fun (loop: Loop) (bottom: Scalar) (top: Scalar) ->\n    let axis = loop.perpendicular_axis\n    let sx = 1 - abs (compare axis 0)\n    let sy = 1 - abs (compare axis 1)\n    let sz = 1 - abs (compare axis 2)\n    let perp = sx*x + sy*y + sz*z\n    max loop.signed_distance (max (perp - top) (bottom - perp))\nend\n\n// Sweep a closed 2D sketch loop around the in-plane \"height\" axis,\n// generating a body of revolution. The radial loop axis (the one\n// orthogonal to the height in the plane) is replaced by the radial\n// distance from the height axis in 3D. Picks both axes from the\n// loop's plane via `perpendicular_axis`:\n//   perp=Z (XY plane) → radial=X, height=Y; radial = sqrt(x² + z²)\n//   perp=Y (XZ plane) → radial=X, height=Z; radial = sqrt(x² + y²)\n//   perp=X (YZ plane) → radial=Y, height=Z; radial = sqrt(x² + y²)\nlet revolve = fun (loop: Loop) ->\n    let perp = loop.perpendicular_axis\n    // Radial loop axis = the in-plane axis with the lower index.\n    // perp=0 (X)   → loop axes {Y, Z}, radial = Y = 1\n    // perp=1 (Y)   → loop axes {X, Z}, radial = X = 0\n    // perp=2 (Z)   → loop axes {X, Y}, radial = X = 0\n    let radial_axis = 1 - abs (compare perp 0)\n    let px = 1 - abs (compare perp 0)\n    let py = 1 - abs (compare perp 1)\n    let pz = 1 - abs (compare perp 2)\n    let rx = 1 - abs (compare radial_axis 0)\n    let ry = 1 - abs (compare radial_axis 1)\n    let perp_coord = px*x + py*y + pz*z\n    let radial_coord = rx*x + ry*y\n    let r = sqrt (perp_coord*perp_coord + radial_coord*radial_coord)\n    let new_x = rx*r + (1 - rx)*x\n    let new_y = ry*r + (1 - ry)*y\n    remap_axes loop.signed_distance new_x new_y z\nend\n\nlet capsule = fun (radius: Scalar) (length: Scalar) ->\n    let half = length / 2\n    let body = cylinder radius length\n    let top = translate 0 0 half (sphere radius)\n    let bottom = translate 0 0 (0 - half) (sphere radius)\n    union (union body top 0) bottom 0\nend\n"
+}

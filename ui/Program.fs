@@ -50,13 +50,16 @@ let private viewerHost =
     host
 
 // --------------------------------------------------------------------------
-// Save / Load. Uses Fable's native JSON encoding (round-trips Fable→Fable).
-// Not wire-compatible with the old .NET server save format — new regime.
+// Save / Load. Uses Thoth.Json's auto-derived encoders/decoders, which
+// reconstruct F# discriminated unions / records / maps / lists faithfully
+// across the JSON round-trip — unlike `Fable.Core.JS.JSON.stringify` which
+// leaves DUs as plain arrays that lose their `.tag` / `.fields` runtime
+// shape on parse.
 // --------------------------------------------------------------------------
 
 let private onSave () =
     let doc = store.State.Doc
-    let json = Fable.Core.JS.JSON.stringify(doc, space = 2)
+    let json = Thoth.Json.Encode.Auto.toString(2, doc)
     let baseName =
         let trimmed = doc.Name.Trim().ToLower()
         if trimmed = "" || trimmed = "untitled" then "pointer-model" else trimmed
@@ -81,12 +84,11 @@ let private onLoad () =
                 let reader : obj = newFileReader ()
                 reader?onload <- (fun _ ->
                     let text : string = unbox reader?result
-                    try
-                        let parsed = Fable.Core.JS.JSON.parse(text)
-                        let doc : Server.Document = unbox parsed
+                    match Thoth.Json.Decode.Auto.fromString<Server.Document>(text) with
+                    | Ok doc ->
                         dispatch (ReplaceDocument doc)
-                    with ex ->
-                        console.error ("Failed to load: " + ex.Message))
+                    | Error msg ->
+                        console.error ("Failed to load: " + msg))
                 reader?readAsText(file) |> ignore
     )
     input.click ()

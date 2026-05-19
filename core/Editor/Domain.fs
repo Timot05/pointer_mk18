@@ -793,9 +793,44 @@ let capsule = fun (radius: Scalar) (length: Scalar) ->
 end
 """
 
-    let emptyDocument () : Document =
+    /// Built-in fallback document, assembled from the F# `defaultBlocks`
+    /// + `defaultScriptSource` literals above. Used when no JSON
+    /// override is present (the .NET tests path, or the browser when
+    /// `ui/defaults/default-document.json` is `null` / empty / fails
+    /// to parse).
+    let private constructedDefaultDocument () : Document =
         { Name = "untitled"
           Blocks = defaultBlocks
           NextBlockId = 15
           SelectedBlockId = Some 3
           ScriptSourceText = defaultScriptSource }
+
+#if FABLE_COMPILER
+    /// Raw JSON text bundled by Vite via the `@defaults` alias. Treated
+    /// as an override of the F#-constructed default: if the file
+    /// contains a valid serialized `Document`, it becomes the boot-doc;
+    /// if it's `null` / empty / unparseable, we fall back to the F#
+    /// constructor. This lets the user "Save" from the running app
+    /// (which produces JSON via the same Fable round-trip), drop the
+    /// file into `ui/defaults/`, and have it become the new default
+    /// without touching F# code.
+    let private defaultDocumentJsonOverride : string =
+        Fable.Core.JsInterop.importDefault "@defaults/default-document.json?raw"
+#else
+    let private defaultDocumentJsonOverride : string = ""
+#endif
+
+    let emptyDocument () : Document =
+#if FABLE_COMPILER
+        let trimmed = defaultDocumentJsonOverride.Trim()
+        if trimmed = "" || trimmed = "null" then
+            constructedDefaultDocument ()
+        else
+            match Thoth.Json.Decode.Auto.fromString<Document>(defaultDocumentJsonOverride) with
+            | Ok doc -> doc
+            | Error msg ->
+                Browser.Dom.console.warn ("default-document.json failed to decode; using F# default. " + msg)
+                constructedDefaultDocument ()
+#else
+        constructedDefaultDocument ()
+#endif

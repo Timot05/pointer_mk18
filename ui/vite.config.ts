@@ -11,6 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@shaders": path.resolve(__dirname, "../viewer/Shaders"),
+      "@defaults": path.resolve(__dirname, "./defaults"),
     },
   },
   server: {

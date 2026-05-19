@@ -4,6 +4,9 @@
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <GenerateProgramFile>false</GenerateProgramFile>
+    <!-- Match App.fsproj's pinned FSharp.Core so the transitive
+         reference doesn't trip NU1605 / MSB3277 against Thoth.Json. -->
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,12 +23,15 @@
     <Compile Include="TypecheckTests.fs" />
     <Compile Include="NotebookTests.fs" />
     <Compile Include="SketchRefinementTests.fs" />
+    <Compile Include="DocumentJsonRoundTripTests.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="FSharp.Core" Version="10.1.203" />
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="Thoth.Json.Net" Version="12.0.0" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>

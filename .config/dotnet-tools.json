@@ -3,8 +3,11 @@
   "isRoot": true,
   "tools": {
     "fable": {
-      "version": "4.29.0",
-      "commands": ["fable"]
+      "version": "5.0.0",
+      "commands": [
+        "fable"
+      ],
+      "rollForward": false
     }
   }
 }

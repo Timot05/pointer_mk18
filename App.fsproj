@@ -4,6 +4,10 @@
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>PointerMk18</RootNamespace>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- Pin FSharp.Core via PackageReference below; the SDK's auto-
+         injected version was triggering NU1504 / NU1605 against
+         Thoth.Json's minimum requirement. -->
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
   </PropertyGroup>
 
   <ItemGroup>
@@ -128,10 +132,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Fable.Core" Version="4.5.0" />
-    <PackageReference Include="Fable.Browser.Dom" Version="2.19.0" />
+    <!-- Pinned to satisfy Thoth.Json's >= 10.1.203 requirement and
+         silence NU1605 vs the SDK-shipped 10.0.106. -->
+    <PackageReference Include="FSharp.Core" Version="10.1.203" />
+    <PackageReference Include="Fable.Core" Version="5.0.0" />
+    <PackageReference Include="Fable.Browser.Dom" Version="2.20.0" />
     <PackageReference Include="Fable.Promise" Version="3.2.0" />
-    <PackageReference Include="FSharp.SystemTextJson" Version="1.4.36" />
+    <PackageReference Include="Thoth.Json" Version="10.5.0" />
   </ItemGroup>
 
 </Project>
